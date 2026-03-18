@@ -36,7 +36,13 @@ void main() {
     // Transform normal to world space.
     normal = normalize(mat3(gl_ObjectToWorldEXT) * normal);
 
-    vec3 color = vec3(verts[i0 * 9u + 6u], verts[i0 * 9u + 7u], verts[i0 * 9u + 8u]);
+    // Instance custom index: 1 = floor (bright), others = cubes (darker).
+    vec3 color;
+    if (gl_InstanceCustomIndexEXT == 1u) {
+        color = vec3(0.85, 0.85, 0.8); // light stone floor
+    } else {
+        color = vec3(0.55, 0.35, 0.2); // dark warm cube
+    }
 
     // Shadow ray.
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
