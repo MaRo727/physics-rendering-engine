@@ -1,4 +1,10 @@
+use std::sync::Arc;
+
+use anyhow::Result;
 use glam::{Mat4, Vec3};
+use winit::window::Window;
+
+use crate::renderer::context::VulkanContext;
 
 pub struct MeshId(pub u32);
 
@@ -16,15 +22,18 @@ pub struct EngineConfig {
 
 pub struct Engine {
     pub config: EngineConfig,
+    context: VulkanContext,
     render_objects: Vec<RenderObject>,
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig) -> Self {
-        Self {
+    pub fn new(config: EngineConfig, window: &Arc<Window>) -> Result<Self> {
+        let context = VulkanContext::new(window.as_ref())?;
+        Ok(Self {
             config,
+            context,
             render_objects: Vec::new(),
-        }
+        })
     }
 
     /// Advance simulation by `dt` seconds and write transforms into render_objects.
@@ -32,6 +41,6 @@ impl Engine {
     pub fn update(&mut self, _dt: f32) {}
 
     /// Submit render_objects to the renderer for drawing.
-    /// Phase 1 stub — will call renderer.draw_frame(&self.render_objects).
+    /// Phase 3 — will call renderer.draw_frame(&self.render_objects).
     pub fn render(&mut self) {}
 }

@@ -52,7 +52,7 @@ impl ApplicationHandler for App {
             gravity: glam::Vec3::new(0.0, -9.81, 0.0),
         };
 
-        self.engine = Some(Engine::new(config));
+        self.engine = Some(Engine::new(config, &window).expect("Failed to initialize engine"));
         self.sb_context = Some(sb_context);
         self.sb_surface = Some(sb_surface);
         self.window = Some(window.clone());
