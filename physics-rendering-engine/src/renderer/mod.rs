@@ -11,10 +11,12 @@ use winit::window::Window;
 
 use context::VulkanContext;
 use frame::{create_frame, FrameData, MAX_FRAMES_IN_FLIGHT};
+use pipeline::Pipeline;
 use swapchain::Swapchain;
 
 pub struct Renderer {
     render_pass: vk::RenderPass,
+    pipeline: Pipeline,
     swapchain: Swapchain,
     frames: [FrameData; MAX_FRAMES_IN_FLIGHT],
     current_frame: usize,
@@ -36,6 +38,7 @@ impl Renderer {
         let surface_format = swapchain::query_surface_format(&context)?;
         let render_pass =
             pipeline::create_render_pass(&context.device, surface_format.format)?;
+        let pipeline = pipeline::create_graphics_pipeline(&context.device, render_pass)?;
 
         let swapchain =
             Swapchain::new(&context, render_pass, size.width, size.height)?;
@@ -47,6 +50,7 @@ impl Renderer {
 
         Ok(Self {
             render_pass,
+            pipeline,
             swapchain,
             frames,
             current_frame: 0,
@@ -149,6 +153,36 @@ impl Renderer {
                 &render_pass_info,
                 vk::SubpassContents::INLINE,
             );
+
+            let extent = self.swapchain.extent;
+            self.context.device.cmd_bind_pipeline(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.handle,
+            );
+            self.context.device.cmd_set_viewport(
+                cb,
+                0,
+                &[vk::Viewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: extent.width as f32,
+                    height: extent.height as f32,
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            self.context.device.cmd_set_scissor(
+                cb,
+                0,
+                &[vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                }],
+            );
+            // 3 vertices, 1 instance — triangle hardcoded in vertex shader.
+            self.context.device.cmd_draw(cb, 3, 1, 0, 0);
+
             self.context.device.cmd_end_render_pass(cb);
             self.context.device.end_command_buffer(cb)?;
         }
@@ -218,6 +252,10 @@ impl Drop for Renderer {
             }
 
             self.swapchain.destroy(&self.context);
+            self.context.device.destroy_pipeline(self.pipeline.handle, None);
+            self.context
+                .device
+                .destroy_pipeline_layout(self.pipeline.layout, None);
             self.context.device.destroy_render_pass(self.render_pass, None);
         }
         // context drops here — destroys device, surface, instance in VulkanContext::drop
