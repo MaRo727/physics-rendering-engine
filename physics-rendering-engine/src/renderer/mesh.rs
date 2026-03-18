@@ -94,36 +94,53 @@ impl Mesh {
 // Cube mesh data
 // ---------------------------------------------------------------------------
 
-/// Unit cube centered at origin. Colors are derived from vertex position
-/// (mapped from [-0.5, 0.5] → [0, 1]) so each corner has a unique color.
+/// Unit cube centered at origin.
+/// 24 vertices (4 per face) so each face carries a correct outward normal.
+/// All faces are gray; diffuse lighting in the fragment shader provides shading.
 pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
-    let v = |x: f32, y: f32, z: f32| Vertex {
-        position: Vec3::new(x, y, z),
-        normal: Vec3::ZERO, // lighting added later
-        color: Vec3::new(x + 0.5, y + 0.5, z + 0.5),
-    };
+    let g = Vec3::splat(0.75);
 
     #[rustfmt::skip]
     let vertices = vec![
-        v(-0.5, -0.5, -0.5), // 0 black
-        v( 0.5, -0.5, -0.5), // 1 red
-        v( 0.5,  0.5, -0.5), // 2 yellow
-        v(-0.5,  0.5, -0.5), // 3 green
-        v(-0.5, -0.5,  0.5), // 4 blue
-        v( 0.5, -0.5,  0.5), // 5 magenta
-        v( 0.5,  0.5,  0.5), // 6 white
-        v(-0.5,  0.5,  0.5), // 7 cyan
+        // Front (+Z)
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal:  Vec3::Z,     color: g },
+        // Back (-Z)
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        // Left (-X)
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal: Vec3::NEG_X,  color: g },
+        // Right (+X)
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::X,     color: g },
+        // Top (+Y)
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal:  Vec3::Y,     color: g },
+        // Bottom (-Y)
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal: Vec3::NEG_Y,  color: g },
     ];
 
-    #[rustfmt::skip]
-    let indices: Vec<u32> = vec![
-        4, 5, 6,  4, 6, 7, // front  (+z)
-        1, 0, 3,  1, 3, 2, // back   (-z)
-        0, 4, 7,  0, 7, 3, // left   (-x)
-        5, 1, 2,  5, 2, 6, // right  (+x)
-        7, 6, 2,  7, 2, 3, // top    (+y)
-        0, 1, 5,  0, 5, 4, // bottom (-y)
-    ];
+    // Each face: two triangles (0,1,2) and (0,2,3) into its 4 vertices.
+    let indices: Vec<u32> = (0..6u32)
+        .flat_map(|f| {
+            let b = f * 4;
+            [b, b + 1, b + 2, b, b + 2, b + 3]
+        })
+        .collect();
 
     (vertices, indices)
 }
