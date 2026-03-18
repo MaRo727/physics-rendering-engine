@@ -134,7 +134,7 @@ impl Engine {
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
         // Update camera orientation from mouse delta.
-        self.yaw   += input.mouse_dx * MOUSE_SENSITIVITY;
+        self.yaw   -= input.mouse_dx * MOUSE_SENSITIVITY;
         self.pitch  = (self.pitch - input.mouse_dy * MOUSE_SENSITIVITY)
             .clamp(-89_f32.to_radians(), 89_f32.to_radians());
 
