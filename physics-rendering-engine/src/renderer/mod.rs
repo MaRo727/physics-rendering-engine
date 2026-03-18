@@ -1,78 +1,144 @@
+pub mod acceleration_structure;
 pub mod context;
 pub mod frame;
 pub mod mesh;
-pub mod pipeline;
+pub mod rt_pipeline;
 pub mod swapchain;
 
 use anyhow::{Context, Result};
 use ash::vk;
-use glam::Mat4;
+use glam::{Mat4, Vec4};
 use std::sync::Arc;
 use winit::window::Window;
 
+use acceleration_structure::{Blas, Tlas, mat4_to_transform};
 use context::VulkanContext;
 use frame::{create_frame, FrameData, MAX_FRAMES_IN_FLIGHT};
 use mesh::Mesh;
-use pipeline::Pipeline;
+use rt_pipeline::{RtPipeline, SceneUBO};
 use swapchain::Swapchain;
 
 // ---------------------------------------------------------------------------
-// Camera UBO
+// Per-frame UBO buffer
 // ---------------------------------------------------------------------------
 
-#[repr(C)]
-struct CameraUBO {
-    view: Mat4,
-    proj: Mat4,
-}
-
-struct UboBuffer {
+struct SceneUboBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
-    mapped: *mut CameraUBO,
+    mapped: *mut SceneUBO,
 }
 
-// SAFETY: only accessed from the main (render) thread.
-unsafe impl Send for UboBuffer {}
+unsafe impl Send for SceneUboBuffer {}
 
-fn create_ubo_buffer(context: &VulkanContext) -> Result<UboBuffer> {
-    let size = std::mem::size_of::<CameraUBO>() as vk::DeviceSize;
+fn create_scene_ubo_buffer(context: &VulkanContext) -> Result<SceneUboBuffer> {
+    let size = std::mem::size_of::<SceneUBO>() as vk::DeviceSize;
     let (buffer, memory) = mesh::create_buffer(
         &context.device,
         &context.memory_properties,
         size,
         vk::BufferUsageFlags::UNIFORM_BUFFER,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
     )?;
     let mapped = unsafe {
         context.device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
     }
-    .context("Failed to map UBO memory")? as *mut CameraUBO;
-    Ok(UboBuffer { buffer, memory, mapped })
+    .context("Failed to map SceneUBO memory")? as *mut SceneUBO;
+    Ok(SceneUboBuffer { buffer, memory, mapped })
 }
 
+// ---------------------------------------------------------------------------
+// Storage image
+// ---------------------------------------------------------------------------
+
+struct StorageImage {
+    image: vk::Image,
+    view: vk::ImageView,
+    memory: vk::DeviceMemory,
+}
+
+fn create_storage_image(context: &VulkanContext, extent: vk::Extent2D) -> Result<StorageImage> {
+    let image = unsafe {
+        context.device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .extent(vk::Extent3D { width: extent.width, height: extent.height, depth: 1 })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED),
+            None,
+        )
+    }
+    .context("Failed to create storage image")?;
+
+    let reqs = unsafe { context.device.get_image_memory_requirements(image) };
+    let memory_type = mesh::find_memory_type(
+        &context.memory_properties,
+        reqs.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .context("No suitable memory type for storage image")?;
+
+    let memory = unsafe {
+        context.device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type),
+            None,
+        )
+    }
+    .context("Failed to allocate storage image memory")?;
+
+    unsafe { context.device.bind_image_memory(image, memory, 0) }
+        .context("Failed to bind storage image memory")?;
+
+    let view = unsafe {
+        context.device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                }),
+            None,
+        )
+    }
+    .context("Failed to create storage image view")?;
+
+    Ok(StorageImage { image, view, memory })
+}
 
 // ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 
 pub struct Renderer {
-    render_pass: vk::RenderPass,
-    pipeline: Pipeline,
-    mesh: Mesh,
+    context: VulkanContext,
     swapchain: Swapchain,
     frames: [FrameData; MAX_FRAMES_IN_FLIGHT],
+    mesh: Mesh,
+    blas: Blas,
+    tlas: Tlas,
+    rt_pipeline: RtPipeline,
+    storage_image: StorageImage,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    scene_ubo_buffers: [SceneUboBuffer; MAX_FRAMES_IN_FLIGHT],
     current_frame: usize,
-    depth_format: vk::Format,
+    extent: vk::Extent2D,
     surface_width: u32,
     surface_height: u32,
     swapchain_dirty: bool,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
-    ubo_buffers: [UboBuffer; MAX_FRAMES_IN_FLIGHT],
-    // context must be last — destroyed after all child Vulkan objects.
-    context: VulkanContext,
 }
 
 impl Renderer {
@@ -80,30 +146,8 @@ impl Renderer {
         let size = window.inner_size();
         let context = VulkanContext::new(window.as_ref())?;
 
-        let surface_format = swapchain::query_surface_format(&context)?;
-        let depth_format =
-            pipeline::find_depth_format(&context.instance, context.physical_device);
-
-        let descriptor_set_layout = pipeline::create_descriptor_set_layout(&context.device)?;
-
-        let render_pass = pipeline::create_render_pass(
-            &context.device,
-            surface_format.format,
-            depth_format,
-        )?;
-        let pipeline = pipeline::create_graphics_pipeline(
-            &context.device,
-            render_pass,
-            descriptor_set_layout,
-        )?;
-
-        let swapchain = Swapchain::new(
-            &context,
-            render_pass,
-            depth_format,
-            size.width,
-            size.height,
-        )?;
+        let swapchain = Swapchain::new(&context, size.width, size.height)?;
+        let extent = swapchain.extent;
 
         let frames = [
             create_frame(&context.device, context.graphics_queue_family)?,
@@ -112,66 +156,152 @@ impl Renderer {
 
         let (vertices, indices) = mesh::cube();
         let mesh = Mesh::new(&context, &vertices, &indices)?;
+        let blas = Blas::new(&context, &mesh)?;
 
-        // One UBO buffer per frame-in-flight, persistently mapped.
-        let ubo0 = create_ubo_buffer(&context)?;
-        let ubo1 = create_ubo_buffer(&context)?;
-        let ubo_buffers = [ubo0, ubo1];
+        // 4 objects: cube, floor, player, cube2
+        let tlas = Tlas::new(&context, 4)?;
 
-        // Descriptor pool: MAX_FRAMES_IN_FLIGHT uniform buffer descriptors.
-        let pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+        let rt_pipeline = RtPipeline::new(&context)?;
+
+        let storage_image = create_storage_image(&context, extent)?;
+
+        // Transition storage image to GENERAL layout once.
+        acceleration_structure::one_shot(&context, |cb| {
+            image_barrier(
+                &context.device,
+                cb,
+                storage_image.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            );
+        })?;
+
+        let ubo0 = create_scene_ubo_buffer(&context)?;
+        let ubo1 = create_scene_ubo_buffer(&context)?;
+        let scene_ubo_buffers = [ubo0, ubo1];
+
+        // Descriptor pool.
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 2),
+        ];
         let descriptor_pool = unsafe {
             context.device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-                    .pool_sizes(std::slice::from_ref(&pool_size)),
+                    .pool_sizes(&pool_sizes),
                 None,
             )
         }
         .context("Failed to create descriptor pool")?;
 
-        // Allocate one descriptor set per frame-in-flight.
-        let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&layouts);
-        let sets = unsafe { context.device.allocate_descriptor_sets(&alloc_info) }
-            .context("Failed to allocate descriptor sets")?;
+        let layouts = [rt_pipeline.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let sets = unsafe {
+            context.device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(descriptor_pool)
+                    .set_layouts(&layouts),
+            )
+        }
+        .context("Failed to allocate descriptor sets")?;
         let descriptor_sets = [sets[0], sets[1]];
 
-        // Point each descriptor set at its UBO buffer.
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let buffer_info = vk::DescriptorBufferInfo::default()
-                .buffer(ubo_buffers[i].buffer)
-                .offset(0)
-                .range(std::mem::size_of::<CameraUBO>() as vk::DeviceSize);
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[i])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(std::slice::from_ref(&buffer_info));
-            unsafe { context.device.update_descriptor_sets(&[write], &[]) };
-        }
-
-        Ok(Self {
-            render_pass,
-            pipeline,
-            mesh,
+        let mut renderer = Self {
+            context,
             swapchain,
             frames,
+            mesh,
+            blas,
+            tlas,
+            rt_pipeline,
+            storage_image,
+            descriptor_pool,
+            descriptor_sets,
+            scene_ubo_buffers,
             current_frame: 0,
-            depth_format,
+            extent,
             surface_width: size.width,
             surface_height: size.height,
             swapchain_dirty: false,
-            descriptor_set_layout,
-            descriptor_pool,
-            descriptor_sets,
-            ubo_buffers,
-            context,
-        })
+        };
+
+        // Write initial descriptor sets (tlas handle set after first update, skip for now).
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            renderer.write_descriptor_set(i);
+        }
+
+        Ok(renderer)
+    }
+
+    fn write_descriptor_set(&self, i: usize) {
+        let tlas_handle = self.tlas.handle;
+        let mut write_as = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(std::slice::from_ref(&tlas_handle));
+
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.storage_image.view)
+            .image_layout(vk::ImageLayout::GENERAL);
+
+        let ubo_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.scene_ubo_buffers[i].buffer)
+            .offset(0)
+            .range(std::mem::size_of::<SceneUBO>() as vk::DeviceSize);
+
+        let vertex_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.mesh.vertex_buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+
+        let index_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.mesh.index_buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+
+        let set = self.descriptor_sets[i];
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .push_next(&mut write_as),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&image_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(std::slice::from_ref(&ubo_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&vertex_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&index_info)),
+        ];
+
+        unsafe { self.context.device.update_descriptor_sets(&writes, &[]) };
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -180,29 +310,73 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
-    pub fn draw_frame(&mut self, transforms: &[Mat4], view: Mat4, proj: Mat4) -> Result<()> {
+    fn recreate_swapchain_and_storage(&mut self) -> Result<()> {
+        unsafe { self.context.device.device_wait_idle()? };
+
+        self.swapchain.recreate(&self.context, self.surface_width, self.surface_height)?;
+        self.extent = self.swapchain.extent;
+
+        // Recreate storage image at new size.
+        unsafe {
+            self.context.device.destroy_image_view(self.storage_image.view, None);
+            self.context.device.destroy_image(self.storage_image.image, None);
+            self.context.device.free_memory(self.storage_image.memory, None);
+        }
+        self.storage_image = create_storage_image(&self.context, self.extent)?;
+
+        // Transition new storage image to GENERAL.
+        acceleration_structure::one_shot(&self.context, |cb| {
+            image_barrier(
+                &self.context.device,
+                cb,
+                self.storage_image.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            );
+        })?;
+
+        // Re-write descriptor sets with the new storage image view.
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            self.write_descriptor_set(i);
+        }
+
+        Ok(())
+    }
+
+    pub fn draw_frame(
+        &mut self,
+        transforms: &[Mat4],
+        view: Mat4,
+        proj: Mat4,
+        light_dir: Vec4,
+        light_color: Vec4,
+    ) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
         }
 
         if self.swapchain_dirty {
-            unsafe { self.context.device.device_wait_idle()? };
-            self.swapchain.recreate(
-                &self.context,
-                self.render_pass,
-                self.depth_format,
-                self.surface_width,
-                self.surface_height,
-            )?;
+            self.recreate_swapchain_and_storage()?;
             self.swapchain_dirty = false;
         }
 
-        // Write camera matrices into this frame's UBO.
+        let fi = self.current_frame;
+
+        // Write UBO.
         unsafe {
-            *self.ubo_buffers[self.current_frame].mapped = CameraUBO { view, proj };
+            *self.scene_ubo_buffers[fi].mapped = SceneUBO {
+                inv_view: view.inverse(),
+                inv_proj: proj.inverse(),
+                light_dir,
+                light_color,
+            };
         }
 
-        let frame = &self.frames[self.current_frame];
+        let frame = &self.frames[fi];
 
         unsafe {
             self.context.device.wait_for_fences(
@@ -229,122 +403,169 @@ impl Renderer {
         };
 
         unsafe {
-            self.context
-                .device
-                .reset_fences(std::slice::from_ref(&frame.in_flight))?;
-        }
-
-        let cb = frame.command_buffer;
-        unsafe {
+            self.context.device.reset_fences(std::slice::from_ref(&frame.in_flight))?;
             self.context.device.reset_command_pool(
                 frame.command_pool,
                 vk::CommandPoolResetFlags::empty(),
             )?;
+        }
 
+        let cb = frame.command_buffer;
+        unsafe {
             self.context.device.begin_command_buffer(
                 cb,
                 &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+        }
 
-            let clear_values = [
-                vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.118, 0.118, 0.180, 1.0],
+        // Build TLAS instances.
+        let instances: Vec<vk::AccelerationStructureInstanceKHR> = transforms
+            .iter()
+            .map(|&t| {
+                vk::AccelerationStructureInstanceKHR {
+                    transform: mat4_to_transform(t),
+                    instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
+                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                        0,
+                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                    ),
+                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                        device_handle: self.blas.device_address,
                     },
-                },
-                vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.0,
-                        stencil: 0,
-                    },
-                },
-            ];
+                }
+            })
+            .collect();
 
-            self.context.device.cmd_begin_render_pass(
-                cb,
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.render_pass)
-                    .framebuffer(self.swapchain.framebuffers[image_index as usize])
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: self.swapchain.extent,
-                    })
-                    .clear_values(&clear_values),
-                vk::SubpassContents::INLINE,
-            );
+        self.tlas.update(&self.context, cb, &instances);
 
-            let extent = self.swapchain.extent;
+        // Trace rays.
+        unsafe {
             self.context.device.cmd_bind_pipeline(
                 cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.handle,
-            );
-            self.context.device.cmd_set_viewport(
-                cb,
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: extent.width as f32,
-                    height: extent.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            self.context.device.cmd_set_scissor(
-                cb,
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent,
-                }],
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.rt_pipeline.pipeline,
             );
             self.context.device.cmd_bind_descriptor_sets(
                 cb,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.rt_pipeline.layout,
                 0,
-                &[self.descriptor_sets[self.current_frame]],
+                &[self.descriptor_sets[fi]],
                 &[],
             );
-            self.context.device.cmd_bind_vertex_buffers(
-                cb,
-                0,
-                &[self.mesh.vertex_buffer],
-                &[0],
-            );
-            self.context.device.cmd_bind_index_buffer(
-                cb,
-                self.mesh.index_buffer,
-                0,
-                vk::IndexType::UINT32,
-            );
-            for transform in transforms {
-                let bytes: &[u8] = std::slice::from_raw_parts(
-                    transform as *const Mat4 as *const u8,
-                    std::mem::size_of::<Mat4>(),
-                );
-                self.context.device.cmd_push_constants(
-                    cb,
-                    self.pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    bytes,
-                );
-                self.context
-                    .device
-                    .cmd_draw_indexed(cb, self.mesh.index_count, 1, 0, 0, 0);
-            }
 
-            self.context.device.cmd_end_render_pass(cb);
+            self.context.rt_pipeline_loader.cmd_trace_rays(
+                cb,
+                &self.rt_pipeline.raygen_region,
+                &self.rt_pipeline.miss_region,
+                &self.rt_pipeline.hit_region,
+                &self.rt_pipeline.callable_region,
+                self.extent.width,
+                self.extent.height,
+                1,
+            );
+
+            // storage image GENERAL → TRANSFER_SRC
+            image_barrier(
+                &self.context.device,
+                cb,
+                self.storage_image.image,
+                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::TRANSFER,
+            );
+
+            // swapchain image UNDEFINED → TRANSFER_DST
+            let sc_image = self.swapchain.images[image_index as usize];
+            image_barrier(
+                &self.context.device,
+                cb,
+                sc_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            );
+
+            // Blit storage → swapchain.
+            let blit = vk::ImageBlit {
+                src_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                src_offsets: [
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: self.extent.width as i32,
+                        y: self.extent.height as i32,
+                        z: 1,
+                    },
+                ],
+                dst_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                dst_offsets: [
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D {
+                        x: self.swapchain.extent.width as i32,
+                        y: self.swapchain.extent.height as i32,
+                        z: 1,
+                    },
+                ],
+            };
+            self.context.device.cmd_blit_image(
+                cb,
+                self.storage_image.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                sc_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                std::slice::from_ref(&blit),
+                vk::Filter::LINEAR,
+            );
+
+            // swapchain image TRANSFER_DST → PRESENT_SRC
+            image_barrier(
+                &self.context.device,
+                cb,
+                sc_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::empty(),
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            );
+
+            // storage image back to GENERAL for next frame
+            image_barrier(
+                &self.context.device,
+                cb,
+                self.storage_image.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            );
+
             self.context.device.end_command_buffer(cb)?;
         }
 
         let render_finished = self.swapchain.render_finished[image_index as usize];
         let wait_semaphores = [frame.image_available];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = [cb];
+        let wait_stages = [vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR];
         let signal_semaphores = [render_finished];
 
         unsafe {
@@ -353,19 +574,20 @@ impl Renderer {
                 &[vk::SubmitInfo::default()
                     .wait_semaphores(&wait_semaphores)
                     .wait_dst_stage_mask(&wait_stages)
-                    .command_buffers(&command_buffers)
+                    .command_buffers(&[cb])
                     .signal_semaphores(&signal_semaphores)],
                 frame.in_flight,
             )?;
         }
 
         match unsafe {
-            self.swapchain
-                .loader
-                .queue_present(self.context.graphics_queue, &vk::PresentInfoKHR::default()
+            self.swapchain.loader.queue_present(
+                self.context.graphics_queue,
+                &vk::PresentInfoKHR::default()
                     .wait_semaphores(&signal_semaphores)
                     .swapchains(&[self.swapchain.handle])
-                    .image_indices(&[image_index]))
+                    .image_indices(&[image_index]),
+            )
         } {
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.swapchain_dirty = true,
             Ok(false) => {}
@@ -379,28 +601,79 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        unsafe {
-            self.context.device.device_wait_idle().ok();
+        unsafe { self.context.device.device_wait_idle().ok() };
 
-            for frame in &self.frames {
+        for frame in &self.frames {
+            unsafe {
                 self.context.device.destroy_semaphore(frame.image_available, None);
                 self.context.device.destroy_fence(frame.in_flight, None);
                 self.context.device.destroy_command_pool(frame.command_pool, None);
             }
-
-            for ubo in &self.ubo_buffers {
+        }
+        for ubo in &self.scene_ubo_buffers {
+            unsafe {
                 self.context.device.unmap_memory(ubo.memory);
                 self.context.device.destroy_buffer(ubo.buffer, None);
                 self.context.device.free_memory(ubo.memory, None);
             }
-            self.context.device.destroy_descriptor_pool(self.descriptor_pool, None);
-            self.context.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-
-            self.mesh.destroy(&self.context.device);
-            self.swapchain.destroy(&self.context);
-            self.context.device.destroy_pipeline(self.pipeline.handle, None);
-            self.context.device.destroy_pipeline_layout(self.pipeline.layout, None);
-            self.context.device.destroy_render_pass(self.render_pass, None);
         }
+        unsafe {
+            self.context.device.destroy_descriptor_pool(self.descriptor_pool, None);
+        }
+        self.rt_pipeline.destroy(&self.context.device);
+        self.tlas.destroy(&self.context);
+        self.blas.destroy(&self.context);
+        self.mesh.destroy(&self.context.device);
+        unsafe {
+            self.context.device.destroy_image_view(self.storage_image.view, None);
+            self.context.device.destroy_image(self.storage_image.image, None);
+            self.context.device.free_memory(self.storage_image.memory, None);
+        }
+        self.swapchain.destroy(&self.context);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Image layout transition helper
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn image_barrier(
+    device: &ash::Device,
+    cb: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_access: vk::AccessFlags,
+    dst_access: vk::AccessFlags,
+    src_stage: vk::PipelineStageFlags,
+    dst_stage: vk::PipelineStageFlags,
+) {
+    let barrier = vk::ImageMemoryBarrier::default()
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .src_access_mask(src_access)
+        .dst_access_mask(dst_access);
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cb,
+            src_stage,
+            dst_stage,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            std::slice::from_ref(&barrier),
+        );
     }
 }
