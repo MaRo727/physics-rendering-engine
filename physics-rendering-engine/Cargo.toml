@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 # Vulkan bindings
 ash = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
 
 # Windowing and input
 winit = "0.30"
@@ -23,5 +25,3 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 
-# Software framebuffer (for testing window visibility before Vulkan)
-softbuffer = "0.4"
