@@ -15,6 +15,7 @@ pub struct VulkanContext {
     pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,
     pub physical_device: vk::PhysicalDevice,
+    pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub device: Device,
     pub graphics_queue: vk::Queue,
     pub graphics_queue_family: u32,
@@ -54,12 +55,16 @@ impl VulkanContext {
         let graphics_queue =
             unsafe { device.get_device_queue(graphics_queue_family, 0) };
 
+        let memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
         Ok(Self {
             entry,
             instance,
             surface_loader,
             surface,
             physical_device,
+            memory_properties,
             device,
             graphics_queue,
             graphics_queue_family,

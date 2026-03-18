@@ -1,14 +1,43 @@
 use anyhow::{Context, Result};
-use ash::{vk, Device};
+use ash::{vk, Device, Instance};
+
+use super::mesh::Vertex;
 
 pub struct Pipeline {
     pub handle: vk::Pipeline,
     pub layout: vk::PipelineLayout,
 }
 
-/// Create a render pass with a single color attachment that clears on load
-/// and transitions the image to PRESENT_SRC_KHR on completion.
-pub fn create_render_pass(device: &Device, color_format: vk::Format) -> Result<vk::RenderPass> {
+// ---------------------------------------------------------------------------
+// Depth format
+// ---------------------------------------------------------------------------
+
+pub fn find_depth_format(instance: &Instance, physical_device: vk::PhysicalDevice) -> vk::Format {
+    [
+        vk::Format::D32_SFLOAT,
+        vk::Format::D32_SFLOAT_S8_UINT,
+        vk::Format::D24_UNORM_S8_UINT,
+    ]
+    .into_iter()
+    .find(|&fmt| {
+        let props =
+            unsafe { instance.get_physical_device_format_properties(physical_device, fmt) };
+        props
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+    })
+    .expect("No supported depth format found")
+}
+
+// ---------------------------------------------------------------------------
+// Render pass
+// ---------------------------------------------------------------------------
+
+pub fn create_render_pass(
+    device: &Device,
+    color_format: vk::Format,
+    depth_format: vk::Format,
+) -> Result<vk::RenderPass> {
     let color_attachment = vk::AttachmentDescription::default()
         .format(color_format)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -19,43 +48,70 @@ pub fn create_render_pass(device: &Device, color_format: vk::Format) -> Result<v
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
 
+    let depth_attachment = vk::AttachmentDescription::default()
+        .format(depth_format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
     let color_ref = vk::AttachmentReference::default()
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
+    let depth_ref = vk::AttachmentReference::default()
+        .attachment(1)
+        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
     let subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(std::slice::from_ref(&color_ref));
+        .color_attachments(std::slice::from_ref(&color_ref))
+        .depth_stencil_attachment(&depth_ref);
 
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .src_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
         .src_access_mask(vk::AccessFlags::empty())
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        .dst_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
+        .dst_access_mask(
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        );
 
-    let attachments = [color_attachment];
+    let attachments = [color_attachment, depth_attachment];
     let subpasses = [subpass];
     let dependencies = [dependency];
 
-    let create_info = vk::RenderPassCreateInfo::default()
-        .attachments(&attachments)
-        .subpasses(&subpasses)
-        .dependencies(&dependencies);
-
-    unsafe { device.create_render_pass(&create_info, None) }
-        .context("Failed to create render pass")
+    unsafe {
+        device.create_render_pass(
+            &vk::RenderPassCreateInfo::default()
+                .attachments(&attachments)
+                .subpasses(&subpasses)
+                .dependencies(&dependencies),
+            None,
+        )
+    }
+    .context("Failed to create render pass")
 }
 
-/// Create the graphics pipeline for mesh rendering.
-/// Phase 4: no vertex input (hardcoded triangle in vertex shader).
-/// Phase 5 will add vertex buffer bindings and attribute descriptions.
+// ---------------------------------------------------------------------------
+// Graphics pipeline
+// ---------------------------------------------------------------------------
+
 pub fn create_graphics_pipeline(
     device: &Device,
     render_pass: vk::RenderPass,
 ) -> Result<Pipeline> {
-    // Load compiled SPIR-V embedded at build time.
     let vert_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.vert.spv"));
     let frag_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.frag.spv"));
 
@@ -92,13 +148,16 @@ pub fn create_graphics_pipeline(
             .name(entry),
     ];
 
-    // No vertex buffer — triangle is hardcoded in the shader.
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+    let binding = Vertex::binding_description();
+    let attributes = Vertex::attribute_descriptions();
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(std::slice::from_ref(&binding))
+        .vertex_attribute_descriptions(&attributes);
+
     let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
         .primitive_restart_enable(false);
 
-    // Viewport and scissor are set dynamically per draw call.
     let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -109,12 +168,19 @@ pub fn create_graphics_pipeline(
 
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
+        .cull_mode(vk::CullModeFlags::BACK)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0);
 
     let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
 
     let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -125,10 +191,7 @@ pub fn create_graphics_pipeline(
         .attachments(std::slice::from_ref(&color_blend_attachment));
 
     let layout = unsafe {
-        device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::default(),
-            None,
-        )
+        device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)
     }
     .context("Failed to create pipeline layout")?;
 
@@ -139,6 +202,7 @@ pub fn create_graphics_pipeline(
         .viewport_state(&viewport_state)
         .rasterization_state(&rasterizer)
         .multisample_state(&multisampling)
+        .depth_stencil_state(&depth_stencil)
         .color_blend_state(&color_blending)
         .dynamic_state(&dynamic_state)
         .layout(layout)
@@ -155,7 +219,6 @@ pub fn create_graphics_pipeline(
     .map_err(|(_, e)| e)
     .context("Failed to create graphics pipeline")?[0];
 
-    // Shader modules are baked into the pipeline; safe to destroy now.
     unsafe {
         device.destroy_shader_module(vert_module, None);
         device.destroy_shader_module(frag_module, None);

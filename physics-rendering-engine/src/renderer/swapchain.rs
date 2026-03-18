@@ -9,10 +9,13 @@ pub struct Swapchain {
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
     pub framebuffers: Vec<vk::Framebuffer>,
-    /// One semaphore per swapchain image. Indexed by the image_index returned
-    /// by acquire_next_image. This avoids semaphore reuse while the
-    /// presentation engine still holds the semaphore from a previous present.
+    /// One semaphore per swapchain image — see Phase 3 comment in mod.rs.
     pub render_finished: Vec<vk::Semaphore>,
+    // Depth buffer — one shared image for all swapchain images (only one
+    // frame renders at a time per the in-flight fence).
+    depth_image: vk::Image,
+    depth_memory: vk::DeviceMemory,
+    depth_view: vk::ImageView,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
 }
@@ -21,22 +24,22 @@ impl Swapchain {
     pub fn new(
         context: &VulkanContext,
         render_pass: vk::RenderPass,
+        depth_format: vk::Format,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        create_swapchain(context, render_pass, vk::SwapchainKHR::null(), width, height)
+        create_swapchain(context, render_pass, depth_format, vk::SwapchainKHR::null(), width, height)
     }
 
-    /// Destroy the old swapchain resources and create fresh ones at the new size.
     pub fn recreate(
         &mut self,
         context: &VulkanContext,
         render_pass: vk::RenderPass,
+        depth_format: vk::Format,
         width: u32,
         height: u32,
     ) -> Result<()> {
         let old_handle = self.handle;
-
         unsafe {
             for &sem in &self.render_finished {
                 context.device.destroy_semaphore(sem, None);
@@ -44,15 +47,14 @@ impl Swapchain {
             for &fb in &self.framebuffers {
                 context.device.destroy_framebuffer(fb, None);
             }
+            context.device.destroy_image_view(self.depth_view, None);
+            context.device.destroy_image(self.depth_image, None);
+            context.device.free_memory(self.depth_memory, None);
             for &iv in &self.image_views {
                 context.device.destroy_image_view(iv, None);
             }
         }
-
-        // Pass old_handle as a hint — driver can reuse some memory.
-        // We replace self before destroying old_handle so the new loader
-        // (which shares the same device function pointers) can destroy it.
-        let new = create_swapchain(context, render_pass, old_handle, width, height)?;
+        let new = create_swapchain(context, render_pass, depth_format, old_handle, width, height)?;
         unsafe { self.loader.destroy_swapchain(old_handle, None) };
         *self = new;
         Ok(())
@@ -66,6 +68,9 @@ impl Swapchain {
             for &fb in &self.framebuffers {
                 context.device.destroy_framebuffer(fb, None);
             }
+            context.device.destroy_image_view(self.depth_view, None);
+            context.device.destroy_image(self.depth_image, None);
+            context.device.free_memory(self.depth_memory, None);
             for &iv in &self.image_views {
                 context.device.destroy_image_view(iv, None);
             }
@@ -75,8 +80,7 @@ impl Swapchain {
 }
 
 // ---------------------------------------------------------------------------
-// Surface format helpers (pub so Renderer can query the format before
-// creating the render pass)
+// Surface format query
 // ---------------------------------------------------------------------------
 
 pub fn query_surface_format(context: &VulkanContext) -> Result<vk::SurfaceFormatKHR> {
@@ -86,7 +90,6 @@ pub fn query_surface_format(context: &VulkanContext) -> Result<vk::SurfaceFormat
             .get_physical_device_surface_formats(context.physical_device, context.surface)
     }
     .context("Failed to query surface formats")?;
-
     Ok(choose_format(&formats))
 }
 
@@ -97,6 +100,7 @@ pub fn query_surface_format(context: &VulkanContext) -> Result<vk::SurfaceFormat
 fn create_swapchain(
     context: &VulkanContext,
     render_pass: vk::RenderPass,
+    depth_format: vk::Format,
     old_swapchain: vk::SwapchainKHR,
     width: u32,
     height: u32,
@@ -150,8 +154,7 @@ fn create_swapchain(
         .clipped(true)
         .old_swapchain(old_swapchain);
 
-    let loader =
-        ash::khr::swapchain::Device::new(&context.instance, &context.device);
+    let loader = ash::khr::swapchain::Device::new(&context.instance, &context.device);
     let handle = unsafe { loader.create_swapchain(&create_info, None) }
         .context("Failed to create swapchain")?;
 
@@ -159,8 +162,12 @@ fn create_swapchain(
         unsafe { loader.get_swapchain_images(handle) }.context("Failed to get swapchain images")?;
 
     let image_views = create_image_views(&context.device, &images, format.format)?;
+
+    let (depth_image, depth_memory, depth_view) =
+        create_depth_resources(context, depth_format, extent)?;
+
     let framebuffers =
-        create_framebuffers(&context.device, &image_views, render_pass, extent)?;
+        create_framebuffers(&context.device, &image_views, depth_view, render_pass, extent)?;
 
     let sem_info = vk::SemaphoreCreateInfo::default();
     let render_finished = (0..images.len())
@@ -185,9 +192,86 @@ fn create_swapchain(
         image_views,
         framebuffers,
         render_finished,
+        depth_image,
+        depth_memory,
+        depth_view,
         format: format.format,
         extent,
     })
+}
+
+fn create_depth_resources(
+    context: &VulkanContext,
+    depth_format: vk::Format,
+    extent: vk::Extent2D,
+) -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+    let image = unsafe {
+        context.device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(depth_format)
+                .extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )
+    }
+    .context("Failed to create depth image")?;
+
+    let reqs = unsafe { context.device.get_image_memory_requirements(image) };
+    let memory_type = find_memory_type(
+        &context.memory_properties,
+        reqs.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .context("No suitable memory type for depth image")?;
+
+    let memory = unsafe {
+        context.device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type),
+            None,
+        )
+    }
+    .context("Failed to allocate depth image memory")?;
+
+    unsafe { context.device.bind_image_memory(image, memory, 0) }
+        .context("Failed to bind depth image memory")?;
+
+    let aspect = if depth_format == vk::Format::D32_SFLOAT {
+        vk::ImageAspectFlags::DEPTH
+    } else {
+        vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+    };
+
+    let view = unsafe {
+        context.device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(depth_format)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: aspect,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                }),
+            None,
+        )
+    }
+    .context("Failed to create depth image view")?;
+
+    Ok((image, memory, view))
 }
 
 fn choose_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
@@ -209,12 +293,7 @@ fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
     }
 }
 
-fn choose_extent(
-    capabilities: &vk::SurfaceCapabilitiesKHR,
-    width: u32,
-    height: u32,
-) -> vk::Extent2D {
-    // u32::MAX signals "pick whatever size the window is"
+fn choose_extent(capabilities: &vk::SurfaceCapabilitiesKHR, width: u32, height: u32) -> vk::Extent2D {
     if capabilities.current_extent.width != u32::MAX {
         capabilities.current_extent
     } else {
@@ -260,13 +339,14 @@ fn create_image_views(
 fn create_framebuffers(
     device: &ash::Device,
     image_views: &[vk::ImageView],
+    depth_view: vk::ImageView,
     render_pass: vk::RenderPass,
     extent: vk::Extent2D,
 ) -> Result<Vec<vk::Framebuffer>> {
     image_views
         .iter()
-        .map(|&view| {
-            let attachments = [view];
+        .map(|&color_view| {
+            let attachments = [color_view, depth_view];
             let create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)
@@ -277,4 +357,15 @@ fn create_framebuffers(
                 .context("Failed to create framebuffer")
         })
         .collect()
+}
+
+fn find_memory_type(
+    props: &vk::PhysicalDeviceMemoryProperties,
+    type_filter: u32,
+    required: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    (0..props.memory_type_count).find(|&i| {
+        type_filter & (1 << i) != 0
+            && props.memory_types[i as usize].property_flags.contains(required)
+    })
 }
