@@ -16,6 +16,9 @@ rapier3d = "0.22"
 # Math
 glam = "0.29"
 
+# Error handling
+anyhow = "1"
+
 # Logging
 log = "0.4"
 env_logger = "0.11"
