@@ -112,7 +112,7 @@ pub fn get_device_address(device: &ash::Device, buffer: vk::Buffer) -> vk::Devic
 /// 24 vertices (4 per face) so each face carries a correct outward normal.
 /// All faces are gray; diffuse lighting in the fragment shader provides shading.
 pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
-    let g = Vec3::splat(0.75);
+    let g = Vec3::new(0.85, 0.65, 0.45);
 
     #[rustfmt::skip]
     let vertices = vec![

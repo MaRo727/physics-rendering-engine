@@ -56,7 +56,12 @@ void main() {
         1     // payload location
     );
 
-    float ambient = 0.2;
-    float diffuse = max(0.0, dot(normal, L)) * shadowed;
-    payload = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + diffuse);
+    float NdotL = dot(normal, L);
+    float ambient = 0.15;
+    // Hemisphere fill: faces turned toward the light get a subtle boost
+    // even when in shadow, so shadowed lit surfaces look different from
+    // surfaces facing away from the light.
+    float fill = max(0.0, NdotL) * 0.15;
+    float diffuse = max(0.0, NdotL) * shadowed;
+    payload = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 }
