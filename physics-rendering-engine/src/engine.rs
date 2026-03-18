@@ -14,6 +14,7 @@ const MOUSE_SENSITIVITY: f32 = 0.002;
 // Render-object indices.
 const CUBE_IDX: usize = 0;
 const PLAYER_IDX: usize = 2;
+const CUBE2_IDX: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -63,6 +64,7 @@ pub struct Engine {
     pub config: EngineConfig,
     physics: PhysicsWorld,
     cube: PhysicsBody,
+    cube2: PhysicsBody,
     player: PhysicsBody,
     renderer: Renderer,
     render_objects: Vec<RenderObject>,
@@ -92,7 +94,14 @@ impl Engine {
         PhysicsBody::new_static_box(
             &mut physics,
             Vec3::new(0.0, -0.5, 0.0),
-            Vec3::new(5.0, 0.5, 5.0),
+            Vec3::new(15.0, 0.5, 15.0),
+        );
+
+        // Second falling cube — 3×3×3, offset so it doesn't land on the first.
+        let cube2 = PhysicsBody::new_dynamic_box(
+            &mut physics,
+            Vec3::new(3.0, 8.0, 0.0),
+            Vec3::new(1.5, 1.5, 1.5),
         );
 
         // Player — tall box on the floor, 4 units back from centre.
@@ -104,7 +113,7 @@ impl Engine {
         );
 
         let floor_transform = Mat4::from_scale_rotation_translation(
-            Vec3::new(10.0, 1.0, 10.0),
+            Vec3::new(30.0, 1.0, 30.0),
             Quat::IDENTITY,
             Vec3::new(0.0, -0.5, 0.0),
         );
@@ -113,6 +122,7 @@ impl Engine {
             RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE_IDX
             RenderObject { mesh_id: MeshId(0), transform: floor_transform }, // FLOOR_IDX
             RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // PLAYER_IDX
+            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE2_IDX
         ];
 
         // Start facing toward the falling cube (-Z direction).
@@ -122,6 +132,7 @@ impl Engine {
             config,
             physics,
             cube,
+            cube2,
             player,
             renderer,
             render_objects,
@@ -163,6 +174,9 @@ impl Engine {
         // Extract render transforms.
         self.render_objects[CUBE_IDX].transform =
             self.physics.body_transform(self.cube.rigid_body);
+
+        self.render_objects[CUBE2_IDX].transform =
+            self.physics.body_transform(self.cube2.rigid_body) * Mat4::from_scale(Vec3::splat(3.0));
 
         let body_t = self.physics.body_transform(self.player.rigid_body);
         self.render_objects[PLAYER_IDX].transform =
