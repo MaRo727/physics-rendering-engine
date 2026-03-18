@@ -98,7 +98,7 @@ impl Engine {
         PhysicsBody::new_static_box(
             &mut physics,
             Vec3::new(0.0, -0.5, 0.0),
-            Vec3::new(15.0, 0.5, 15.0),
+            Vec3::new(45.0, 0.5, 45.0),
         );
 
         // Second falling cube — 3×3×3, offset so it doesn't land on the first.
@@ -117,7 +117,7 @@ impl Engine {
         );
 
         let floor_transform = Mat4::from_scale_rotation_translation(
-            Vec3::new(30.0, 1.0, 30.0),
+            Vec3::new(90.0, 1.0, 90.0),
             Quat::IDENTITY,
             Vec3::new(0.0, -0.5, 0.0),
         );
@@ -195,17 +195,18 @@ impl Engine {
     pub fn render(&mut self) -> Result<()> {
         // Skip the player mesh — the camera is inside it, and its inner faces
         // would occlude the entire scene.
-        let transforms: Vec<Mat4> = self.render_objects.iter()
+        let (transforms, instance_ids): (Vec<Mat4>, Vec<u32>) = self.render_objects.iter()
             .enumerate()
             .filter(|(i, _)| *i != PLAYER_IDX)
-            .map(|(_, o)| o.transform)
-            .collect();
+            .map(|(i, o)| (o.transform, i as u32))
+            .unzip();
 
         let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
         let (view, proj) = self.camera_matrices(aspect);
 
         self.renderer.draw_frame(
             &transforms,
+            &instance_ids,
             view,
             proj,
             Vec4::from((self.light_dir, 0.0)),

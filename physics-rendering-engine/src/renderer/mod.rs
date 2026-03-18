@@ -350,6 +350,7 @@ impl Renderer {
     pub fn draw_frame(
         &mut self,
         transforms: &[Mat4],
+        instance_ids: &[u32],
         view: Mat4,
         proj: Mat4,
         light_dir: Vec4,
@@ -422,10 +423,11 @@ impl Renderer {
         // Build TLAS instances.
         let instances: Vec<vk::AccelerationStructureInstanceKHR> = transforms
             .iter()
-            .map(|&t| {
+            .zip(instance_ids.iter())
+            .map(|(&t, &custom_index)| {
                 vk::AccelerationStructureInstanceKHR {
                     transform: mat4_to_transform(t),
-                    instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
+                    instance_custom_index_and_mask: vk::Packed24_8::new(custom_index, 0xFF),
                     instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                         0,
                         vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
