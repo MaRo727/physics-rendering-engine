@@ -3,16 +3,18 @@ use std::time::Instant;
 
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
     event_loop::ActiveEventLoop,
-    window::{Window, WindowId},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::engine::{Engine, EngineConfig};
+use crate::engine::{Engine, EngineConfig, InputState};
 
 pub struct App {
     engine: Option<Engine>,
     window: Option<Arc<Window>>,
+    input: InputState,
     last_update: Option<Instant>,
 }
 
@@ -21,6 +23,7 @@ impl Default for App {
         Self {
             engine: None,
             window: None,
+            input: InputState::default(),
             last_update: None,
         }
     }
@@ -38,6 +41,13 @@ impl ApplicationHandler for App {
                 .unwrap(),
         );
 
+        // Grab and hide the cursor for FPS-style mouse look.
+        window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+            .ok();
+        window.set_cursor_visible(false);
+
         let config = EngineConfig {
             window_width: 1280,
             window_height: 720,
@@ -51,16 +61,30 @@ impl ApplicationHandler for App {
         window.request_redraw();
     }
 
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            self.input.mouse_dx += dx as f32;
+            self.input.mouse_dy += dy as f32;
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.physical_key
-                    == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape)
-                {
-                    event_loop.exit();
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { physical_key, state, .. },
+                ..
+            } => {
+                let pressed = state == ElementState::Pressed;
+                match physical_key {
+                    PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    PhysicalKey::Code(KeyCode::KeyW) => self.input.forward  = pressed,
+                    PhysicalKey::Code(KeyCode::KeyS) => self.input.backward = pressed,
+                    PhysicalKey::Code(KeyCode::KeyA) => self.input.left     = pressed,
+                    PhysicalKey::Code(KeyCode::KeyD) => self.input.right    = pressed,
+                    _ => {}
                 }
             }
             WindowEvent::Resized(size) => {
@@ -76,9 +100,14 @@ impl ApplicationHandler for App {
                 self.last_update = Some(now);
 
                 if let Some(engine) = self.engine.as_mut() {
-                    engine.update(dt);
+                    engine.update(dt, &self.input);
                     engine.render().expect("Render error");
                 }
+
+                // Clear mouse delta — it has been consumed for this frame.
+                self.input.mouse_dx = 0.0;
+                self.input.mouse_dy = 0.0;
+
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }

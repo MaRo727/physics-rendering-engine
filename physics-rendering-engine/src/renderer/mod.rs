@@ -6,7 +6,7 @@ pub mod swapchain;
 
 use anyhow::{Context, Result};
 use ash::vk;
-use glam::{Mat4, Vec3, Vec4};
+use glam::Mat4;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -51,16 +51,6 @@ fn create_ubo_buffer(context: &VulkanContext) -> Result<UboBuffer> {
     Ok(UboBuffer { buffer, memory, mapped })
 }
 
-/// Right-handed perspective projection suitable for Vulkan (depth [0,1], Y flipped).
-fn perspective_vk(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
-    let f = 1.0 / (fov_y * 0.5).tan();
-    Mat4::from_cols(
-        Vec4::new(f / aspect, 0.0, 0.0, 0.0),
-        Vec4::new(0.0, -f, 0.0, 0.0), // negative Y flips NDC for Vulkan
-        Vec4::new(0.0, 0.0, far / (near - far), -1.0),
-        Vec4::new(0.0, 0.0, far * near / (near - far), 0.0),
-    )
-}
 
 // ---------------------------------------------------------------------------
 // Renderer
@@ -190,7 +180,7 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
-    pub fn draw_frame(&mut self, transforms: &[Mat4]) -> Result<()> {
+    pub fn draw_frame(&mut self, transforms: &[Mat4], view: Mat4, proj: Mat4) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
         }
@@ -207,14 +197,7 @@ impl Renderer {
             self.swapchain_dirty = false;
         }
 
-        // Update this frame's UBO with the current camera matrices.
-        let aspect = self.surface_width as f32 / self.surface_height as f32;
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 8.0, 15.0),
-            Vec3::new(0.0, 2.0, 0.0),
-            Vec3::Y,
-        );
-        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 100.0);
+        // Write camera matrices into this frame's UBO.
         unsafe {
             *self.ubo_buffers[self.current_frame].mapped = CameraUBO { view, proj };
         }

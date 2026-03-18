@@ -62,4 +62,19 @@ impl PhysicsWorld {
             Vec3::new(t.x, t.y, t.z),
         )
     }
+
+    pub fn body_position(&self, handle: RigidBodyHandle) -> Vec3 {
+        let t = self.rigid_body_set[handle].position().translation.vector;
+        Vec3::new(t.x, t.y, t.z)
+    }
+
+    pub fn body_linvel_y(&self, handle: RigidBodyHandle) -> f32 {
+        self.rigid_body_set[handle].linvel().y
+    }
+
+    pub fn set_body_linvel(&mut self, handle: RigidBodyHandle, vel: Vec3) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            body.set_linvel(vector![vel.x, vel.y, vel.z], true);
+        }
+    }
 }
