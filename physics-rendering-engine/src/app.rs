@@ -84,6 +84,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyS) => self.input.backward = pressed,
                     PhysicalKey::Code(KeyCode::KeyA) => self.input.left     = pressed,
                     PhysicalKey::Code(KeyCode::KeyD) => self.input.right    = pressed,
+                    PhysicalKey::Code(KeyCode::Space) => self.input.jump   = pressed,
                     _ => {}
                 }
             }

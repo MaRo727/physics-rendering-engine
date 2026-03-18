@@ -9,6 +9,7 @@ use crate::physics::world::PhysicsWorld;
 use crate::renderer::Renderer;
 
 const PLAYER_SPEED: f32 = 5.0;
+const JUMP_VELOCITY: f32 = 6.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
 
 // Render-object indices.
@@ -25,6 +26,7 @@ pub struct InputState {
     pub backward: bool,
     pub left: bool,
     pub right: bool,
+    pub jump: bool,
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -36,6 +38,7 @@ impl Default for InputState {
             backward: false,
             left: false,
             right: false,
+            jump: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }
@@ -165,10 +168,13 @@ impl Engine {
         }
 
         // Set player XZ velocity; preserve Y so gravity still applies.
-        let cur_vy = self.physics.body_linvel_y(self.player.rigid_body);
+        let mut vy = self.physics.body_linvel_y(self.player.rigid_body);
+        if input.jump && self.physics.is_on_ground(self.player.collider) {
+            vy = JUMP_VELOCITY;
+        }
         self.physics.set_body_linvel(
             self.player.rigid_body,
-            Vec3::new(move_vel.x, cur_vy, move_vel.z),
+            Vec3::new(move_vel.x, vy, move_vel.z),
         );
 
         self.physics.step(dt);

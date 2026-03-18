@@ -77,4 +77,26 @@ impl PhysicsWorld {
             body.set_linvel(vector![vel.x, vel.y, vel.z], true);
         }
     }
+
+    /// Returns true if the collider has a contact with a surface whose normal
+    /// points upward (Y > 0.7), i.e. the body is standing on something.
+    pub fn is_on_ground(&self, collider: ColliderHandle) -> bool {
+        for pair in self.narrow_phase.contact_pairs_with(collider) {
+            for manifold in &pair.manifolds {
+                if manifold.points.iter().any(|pt| pt.dist <= 0.01) {
+                    // The normal points from shape 1 toward shape 2.
+                    // Figure out which side is ours to get the correct sign.
+                    let normal_y = if pair.collider1 == collider {
+                        -manifold.local_n1.y
+                    } else {
+                        -manifold.local_n2.y
+                    };
+                    if normal_y > 0.7 {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
 }
