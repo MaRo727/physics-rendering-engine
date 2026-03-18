@@ -7,7 +7,13 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 #[cfg(debug_assertions)]
 const VALIDATION_LAYERS: &[*const c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 
-const DEVICE_EXTENSIONS: &[*const c_char] = &[ash::khr::swapchain::NAME.as_ptr()];
+const DEVICE_EXTENSIONS: &[*const c_char] = &[
+    ash::khr::swapchain::NAME.as_ptr(),
+    ash::khr::acceleration_structure::NAME.as_ptr(),
+    ash::khr::ray_tracing_pipeline::NAME.as_ptr(),
+    ash::khr::deferred_host_operations::NAME.as_ptr(),
+    ash::khr::buffer_device_address::NAME.as_ptr(),
+];
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -19,6 +25,9 @@ pub struct VulkanContext {
     pub device: Device,
     pub graphics_queue: vk::Queue,
     pub graphics_queue_family: u32,
+    pub accel_loader: ash::khr::acceleration_structure::Device,
+    pub rt_pipeline_loader: ash::khr::ray_tracing_pipeline::Device,
+    pub rt_props: vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static>,
     #[cfg(debug_assertions)]
     debug_utils_loader: ash::ext::debug_utils::Instance,
     #[cfg(debug_assertions)]
@@ -58,6 +67,11 @@ impl VulkanContext {
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
+        let accel_loader = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        let rt_pipeline_loader = ash::khr::ray_tracing_pipeline::Device::new(&instance, &device);
+
+        let rt_props = query_rt_props(&instance, physical_device);
+
         Ok(Self {
             entry,
             instance,
@@ -68,6 +82,9 @@ impl VulkanContext {
             device,
             graphics_queue,
             graphics_queue_family,
+            accel_loader,
+            rt_pipeline_loader,
+            rt_props,
             #[cfg(debug_assertions)]
             debug_utils_loader,
             #[cfg(debug_assertions)]
@@ -88,6 +105,17 @@ impl Drop for VulkanContext {
             self.instance.destroy_instance(None);
         }
     }
+}
+
+fn query_rt_props(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::PhysicalDeviceRayTracingPipelinePropertiesKHR<'static> {
+    let mut rt_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+    let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut rt_props);
+    unsafe { instance.get_physical_device_properties2(physical_device, &mut props2) };
+    // Detach the lifetime from the local props2 — rt_props only contains POD fields.
+    unsafe { std::mem::transmute(rt_props) }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,15 +326,19 @@ fn create_logical_device(
         .queue_family_index(queue_family)
         .queue_priorities(std::slice::from_ref(&queue_priority));
 
-    let features = vk::PhysicalDeviceFeatures::default();
+    let mut feat_rt_pipeline = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
+        .ray_tracing_pipeline(true);
+    let mut feat_accel = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+        .acceleration_structure(true);
+    let mut feat_bda = vk::PhysicalDeviceBufferDeviceAddressFeatures::default()
+        .buffer_device_address(true);
 
     let create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(std::slice::from_ref(&queue_create_info))
         .enabled_extension_names(DEVICE_EXTENSIONS)
-        .enabled_features(&features);
-
-    // Note: device-level layers were deprecated in Vulkan 1.0; validation is
-    // controlled entirely by the instance layer set up in create_instance().
+        .push_next(&mut feat_rt_pipeline)
+        .push_next(&mut feat_accel)
+        .push_next(&mut feat_bda);
 
     let device =
         unsafe { instance.create_device(physical_device, &create_info, None) }

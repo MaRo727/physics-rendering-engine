@@ -55,20 +55,25 @@ pub struct Mesh {
     pub index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     pub index_count: u32,
+    pub vertex_count: u32,
 }
 
 impl Mesh {
     pub fn new(context: &VulkanContext, vertices: &[Vertex], indices: &[u32]) -> Result<Self> {
+        let rt_flags = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
+
         let (vertex_buffer, vertex_memory) = upload_via_staging(
             context,
             vertices,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::BufferUsageFlags::VERTEX_BUFFER | rt_flags,
         )?;
 
         let (index_buffer, index_memory) = upload_via_staging(
             context,
             indices,
-            vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::BufferUsageFlags::INDEX_BUFFER | rt_flags,
         )?;
 
         Ok(Self {
@@ -77,6 +82,7 @@ impl Mesh {
             index_buffer,
             index_memory,
             index_count: indices.len() as u32,
+            vertex_count: vertices.len() as u32,
         })
     }
 
@@ -87,6 +93,14 @@ impl Mesh {
             device.destroy_buffer(self.index_buffer, None);
             device.free_memory(self.index_memory, None);
         }
+    }
+}
+
+pub fn get_device_address(device: &ash::Device, buffer: vk::Buffer) -> vk::DeviceAddress {
+    unsafe {
+        device.get_buffer_device_address(
+            &vk::BufferDeviceAddressInfo::default().buffer(buffer),
+        )
     }
 }
 
@@ -150,7 +164,7 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
 // ---------------------------------------------------------------------------
 
 /// Upload `data` to a DEVICE_LOCAL buffer via a short-lived staging buffer.
-fn upload_via_staging<T: Copy>(
+pub fn upload_via_staging<T: Copy>(
     context: &VulkanContext,
     data: &[T],
     dst_usage: vk::BufferUsageFlags,
@@ -164,6 +178,7 @@ fn upload_via_staging<T: Copy>(
         size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
     )?;
 
     unsafe {
@@ -175,13 +190,15 @@ fn upload_via_staging<T: Copy>(
         context.device.unmap_memory(staging_mem);
     }
 
-    // Device-local destination buffer.
+    // Device-local destination buffer — needs DEVICE_ADDRESS flag if dst_usage includes it.
+    let needs_device_address = dst_usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
     let (dst, dst_mem) = create_buffer(
         &context.device,
         &context.memory_properties,
         size,
         dst_usage | vk::BufferUsageFlags::TRANSFER_DST,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        needs_device_address,
     )?;
 
     // One-time command buffer to copy staging → device-local.
@@ -248,6 +265,7 @@ pub fn create_buffer(
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
     required_flags: vk::MemoryPropertyFlags,
+    device_address: bool,
 ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
     let buffer = unsafe {
         device.create_buffer(
@@ -264,13 +282,17 @@ pub fn create_buffer(
     let memory_type = find_memory_type(mem_props, reqs.memory_type_bits, required_flags)
         .context("No suitable memory type for buffer")?;
 
-    let memory = unsafe {
-        device.allocate_memory(
-            &vk::MemoryAllocateInfo::default()
-                .allocation_size(reqs.size)
-                .memory_type_index(memory_type),
-            None,
-        )
+    let mut alloc_flags_info = vk::MemoryAllocateFlagsInfo::default()
+        .flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+
+    let alloc_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(reqs.size)
+        .memory_type_index(memory_type);
+
+    let memory = if device_address {
+        unsafe { device.allocate_memory(&alloc_info.push_next(&mut alloc_flags_info), None) }
+    } else {
+        unsafe { device.allocate_memory(&alloc_info, None) }
     }
     .context("Failed to allocate buffer memory")?;
 
@@ -279,7 +301,7 @@ pub fn create_buffer(
     Ok((buffer, memory))
 }
 
-fn find_memory_type(
+pub fn find_memory_type(
     props: &vk::PhysicalDeviceMemoryProperties,
     type_filter: u32,
     required: vk::MemoryPropertyFlags,

@@ -72,6 +72,7 @@ pub struct Engine {
     pitch: f32, // camera vertical rotation (radians)
     surface_width: u32,
     surface_height: u32,
+    light_dir: Vec3,
 }
 
 impl Engine {
@@ -140,6 +141,7 @@ impl Engine {
             pitch: 0.0,
             surface_width,
             surface_height,
+            light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
         })
     }
 
@@ -185,13 +187,24 @@ impl Engine {
     }
 
     pub fn render(&mut self) -> Result<()> {
-        let transforms: Vec<Mat4> =
-            self.render_objects.iter().map(|o| o.transform).collect();
+        // Skip the player mesh — the camera is inside it, and its inner faces
+        // would occlude the entire scene.
+        let transforms: Vec<Mat4> = self.render_objects.iter()
+            .enumerate()
+            .filter(|(i, _)| *i != PLAYER_IDX)
+            .map(|(_, o)| o.transform)
+            .collect();
 
         let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
         let (view, proj) = self.camera_matrices(aspect);
 
-        self.renderer.draw_frame(&transforms, view, proj)
+        self.renderer.draw_frame(
+            &transforms,
+            view,
+            proj,
+            Vec4::from((self.light_dir, 0.0)),
+            Vec4::new(1.0, 0.95, 0.9, 1.0),
+        )
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
