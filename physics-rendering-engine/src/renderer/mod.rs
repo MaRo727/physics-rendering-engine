@@ -6,6 +6,7 @@ pub mod swapchain;
 
 use anyhow::Result;
 use ash::vk;
+use glam::Mat4;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -83,7 +84,7 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
-    pub fn draw_frame(&mut self) -> Result<()> {
+    pub fn draw_frame(&mut self, transforms: &[Mat4]) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
         }
@@ -210,9 +211,22 @@ impl Renderer {
                 0,
                 vk::IndexType::UINT32,
             );
-            self.context
-                .device
-                .cmd_draw_indexed(cb, self.mesh.index_count, 1, 0, 0, 0);
+            for transform in transforms {
+                let bytes: &[u8] = std::slice::from_raw_parts(
+                    transform as *const Mat4 as *const u8,
+                    std::mem::size_of::<Mat4>(),
+                );
+                self.context.device.cmd_push_constants(
+                    cb,
+                    self.pipeline.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytes,
+                );
+                self.context
+                    .device
+                    .cmd_draw_indexed(cb, self.mesh.index_count, 1, 0, 0, 0);
+            }
 
             self.context.device.cmd_end_render_pass(cb);
             self.context.device.end_command_buffer(cb)?;

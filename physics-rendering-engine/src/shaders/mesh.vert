@@ -6,17 +6,22 @@ layout(location = 2) in vec3 inColor;
 
 layout(location = 0) out vec3 fragColor;
 
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+} push;
+
 void main() {
-    // Hardcoded isometric preview rotation so the cube looks 3D without a
-    // camera UBO. Phase 7 replaces this with a proper MVP matrix.
-    const float cy = 0.707, sy = 0.707; // cos/sin(45 deg) — Y rotation
-    const float cx = 0.866, sx = 0.500; // cos/sin(30 deg) — X rotation
+    // Transform vertex to world space using the physics body's transform.
+    vec3 world = (push.model * vec4(inPosition, 1.0)).xyz;
 
-    vec3 p = inPosition;
-    p = vec3(cy * p.x + sy * p.z,  p.y,              -sy * p.x + cy * p.z); // rotate Y
-    p = vec3(p.x,                   cx * p.y - sx * p.z, sx * p.y + cx * p.z); // rotate X
+    // Fixed isometric "camera" — 45° Y rotation then 30° X rotation.
+    // Phase 7 replaces this with a proper view-projection matrix via UBO.
+    const float cy = 0.707, sy = 0.707; // cos/sin(45°)
+    const float cx = 0.866, sx = 0.500; // cos/sin(30°)
+    world = vec3(cy * world.x + sy * world.z,  world.y,                  -sy * world.x + cy * world.z);
+    world = vec3(world.x,                       cx * world.y - sx * world.z, sx * world.y + cx * world.z);
 
-    // Scale and remap Z into Vulkan's [0, 1] NDC depth range.
-    gl_Position = vec4(p.xy * 1.2, p.z * 0.5 + 0.5, 1.0);
+    // Scale to NDC. Flip Y so +world.y is up on screen (Vulkan NDC y points down).
+    gl_Position = vec4(world.x * 0.3, -world.y * 0.3, world.z * 0.15 + 0.5, 1.0);
     fragColor = inColor;
 }

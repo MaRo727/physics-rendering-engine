@@ -190,8 +190,18 @@ pub fn create_graphics_pipeline(
         .logic_op_enable(false)
         .attachments(std::slice::from_ref(&color_blend_attachment));
 
+    // One Mat4 per object, uploaded as a push constant before each draw call.
+    let push_range = vk::PushConstantRange::default()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(0)
+        .size(std::mem::size_of::<glam::Mat4>() as u32);
+
     let layout = unsafe {
-        device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)
+        device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::default()
+                .push_constant_ranges(std::slice::from_ref(&push_range)),
+            None,
+        )
     }
     .context("Failed to create pipeline layout")?;
 
