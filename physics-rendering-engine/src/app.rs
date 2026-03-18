@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::{
     application::ApplicationHandler,
@@ -12,6 +13,7 @@ use crate::engine::{Engine, EngineConfig};
 pub struct App {
     engine: Option<Engine>,
     window: Option<Arc<Window>>,
+    last_update: Option<Instant>,
 }
 
 impl Default for App {
@@ -19,6 +21,7 @@ impl Default for App {
         Self {
             engine: None,
             window: None,
+            last_update: None,
         }
     }
 }
@@ -66,8 +69,14 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = self.last_update
+                    .map(|t| now.duration_since(t).as_secs_f32().min(0.05))
+                    .unwrap_or(1.0 / 60.0);
+                self.last_update = Some(now);
+
                 if let Some(engine) = self.engine.as_mut() {
-                    engine.update(1.0 / 60.0);
+                    engine.update(dt);
                     engine.render().expect("Render error");
                 }
                 if let Some(window) = self.window.as_ref() {

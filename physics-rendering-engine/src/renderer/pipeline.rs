@@ -105,12 +105,35 @@ pub fn create_render_pass(
 }
 
 // ---------------------------------------------------------------------------
+// Descriptor set layout
+// ---------------------------------------------------------------------------
+
+/// One UBO binding at set=0, binding=0 — holds view + proj matrices.
+pub fn create_descriptor_set_layout(device: &Device) -> Result<vk::DescriptorSetLayout> {
+    let binding = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+    unsafe {
+        device.create_descriptor_set_layout(
+            &vk::DescriptorSetLayoutCreateInfo::default()
+                .bindings(std::slice::from_ref(&binding)),
+            None,
+        )
+    }
+    .context("Failed to create descriptor set layout")
+}
+
+// ---------------------------------------------------------------------------
 // Graphics pipeline
 // ---------------------------------------------------------------------------
 
 pub fn create_graphics_pipeline(
     device: &Device,
     render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<Pipeline> {
     let vert_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.vert.spv"));
     let frag_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.frag.spv"));
@@ -199,6 +222,7 @@ pub fn create_graphics_pipeline(
     let layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(std::slice::from_ref(&descriptor_set_layout))
                 .push_constant_ranges(std::slice::from_ref(&push_range)),
             None,
         )

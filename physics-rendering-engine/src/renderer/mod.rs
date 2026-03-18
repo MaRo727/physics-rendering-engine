@@ -4,9 +4,9 @@ pub mod mesh;
 pub mod pipeline;
 pub mod swapchain;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
-use glam::Mat4;
+use glam::{Mat4, Vec3, Vec4};
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -15,6 +15,56 @@ use frame::{create_frame, FrameData, MAX_FRAMES_IN_FLIGHT};
 use mesh::Mesh;
 use pipeline::Pipeline;
 use swapchain::Swapchain;
+
+// ---------------------------------------------------------------------------
+// Camera UBO
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+struct CameraUBO {
+    view: Mat4,
+    proj: Mat4,
+}
+
+struct UboBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    mapped: *mut CameraUBO,
+}
+
+// SAFETY: only accessed from the main (render) thread.
+unsafe impl Send for UboBuffer {}
+
+fn create_ubo_buffer(context: &VulkanContext) -> Result<UboBuffer> {
+    let size = std::mem::size_of::<CameraUBO>() as vk::DeviceSize;
+    let (buffer, memory) = mesh::create_buffer(
+        &context.device,
+        &context.memory_properties,
+        size,
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )?;
+    let mapped = unsafe {
+        context.device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
+    }
+    .context("Failed to map UBO memory")? as *mut CameraUBO;
+    Ok(UboBuffer { buffer, memory, mapped })
+}
+
+/// Right-handed perspective projection suitable for Vulkan (depth [0,1], Y flipped).
+fn perspective_vk(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    let f = 1.0 / (fov_y * 0.5).tan();
+    Mat4::from_cols(
+        Vec4::new(f / aspect, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, -f, 0.0, 0.0), // negative Y flips NDC for Vulkan
+        Vec4::new(0.0, 0.0, far / (near - far), -1.0),
+        Vec4::new(0.0, 0.0, far * near / (near - far), 0.0),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
 
 pub struct Renderer {
     render_pass: vk::RenderPass,
@@ -27,6 +77,10 @@ pub struct Renderer {
     surface_width: u32,
     surface_height: u32,
     swapchain_dirty: bool,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    ubo_buffers: [UboBuffer; MAX_FRAMES_IN_FLIGHT],
     // context must be last — destroyed after all child Vulkan objects.
     context: VulkanContext,
 }
@@ -40,12 +94,18 @@ impl Renderer {
         let depth_format =
             pipeline::find_depth_format(&context.instance, context.physical_device);
 
+        let descriptor_set_layout = pipeline::create_descriptor_set_layout(&context.device)?;
+
         let render_pass = pipeline::create_render_pass(
             &context.device,
             surface_format.format,
             depth_format,
         )?;
-        let pipeline = pipeline::create_graphics_pipeline(&context.device, render_pass)?;
+        let pipeline = pipeline::create_graphics_pipeline(
+            &context.device,
+            render_pass,
+            descriptor_set_layout,
+        )?;
 
         let swapchain = Swapchain::new(
             &context,
@@ -63,6 +123,48 @@ impl Renderer {
         let (vertices, indices) = mesh::cube();
         let mesh = Mesh::new(&context, &vertices, &indices)?;
 
+        // One UBO buffer per frame-in-flight, persistently mapped.
+        let ubo0 = create_ubo_buffer(&context)?;
+        let ubo1 = create_ubo_buffer(&context)?;
+        let ubo_buffers = [ubo0, ubo1];
+
+        // Descriptor pool: MAX_FRAMES_IN_FLIGHT uniform buffer descriptors.
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+        let descriptor_pool = unsafe {
+            context.device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                    .pool_sizes(std::slice::from_ref(&pool_size)),
+                None,
+            )
+        }
+        .context("Failed to create descriptor pool")?;
+
+        // Allocate one descriptor set per frame-in-flight.
+        let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+        let sets = unsafe { context.device.allocate_descriptor_sets(&alloc_info) }
+            .context("Failed to allocate descriptor sets")?;
+        let descriptor_sets = [sets[0], sets[1]];
+
+        // Point each descriptor set at its UBO buffer.
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let buffer_info = vk::DescriptorBufferInfo::default()
+                .buffer(ubo_buffers[i].buffer)
+                .offset(0)
+                .range(std::mem::size_of::<CameraUBO>() as vk::DeviceSize);
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[i])
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(std::slice::from_ref(&buffer_info));
+            unsafe { context.device.update_descriptor_sets(&[write], &[]) };
+        }
+
         Ok(Self {
             render_pass,
             pipeline,
@@ -74,6 +176,10 @@ impl Renderer {
             surface_width: size.width,
             surface_height: size.height,
             swapchain_dirty: false,
+            descriptor_set_layout,
+            descriptor_pool,
+            descriptor_sets,
+            ubo_buffers,
             context,
         })
     }
@@ -99,6 +205,18 @@ impl Renderer {
                 self.surface_height,
             )?;
             self.swapchain_dirty = false;
+        }
+
+        // Update this frame's UBO with the current camera matrices.
+        let aspect = self.surface_width as f32 / self.surface_height as f32;
+        let view = Mat4::look_at_rh(
+            Vec3::new(0.0, 8.0, 15.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::Y,
+        );
+        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 100.0);
+        unsafe {
+            *self.ubo_buffers[self.current_frame].mapped = CameraUBO { view, proj };
         }
 
         let frame = &self.frames[self.current_frame];
@@ -199,6 +317,14 @@ impl Renderer {
                     extent,
                 }],
             );
+            self.context.device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.layout,
+                0,
+                &[self.descriptor_sets[self.current_frame]],
+                &[],
+            );
             self.context.device.cmd_bind_vertex_buffers(
                 cb,
                 0,
@@ -278,6 +404,14 @@ impl Drop for Renderer {
                 self.context.device.destroy_fence(frame.in_flight, None);
                 self.context.device.destroy_command_pool(frame.command_pool, None);
             }
+
+            for ubo in &self.ubo_buffers {
+                self.context.device.unmap_memory(ubo.memory);
+                self.context.device.destroy_buffer(ubo.buffer, None);
+                self.context.device.free_memory(ubo.memory, None);
+            }
+            self.context.device.destroy_descriptor_pool(self.descriptor_pool, None);
+            self.context.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
             self.mesh.destroy(&self.context.device);
             self.swapchain.destroy(&self.context);
