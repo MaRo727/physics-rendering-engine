@@ -25,5 +25,3 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 
-# Software framebuffer (for testing window visibility before Vulkan)
-softbuffer = "0.4"
