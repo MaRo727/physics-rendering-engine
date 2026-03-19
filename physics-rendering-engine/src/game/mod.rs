@@ -5,3 +5,5 @@ pub mod equipment;
 pub mod progression;
 pub mod entity;
 pub mod world;
+pub mod camera;
+pub mod player_model;

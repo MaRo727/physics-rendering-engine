@@ -5,19 +5,24 @@ use glam::{Mat4, Vec3, Vec4};
 use winit::window::Window;
 
 use crate::building::{self, BuildingGrid};
+use crate::game::camera::{ThirdPersonCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::game::entity::{Entity, EntityKind};
+use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
 use crate::game::world::World;
 use crate::input::InputState;
 use crate::interaction::Interaction;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
-use crate::player::{Player, GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_TERRAIN_BASE};
+use crate::player::GhostCamera;
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
+const PLAYER_MODEL_OBJECT_ID: u32 = 0xFFE0;
+const PLAYER_SPEED: f32 = 5.0;
+const JUMP_VELOCITY: f32 = 6.0;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -34,7 +39,10 @@ pub struct Engine {
     pub config: EngineConfig,
     physics: PhysicsWorld,
     world: World,
-    player: Player,
+    player_rb: rapier3d::prelude::RigidBodyHandle,
+    player_col: rapier3d::prelude::ColliderHandle,
+    camera: ThirdPersonCamera,
+    player_model: PlayerModel,
     renderer: Renderer,
     interaction: Interaction,
     ghost: GhostCamera,
@@ -72,16 +80,21 @@ impl Engine {
         // Build game world.
         let world = World::new(entities, player_id, next_id);
 
+        // Extract player physics handles.
+        let player_rb = world.player().body.rigid_body;
+        let player_col = world.player().body.collider;
+
         // Spawn player on terrain surface.
         let spawn_h = terrain.get_height(0, 4) + 1.0 + 0.9;
-        let player_body = world.player().body.clone_handles();
-        let player = Player::new(player_body, player_id);
-        physics.set_body_position(player.body.rigid_body, Vec3::new(0.0, spawn_h, 4.0));
+        physics.set_body_position(player_rb, Vec3::new(0.0, spawn_h, 4.0));
+
+        let camera = ThirdPersonCamera::new();
+        let player_model = PlayerModel::new();
 
         let terrain_object_id = 0xFFF1;
 
-        // Headroom for dynamically-spawned cubes pried from the building grid.
-        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + 256) as u32;
+        // Extra headroom: base entities + terrain + building + player model parts + dynamic spawns.
+        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 256) as u32;
         let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
         let mesh_building_id = renderer.mesh_building_id();
 
@@ -89,7 +102,10 @@ impl Engine {
             config,
             physics,
             world,
-            player,
+            player_rb,
+            player_col,
+            camera,
+            player_model,
             renderer,
             interaction: Interaction::default(),
             ghost: GhostCamera::default(),
@@ -120,8 +136,8 @@ impl Engine {
 
         if just_entered_ghost {
             let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
-            let (view, proj) = self.player.camera_matrices(&self.physics, aspect);
-            self.ghost.activate(&self.player, &self.physics, view, proj);
+            let (view, proj) = self.camera.camera_matrices(aspect);
+            self.ghost.activate_from_camera(&self.camera, view, proj);
             self.interaction.drop_held(&mut self.physics);
         }
 
@@ -130,16 +146,20 @@ impl Engine {
 
         if self.ghost.active {
             self.ghost.update(dt, input);
-            self.physics.set_body_linvel(self.player.body.rigid_body, Vec3::ZERO);
+            self.physics.set_body_linvel(self.player_rb, Vec3::ZERO);
             self.physics.step(dt);
         } else {
-            self.player.look(input);
-            let eye = self.player.eye(&self.physics);
-            let look_dir = self.player.look_dir();
+            // --- Third-person camera ---
+            self.camera.look(input);
+            let player_pos = self.physics.body_position(self.player_rb);
+            self.camera.update(player_pos, &self.physics, self.player_col);
+
+            let cam_eye = self.camera.eye;
+            let look_dir = self.camera.look_dir();
 
             // Determine if crosshair is aimed at a building cell (for pry logic).
             let building_cell_aimed_at = self.physics
-                .cast_ray_detailed(eye, look_dir, PLACE_RANGE, self.player.body.collider)
+                .cast_ray_detailed(cam_eye, look_dir, PLACE_RANGE, self.player_col)
                 .and_then(|(hit_pos, normal)| {
                     let target = hit_pos - normal * 0.01;
                     let coords = building::snap_to_grid(target);
@@ -153,11 +173,11 @@ impl Engine {
             let interaction_result = self.interaction.update(
                 &mut self.physics,
                 &self.world.entities,
-                eye,
+                cam_eye,
                 look_dir,
                 input.interact,
                 input.throw,
-                self.player.body.collider,
+                self.player_col,
                 dt,
                 building_cell_aimed_at,
             );
@@ -165,7 +185,6 @@ impl Engine {
             // --- Handle item pickup ---
             if let Some(drop_id) = interaction_result.picked_up_item {
                 if self.world.pickup_item(drop_id) {
-                    // Remove the entity from physics and world
                     if let Some(idx) = self.world.entities.iter().position(|e| e.id == drop_id) {
                         let entity = self.world.entities.swap_remove(idx);
                         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
@@ -173,7 +192,7 @@ impl Engine {
                 }
             }
 
-            // --- Handle pried building cube: remove from grid, spawn as held dynamic object ---
+            // --- Handle pried building cube ---
             if let Some((cx, cy, cz)) = interaction_result.pried_cell {
                 self.building.remove(&mut self.physics, cx, cy, cz);
 
@@ -198,9 +217,9 @@ impl Engine {
                 ));
             }
 
-            // --- Handle axe split: split cube into two halves ---
+            // --- Handle axe split ---
             if let Some(target_body) = interaction_result.axe_hit {
-                self.split_cube(target_body, eye, look_dir);
+                self.split_cube(target_body, cam_eye, look_dir);
             }
 
             // --- RMB: place held cube into building grid ---
@@ -213,24 +232,22 @@ impl Engine {
                     let (cx, cy, cz) = building::snap_to_grid(pos);
 
                     if self.building.place(&mut self.physics, cx, cy, cz) {
-                        // Remove the dynamic object from the world.
                         if let Some(idx) = self.world.entities.iter().position(|o| o.body.rigid_body == held_handle) {
                             let entity = self.world.entities.swap_remove(idx);
                             self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                         }
                     } else {
-                        // Cell already occupied — keep holding.
                         self.interaction.held_body = Some(held_handle);
                     }
                 }
             }
 
-            // --- F: spawn a new block in front of the player ---
+            // --- F: spawn a new block ---
             let spawn_pressed = input.spawn && !self.spawn_prev;
             self.spawn_prev = input.spawn;
 
             if spawn_pressed && self.interaction.held_body.is_none() {
-                let spawn_pos = eye + look_dir * 3.0;
+                let spawn_pos = cam_eye + look_dir * 3.0;
                 let obj_id = self.world.alloc_id();
 
                 let body = PhysicsBody::new_dynamic_box(
@@ -251,24 +268,53 @@ impl Engine {
                 ));
             }
 
-            self.player.apply_movement(&mut self.physics, input);
+            // --- Camera-relative player movement ---
+            self.apply_player_movement(input);
+
             self.physics.step(dt);
+
+            // --- Update player model animation ---
+            let vel = self.physics.body_linvel_xz(self.player_rb);
+            let horiz_speed = Vec3::new(vel.x, 0.0, vel.z).length();
+            self.player_model.update(dt, horiz_speed);
         }
 
         // --- Game tick: regen, etc. ---
         self.world.game_tick(dt);
     }
 
+    /// Apply camera-relative movement to the player rigid body.
+    fn apply_player_movement(&mut self, input: &InputState) {
+        let forward = self.camera.forward_flat();
+        let right = self.camera.right_flat();
+
+        let mut move_vel = Vec3::ZERO;
+        if input.forward  { move_vel += forward; }
+        if input.backward { move_vel -= forward; }
+        if input.right    { move_vel += right; }
+        if input.left     { move_vel -= right; }
+        if move_vel.length_squared() > 0.0 {
+            move_vel = move_vel.normalize() * PLAYER_SPEED;
+        }
+
+        let mut vy = self.physics.body_linvel_y(self.player_rb);
+        if input.jump && self.physics.is_on_ground(self.player_col) {
+            vy = JUMP_VELOCITY;
+        }
+        self.physics.set_body_linvel(
+            self.player_rb,
+            Vec3::new(move_vel.x, vy, move_vel.z),
+        );
+    }
+
     /// Split a cube object into two halves along the axis most aligned with the hit.
     fn split_cube(&mut self, target_body: rapier3d::prelude::RigidBodyHandle, _eye: Vec3, look_dir: Vec3) {
-        // Find the entity and verify it's a cube.
         let obj_idx = match self.world.entities.iter().position(|o| o.body.rigid_body == target_body) {
             Some(idx) => idx,
             None => return,
         };
 
         if self.world.entities[obj_idx].mesh_type != MESH_CUBE {
-            // Not a cube — just apply a knockback impulse instead.
             let wc = self.world.entities[obj_idx].body.weight_class;
             let force = look_dir * 8.0 * wc.punch_knockback();
             self.physics.apply_impulse(target_body, force);
@@ -280,8 +326,6 @@ impl Engine {
         let transform = self.physics.body_transform(entity.body.rigid_body);
         let scale = entity.render_scale;
 
-        // Determine split axis from look direction (split perpendicular to the
-        // most-aligned local axis so the cut feels natural).
         let inv_rot = transform.inverse();
         let local_dir = inv_rot.transform_vector3(look_dir);
         let abs = local_dir.abs();
@@ -294,10 +338,8 @@ impl Engine {
             2
         };
 
-        // Remove original object from physics.
         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
 
-        // Compute half scales and offsets.
         let mut half_scale = scale;
         match split_axis {
             0 => half_scale.x *= 0.5,
@@ -353,7 +395,7 @@ impl Engine {
         let (cull_view, cull_proj) = if self.ghost.active {
             (self.ghost.frozen_view, self.ghost.frozen_proj)
         } else {
-            self.player.camera_matrices(&self.physics, aspect)
+            self.camera.camera_matrices(aspect)
         };
 
         let (render_view, render_proj) = if self.ghost.active {
@@ -367,8 +409,8 @@ impl Engine {
         let mut transforms = Vec::new();
         let mut instance_ids = Vec::new();
 
+        // World entities (skip the player entity — we render the model instead).
         for entity in &self.world.entities {
-            // Skip the player entity (first-person, not rendered).
             if entity.kind == EntityKind::Player { continue; }
 
             let pos = self.physics.body_position(entity.body.rigid_body);
@@ -381,7 +423,17 @@ impl Engine {
             instance_ids.push(pack_instance_id(entity.mesh_type, entity.id));
         }
 
-        // Terrain chunks — frustum-culled, each at identity (vertices in world space).
+        // Player model body parts.
+        let player_pos = self.physics.body_position(self.player_rb);
+        // Compute player yaw from movement direction or camera facing.
+        let player_yaw = self.player_facing_yaw();
+        let parts = self.player_model.compute_transforms(player_pos, player_yaw);
+        for (i, (transform, _scale)) in parts.iter().enumerate() {
+            transforms.push(*transform);
+            instance_ids.push(pack_instance_id(MESH_CAPSULE, PLAYER_MODEL_OBJECT_ID + i as u32));
+        }
+
+        // Terrain chunks.
         for chunk in &self.terrain_chunks {
             if is_sphere_in_frustum(&frustum, chunk.center, chunk.radius) {
                 transforms.push(Mat4::IDENTITY);
@@ -389,7 +441,7 @@ impl Engine {
             }
         }
 
-        // Building mesh — single instance at identity (vertices already in world space).
+        // Building mesh.
         if !self.building.is_empty() && self.renderer.has_building_blas() {
             transforms.push(Mat4::IDENTITY);
             instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
@@ -415,6 +467,21 @@ impl Engine {
             pry_progress,
             tool_type,
         )
+    }
+
+    /// Compute the direction the player character should face.
+    /// Uses movement direction if moving, otherwise faces camera forward.
+    fn player_facing_yaw(&self) -> f32 {
+        let vel = self.physics.body_linvel_xz(self.player_rb);
+        let horiz = Vec3::new(vel.x, 0.0, vel.z);
+        if horiz.length_squared() > 0.5 {
+            // Face movement direction.
+            (-horiz.x).atan2(-horiz.z)
+        } else {
+            // Face camera forward direction.
+            let fwd = self.camera.forward_flat();
+            (-fwd.x).atan2(-fwd.z)
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
