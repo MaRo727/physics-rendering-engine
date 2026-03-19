@@ -15,6 +15,8 @@ pub struct SceneUBO {
     pub inv_proj: Mat4,
     pub light_dir: glam::Vec4,
     pub light_color: glam::Vec4,
+    pub player_vp: Mat4,       // frozen player view-projection (for ghost mode highlight)
+    pub ghost_mode: glam::Vec4, // .x > 0 when ghost mode is active
 }
 
 // ---------------------------------------------------------------------------
