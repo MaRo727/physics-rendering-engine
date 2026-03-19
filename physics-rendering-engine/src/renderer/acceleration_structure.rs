@@ -182,7 +182,6 @@ pub struct Tlas {
     instance_mapped: *mut vk::AccelerationStructureInstanceKHR,
     scratch_buffer: vk::Buffer,
     scratch_memory: vk::DeviceMemory,
-    built: bool,
     instance_count: u32,
 }
 
@@ -224,8 +223,7 @@ impl Tlas {
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
-                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE)
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(std::slice::from_ref(&geometry));
 
@@ -280,7 +278,6 @@ impl Tlas {
             instance_mapped,
             scratch_buffer,
             scratch_memory,
-            built: false,
             instance_count,
         })
     }
@@ -320,18 +317,12 @@ impl Tlas {
 
         let geometry = make_instance_geometry(instance_address, instances.len() as u32);
 
-        let mode = if self.built {
-            vk::BuildAccelerationStructureModeKHR::UPDATE
-        } else {
-            vk::BuildAccelerationStructureModeKHR::BUILD
-        };
-
+        // Always full BUILD — instance count can change between frames due
+        // to frustum culling, and UPDATE requires the same primitive count.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
-                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE)
-            .mode(mode)
-            .src_acceleration_structure(if self.built { self.handle } else { vk::AccelerationStructureKHR::null() })
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .dst_acceleration_structure(self.handle)
             .geometries(std::slice::from_ref(&geometry))
             .scratch_data(vk::DeviceOrHostAddressKHR { device_address: scratch_address });
@@ -363,7 +354,6 @@ impl Tlas {
             );
         }
 
-        self.built = true;
     }
 
     pub fn destroy(&self, context: &VulkanContext) {
