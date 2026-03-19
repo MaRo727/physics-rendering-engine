@@ -11,9 +11,9 @@ pub struct InputState {
     pub descend: bool,     // Left Shift — ghost descend
     pub interact: bool,    // E — pick up / drop
     pub throw: bool,       // Left mouse button — throw held object
-    pub place: bool,       // Right mouse button — place building cube
-    pub remove: bool,      // Q — remove building cube
+    pub place: bool,       // Right mouse button — place held cube into grid
     pub toggle_ghost: bool, // G — toggle ghost / debug camera
+    pub spawn: bool,        // F — spawn a new block
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -30,8 +30,8 @@ impl Default for InputState {
             interact: false,
             throw: false,
             place: false,
-            remove: false,
             toggle_ghost: false,
+            spawn: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

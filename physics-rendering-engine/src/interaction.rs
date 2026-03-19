@@ -9,14 +9,17 @@ const HOLD_DISTANCE: f32 = 3.0;
 const HOLD_STIFFNESS: f32 = 20.0;
 const PUNCH_RANGE: f32 = 3.0;
 const BARE_PUNCH_FORCE: f32 = 8.0;
+const PRY_DURATION: f32 = 1.0;
 
 use crate::scene::WorldObject;
 
-/// Manages picking up, holding, throwing, and punching objects.
+/// Manages picking up, holding, throwing, punching, and prying building cubes.
 pub struct Interaction {
     pub held_body: Option<RigidBodyHandle>,
     interact_prev: bool,
     punch_prev: bool,
+    pry_timer: f32,
+    pry_target: Option<(i32, i32, i32)>,
 }
 
 impl Default for Interaction {
@@ -25,6 +28,8 @@ impl Default for Interaction {
             held_body: None,
             interact_prev: false,
             punch_prev: false,
+            pry_timer: 0.0,
+            pry_target: None,
         }
     }
 }
@@ -35,9 +40,12 @@ impl Interaction {
         if let Some(held) = self.held_body.take() {
             physics.set_gravity_enabled(held, true);
         }
+        self.pry_timer = 0.0;
+        self.pry_target = None;
     }
 
     /// Process interact (E) and throw/punch (LMB) input for this frame.
+    /// Returns Some(grid_cell) if a building cube was pried out this frame.
     pub fn update(
         &mut self,
         physics: &mut PhysicsWorld,
@@ -47,23 +55,62 @@ impl Interaction {
         interact_pressed: bool,
         throw_pressed: bool,
         player_collider: rapier3d::prelude::ColliderHandle,
-    ) {
-        // --- Interact (E) — edge-triggered pickup / drop ---
+        dt: f32,
+        building_cell_aimed_at: Option<(i32, i32, i32)>,
+    ) -> Option<(i32, i32, i32)> {
         let interact_edge = interact_pressed && !self.interact_prev;
         self.interact_prev = interact_pressed;
 
+        let mut pried_cell = None;
+
+        // --- E press (edge): drop held OR pick up dynamic object OR start prying ---
         if interact_edge {
             if let Some(held) = self.held_body.take() {
+                // Drop held object.
                 physics.set_gravity_enabled(held, true);
+                self.pry_timer = 0.0;
+                self.pry_target = None;
             } else {
+                // Try to pick up a dynamic object.
                 let hit = physics.cast_ray(eye, look_dir, PICKUP_RANGE, player_collider);
                 if let Some(handle) = hit {
                     if physics.is_dynamic(handle) {
                         self.held_body = Some(handle);
                         physics.set_gravity_enabled(handle, false);
+                        self.pry_timer = 0.0;
+                        self.pry_target = None;
+                    }
+                }
+                // If we didn't pick up anything dynamic but aimed at a building cell,
+                // start the pry timer (it will accumulate while E is held).
+                if self.held_body.is_none() {
+                    if let Some(cell) = building_cell_aimed_at {
+                        self.pry_target = Some(cell);
+                        self.pry_timer = 0.0;
                     }
                 }
             }
+        }
+
+        // --- Hold E to pry a building cube ---
+        if interact_pressed && self.held_body.is_none() && self.pry_target.is_some() {
+            if building_cell_aimed_at == self.pry_target {
+                self.pry_timer += dt;
+                if self.pry_timer >= PRY_DURATION {
+                    pried_cell = self.pry_target.take();
+                    self.pry_timer = 0.0;
+                }
+            } else {
+                // Looked away — reset.
+                self.pry_timer = 0.0;
+                self.pry_target = None;
+            }
+        }
+
+        // E released before threshold — reset pry.
+        if !interact_pressed {
+            self.pry_timer = 0.0;
+            self.pry_target = None;
         }
 
         // --- LMB: throw held object, or punch ---
@@ -93,6 +140,17 @@ impl Interaction {
             let obj_pos = physics.body_position(held);
             let delta = target - obj_pos;
             physics.set_body_linvel(held, delta * HOLD_STIFFNESS);
+        }
+
+        pried_cell
+    }
+
+    /// Progress of the current pry action (0.0 to 1.0). 0 when not prying.
+    pub fn pry_progress(&self) -> f32 {
+        if self.pry_target.is_some() {
+            self.pry_timer / PRY_DURATION
+        } else {
+            0.0
         }
     }
 }

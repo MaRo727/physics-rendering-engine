@@ -5,7 +5,7 @@ use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_CUBE, MESH_BALL, MESH_PYRAMID, MESH_TRIANGLE, MESH_SLOPE};
 
 /// Half-diagonal of a unit cube — conservative bounding sphere for any unit mesh.
-const UNIT_BOUNDING_RADIUS: f32 = 0.87; // sqrt(3)/2
+pub const UNIT_BOUNDING_RADIUS: f32 = 0.87; // sqrt(3)/2
 
 /// A world object with physics, a mesh type, a render scale, and an object id.
 pub struct WorldObject {
@@ -16,8 +16,8 @@ pub struct WorldObject {
     pub bounding_radius: f32,
 }
 
-/// Build the default scene. Returns (objects, player, player_object_id).
-pub fn build_scene(physics: &mut PhysicsWorld) -> (Vec<WorldObject>, PhysicsBody, u32) {
+/// Build the default scene. Returns (objects, player, player_object_id, next_object_id).
+pub fn build_scene(physics: &mut PhysicsWorld) -> (Vec<WorldObject>, PhysicsBody, u32, u32) {
     let mut objects: Vec<WorldObject> = Vec::new();
     let mut next_id: u32 = 0;
     let mut alloc_id = || { let id = next_id; next_id += 1; id };
@@ -174,5 +174,5 @@ pub fn build_scene(physics: &mut PhysicsWorld) -> (Vec<WorldObject>, PhysicsBody
         Vec3::new(0.4, 0.9, 0.4),
     );
 
-    (objects, player, player_id)
+    (objects, player, player_id, next_id)
 }

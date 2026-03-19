@@ -8,6 +8,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     mat4 invProj;
     vec4 lightDir;
     vec4 lightColor;
+    mat4 playerVP;
+    vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1)
 } scene;
 
 layout(location = 0) rayPayloadEXT vec3 payload;
@@ -47,6 +49,25 @@ void main() {
                || (d.y <= thickness && d.x >= gap && d.x <= arm);
     if (onCross) {
         payload = vec3(1.0);
+    }
+
+    // Pry progress arc around crosshair.
+    float pryProgress = scene.ghostMode.y;
+    if (pryProgress > 0.0) {
+        vec2 off = vec2(pixel - center);
+        float dist = length(off);
+        float innerR = 14.0;
+        float outerR = 18.0;
+        if (dist >= innerR && dist <= outerR) {
+            // Angle from top, clockwise: atan2 gives angle from +X, so rotate.
+            float angle = atan(off.x, -off.y); // [-pi, pi], 0 = up
+            float norm = (angle + 3.14159265) / (2.0 * 3.14159265); // [0,1] starting from bottom-left
+            // Remap so 0 = top: shift by 0.5
+            norm = fract(norm + 0.5);
+            if (norm <= pryProgress) {
+                payload = mix(payload, vec3(1.0, 0.9, 0.3), 0.9);
+            }
+        }
     }
 
     imageStore(outputImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload, 1.0));
