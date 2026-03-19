@@ -1,6 +1,7 @@
 mod app;
 mod building;
 mod engine;
+mod game;
 mod input;
 mod interaction;
 mod physics;

@@ -43,6 +43,15 @@ pub struct PhysicsBody {
 }
 
 impl PhysicsBody {
+    /// Create a lightweight copy with just handles and weight class (no new physics objects).
+    pub fn clone_handles(&self) -> Self {
+        Self {
+            rigid_body: self.rigid_body,
+            collider: self.collider,
+            weight_class: self.weight_class,
+        }
+    }
+
     /// Dynamic rigid body with a box collider — falls under gravity.
     pub fn new_dynamic_box(
         world: &mut PhysicsWorld,
