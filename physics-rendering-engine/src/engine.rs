@@ -7,10 +7,11 @@ use winit::window::Window;
 use crate::building::{self, BuildingGrid};
 use crate::input::InputState;
 use crate::interaction::Interaction;
+use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{Player, GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BUILDING};
-use crate::scene::{self, WorldObject};
+use crate::scene::{self, WorldObject, UNIT_BOUNDING_RADIUS};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -36,7 +37,8 @@ pub struct Engine {
     ghost: GhostCamera,
     building: BuildingGrid,
     place_prev: bool,
-    remove_prev: bool,
+    spawn_prev: bool,
+    next_object_id: u32,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
@@ -48,11 +50,11 @@ impl Engine {
         let surface_height = config.window_height;
 
         let mut physics = PhysicsWorld::new(config.gravity);
-        let (objects, player_body, player_id) = scene::build_scene(&mut physics);
+        let (objects, player_body, player_id, next_object_id) = scene::build_scene(&mut physics);
         let player = Player::new(player_body, player_id);
 
-        // Total render instances: objects + floor + building + headroom
-        let max_instances = (objects.len() + 3) as u32;
+        // Headroom for dynamically-spawned cubes pried from the building grid.
+        let max_instances = (objects.len() + 3 + 256) as u32;
         let renderer = Renderer::new(window, max_instances)?;
 
         Ok(Self {
@@ -65,7 +67,8 @@ impl Engine {
             ghost: GhostCamera::default(),
             building: BuildingGrid::new(),
             place_prev: false,
-            remove_prev: false,
+            spawn_prev: false,
+            next_object_id,
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
@@ -92,7 +95,20 @@ impl Engine {
             let eye = self.player.eye(&self.physics);
             let look_dir = self.player.look_dir();
 
-            self.interaction.update(
+            // Determine if crosshair is aimed at a building cell (for pry logic).
+            let building_cell_aimed_at = self.physics
+                .cast_ray_detailed(eye, look_dir, PLACE_RANGE, self.player.body.collider)
+                .and_then(|(hit_pos, normal)| {
+                    let target = hit_pos - normal * 0.01;
+                    let coords = building::snap_to_grid(target);
+                    if self.building.is_occupied(coords.0, coords.1, coords.2) {
+                        Some(coords)
+                    } else {
+                        None
+                    }
+                });
+
+            let pried_cell = self.interaction.update(
                 &mut self.physics,
                 &self.objects,
                 eye,
@@ -100,36 +116,83 @@ impl Engine {
                 input.interact,
                 input.throw,
                 self.player.body.collider,
+                dt,
+                building_cell_aimed_at,
             );
 
-            // --- Building: place (RMB, edge-triggered) ---
+            // --- Handle pried building cube: remove from grid, spawn as held dynamic object ---
+            if let Some((cx, cy, cz)) = pried_cell {
+                self.building.remove(&mut self.physics, cx, cy, cz);
+
+                let center = building::cell_center(cx, cy, cz);
+                let obj_id = self.next_object_id;
+                self.next_object_id += 1;
+
+                let body = PhysicsBody::new_dynamic_box(
+                    &mut self.physics,
+                    center,
+                    Vec3::splat(0.5),
+                    WeightClass::Medium,
+                );
+                self.physics.set_gravity_enabled(body.rigid_body, false);
+                self.interaction.held_body = Some(body.rigid_body);
+
+                self.objects.push(WorldObject {
+                    body,
+                    mesh_type: MESH_CUBE,
+                    render_scale: Vec3::ONE,
+                    object_id: obj_id,
+                    bounding_radius: UNIT_BOUNDING_RADIUS,
+                });
+            }
+
+            // --- RMB: place held cube into building grid ---
             let place_pressed = input.place && !self.place_prev;
             self.place_prev = input.place;
 
             if place_pressed {
-                if let Some((hit_pos, normal)) = self.physics.cast_ray_detailed(
-                    eye, look_dir, PLACE_RANGE, self.player.body.collider,
-                ) {
-                    // Step slightly outside the surface to land in the target cell.
-                    let target = hit_pos + normal * 0.01;
-                    let (cx, cy, cz) = building::snap_to_grid(target);
-                    self.building.place(&mut self.physics, cx, cy, cz);
+                if let Some(held_handle) = self.interaction.held_body.take() {
+                    let pos = self.physics.body_position(held_handle);
+                    let (cx, cy, cz) = building::snap_to_grid(pos);
+
+                    if self.building.place(&mut self.physics, cx, cy, cz) {
+                        // Remove the dynamic object from the world.
+                        if let Some(idx) = self.objects.iter().position(|o| o.body.rigid_body == held_handle) {
+                            let obj = self.objects.swap_remove(idx);
+                            self.physics.remove_body(obj.body.rigid_body, obj.body.collider);
+                        }
+                    } else {
+                        // Cell already occupied — keep holding.
+                        self.interaction.held_body = Some(held_handle);
+                    }
                 }
             }
 
-            // --- Building: remove (Q, edge-triggered) ---
-            let remove_pressed = input.remove && !self.remove_prev;
-            self.remove_prev = input.remove;
+            // --- F: spawn a new block in front of the player ---
+            let spawn_pressed = input.spawn && !self.spawn_prev;
+            self.spawn_prev = input.spawn;
 
-            if remove_pressed {
-                if let Some((hit_pos, normal)) = self.physics.cast_ray_detailed(
-                    eye, look_dir, PLACE_RANGE, self.player.body.collider,
-                ) {
-                    // Step slightly inside the surface to land in the hit cell.
-                    let target = hit_pos - normal * 0.01;
-                    let (cx, cy, cz) = building::snap_to_grid(target);
-                    self.building.remove(&mut self.physics, cx, cy, cz);
-                }
+            if spawn_pressed && self.interaction.held_body.is_none() {
+                let spawn_pos = eye + look_dir * 3.0;
+                let obj_id = self.next_object_id;
+                self.next_object_id += 1;
+
+                let body = PhysicsBody::new_dynamic_box(
+                    &mut self.physics,
+                    spawn_pos,
+                    Vec3::splat(0.5),
+                    WeightClass::Medium,
+                );
+                self.physics.set_gravity_enabled(body.rigid_body, false);
+                self.interaction.held_body = Some(body.rigid_body);
+
+                self.objects.push(WorldObject {
+                    body,
+                    mesh_type: MESH_CUBE,
+                    render_scale: Vec3::ONE,
+                    object_id: obj_id,
+                    bounding_radius: UNIT_BOUNDING_RADIUS,
+                });
             }
 
             self.player.apply_movement(&mut self.physics, input);
@@ -192,6 +255,8 @@ impl Engine {
 
         let player_vp = cull_proj * cull_view;
 
+        let pry_progress = self.interaction.pry_progress();
+
         self.renderer.draw_frame(
             &transforms,
             &instance_ids,
@@ -201,6 +266,7 @@ impl Engine {
             Vec4::new(1.0, 0.95, 0.9, 1.0),
             player_vp,
             self.ghost.active,
+            pry_progress,
         )
     }
 

@@ -88,8 +88,8 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Space) => self.input.jump   = pressed,
                     PhysicalKey::Code(KeyCode::ShiftLeft) => self.input.descend = pressed,
                     PhysicalKey::Code(KeyCode::KeyE) => self.input.interact = pressed,
-                    PhysicalKey::Code(KeyCode::KeyQ) => self.input.remove = pressed,
                     PhysicalKey::Code(KeyCode::KeyG) => self.input.toggle_ghost = pressed,
+                    PhysicalKey::Code(KeyCode::KeyF) => self.input.spawn = pressed,
                     _ => {}
                 }
             }

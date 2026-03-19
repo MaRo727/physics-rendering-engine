@@ -154,7 +154,7 @@ impl BuildingGrid {
 }
 
 /// Center of a grid cell in world space.
-fn cell_center(cx: i32, cy: i32, cz: i32) -> Vec3 {
+pub fn cell_center(cx: i32, cy: i32, cz: i32) -> Vec3 {
     Vec3::new(cx as f32 + 0.5, cy as f32 + 0.5, cz as f32 + 0.5)
 }
 
