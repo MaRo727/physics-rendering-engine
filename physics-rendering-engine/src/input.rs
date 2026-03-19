@@ -15,6 +15,7 @@ pub struct InputState {
     pub toggle_ghost: bool, // G — toggle ghost / debug camera
     pub spawn: bool,        // F — spawn a new block
     pub cycle_tool: bool,    // Tab — cycle equipped tool
+    pub debug_stats: bool,   // F1 — print player stats to console
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -34,6 +35,7 @@ impl Default for InputState {
             toggle_ghost: false,
             spawn: false,
             cycle_tool: false,
+            debug_stats: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

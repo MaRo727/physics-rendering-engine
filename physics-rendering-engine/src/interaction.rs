@@ -3,6 +3,7 @@ use rapier3d::prelude::RigidBodyHandle;
 
 use crate::physics::body::WeightClass;
 use crate::physics::world::PhysicsWorld;
+use crate::game::entity::{Entity, EntityKind};
 
 const PICKUP_RANGE: f32 = 5.0;
 const HOLD_DISTANCE: f32 = 3.0;
@@ -11,8 +12,7 @@ const PUNCH_RANGE: f32 = 3.0;
 const BARE_PUNCH_FORCE: f32 = 8.0;
 const PRY_DURATION: f32 = 1.0;
 const AXE_RANGE: f32 = 4.0;
-
-use crate::scene::WorldObject;
+const ITEM_PICKUP_RANGE: f32 = 3.0;
 
 // ---------------------------------------------------------------------------
 // Tool types
@@ -49,6 +49,8 @@ pub struct InteractionResult {
     pub pried_cell: Option<(i32, i32, i32)>,
     /// Body handle of an object hit by the axe swing.
     pub axe_hit: Option<RigidBodyHandle>,
+    /// Entity id of an item drop the player picked up.
+    pub picked_up_item: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +108,7 @@ impl Interaction {
     pub fn update(
         &mut self,
         physics: &mut PhysicsWorld,
-        objects: &[WorldObject],
+        entities: &[Entity],
         eye: Vec3,
         look_dir: Vec3,
         interact_pressed: bool,
@@ -121,9 +123,10 @@ impl Interaction {
         let mut result = InteractionResult {
             pried_cell: None,
             axe_hit: None,
+            picked_up_item: None,
         };
 
-        // --- E press (edge): drop held OR pick up dynamic object OR start prying ---
+        // --- E press (edge): drop held OR pick up dynamic object OR pick up item drop OR start prying ---
         if interact_edge {
             if let Some(held) = self.held_body.take() {
                 // Drop held object.
@@ -131,22 +134,27 @@ impl Interaction {
                 self.pry_timer = 0.0;
                 self.pry_target = None;
             } else {
-                // Try to pick up a dynamic object.
-                let hit = physics.cast_ray(eye, look_dir, PICKUP_RANGE, player_collider);
-                if let Some(handle) = hit {
-                    if physics.is_dynamic(handle) {
-                        self.held_body = Some(handle);
-                        physics.set_gravity_enabled(handle, false);
-                        self.pry_timer = 0.0;
-                        self.pry_target = None;
+                // Check for nearby item drops first.
+                if let Some(drop_id) = find_nearest_item_drop(physics, entities, eye, ITEM_PICKUP_RANGE) {
+                    result.picked_up_item = Some(drop_id);
+                } else {
+                    // Try to pick up a dynamic object.
+                    let hit = physics.cast_ray(eye, look_dir, PICKUP_RANGE, player_collider);
+                    if let Some(handle) = hit {
+                        if physics.is_dynamic(handle) {
+                            self.held_body = Some(handle);
+                            physics.set_gravity_enabled(handle, false);
+                            self.pry_timer = 0.0;
+                            self.pry_target = None;
+                        }
                     }
-                }
-                // If we didn't pick up anything dynamic but aimed at a building cell,
-                // start the pry timer (it will accumulate while E is held).
-                if self.held_body.is_none() {
-                    if let Some(cell) = building_cell_aimed_at {
-                        self.pry_target = Some(cell);
-                        self.pry_timer = 0.0;
+                    // If we didn't pick up anything dynamic but aimed at a building cell,
+                    // start the pry timer (it will accumulate while E is held).
+                    if self.held_body.is_none() {
+                        if let Some(cell) = building_cell_aimed_at {
+                            self.pry_target = Some(cell);
+                            self.pry_timer = 0.0;
+                        }
                     }
                 }
             }
@@ -179,7 +187,7 @@ impl Interaction {
 
         if lmb_edge {
             if let Some(held) = self.held_body.take() {
-                let throw_speed = weight_class_of(objects, held).throw_speed();
+                let throw_speed = weight_class_of(entities, held).throw_speed();
                 physics.set_gravity_enabled(held, true);
                 physics.set_body_linvel(held, look_dir * throw_speed);
             } else {
@@ -189,7 +197,7 @@ impl Interaction {
                         let hit = physics.cast_ray(eye, look_dir, PUNCH_RANGE, player_collider);
                         if let Some(target_body) = hit {
                             if physics.is_dynamic(target_body) {
-                                let wc = weight_class_of(objects, target_body);
+                                let wc = weight_class_of(entities, target_body);
                                 let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
                                 physics.apply_impulse(target_body, force);
                             }
@@ -229,11 +237,28 @@ impl Interaction {
     }
 }
 
-fn weight_class_of(objects: &[WorldObject], handle: RigidBodyHandle) -> WeightClass {
-    for obj in objects {
-        if obj.body.rigid_body == handle {
-            return obj.body.weight_class;
+fn weight_class_of(entities: &[Entity], handle: RigidBodyHandle) -> WeightClass {
+    for e in entities {
+        if e.body.rigid_body == handle {
+            return e.body.weight_class;
         }
     }
     WeightClass::Medium
+}
+
+/// Find the nearest item drop entity within range of the eye position.
+fn find_nearest_item_drop(physics: &PhysicsWorld, entities: &[Entity], eye: Vec3, range: f32) -> Option<u32> {
+    let range_sq = range * range;
+    let mut best: Option<(u32, f32)> = None;
+    for e in entities {
+        if e.kind != EntityKind::ItemDrop { continue; }
+        let pos = physics.body_position(e.body.rigid_body);
+        let dist_sq = (pos - eye).length_squared();
+        if dist_sq < range_sq {
+            if best.map_or(true, |(_, d)| dist_sq < d) {
+                best = Some((e.id, dist_sq));
+            }
+        }
+    }
+    best.map(|(id, _)| id)
 }
