@@ -10,9 +10,9 @@ use crate::interaction::Interaction;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{Player, GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BUILDING, MESH_TERRAIN};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_TERRAIN_BASE};
 use crate::scene::{self, WorldObject, UNIT_BOUNDING_RADIUS};
-use crate::terrain::TerrainGrid;
+use crate::terrain::{TerrainGrid, TerrainChunkInfo};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -37,7 +37,9 @@ pub struct Engine {
     interaction: Interaction,
     ghost: GhostCamera,
     terrain: TerrainGrid,
+    terrain_chunks: Vec<TerrainChunkInfo>,
     terrain_object_id: u32,
+    mesh_building_id: u32,
     building: BuildingGrid,
     place_prev: bool,
     spawn_prev: bool,
@@ -55,12 +57,14 @@ impl Engine {
         let mut physics = PhysicsWorld::new(config.gravity);
         let (objects, player_body, player_id, next_object_id) = scene::build_scene(&mut physics);
 
-        // Generate terrain.
+        // Generate terrain chunks.
         let terrain = TerrainGrid::generate(42);
-        let terrain_mesh = terrain.generate_mesh();
+        let (chunk_meshes, terrain_chunks, full_mesh) =
+            terrain.generate_chunks(MESH_TERRAIN_BASE);
+        let num_terrain_chunks = chunk_meshes.len();
 
         // Add trimesh collider for terrain (exact match with visual mesh).
-        let (phys_verts, phys_tris) = TerrainGrid::physics_trimesh(&terrain_mesh);
+        let (phys_verts, phys_tris) = TerrainGrid::physics_trimesh(&full_mesh);
         physics.add_trimesh(phys_verts, phys_tris);
 
         // Spawn player on terrain surface.
@@ -71,8 +75,9 @@ impl Engine {
         let terrain_object_id = 0xFFF1;
 
         // Headroom for dynamically-spawned cubes pried from the building grid.
-        let max_instances = (objects.len() + 3 + 256) as u32;
-        let renderer = Renderer::new(window, max_instances, terrain_mesh)?;
+        let max_instances = (objects.len() + num_terrain_chunks + 3 + 256) as u32;
+        let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
+        let mesh_building_id = renderer.mesh_building_id();
 
         Ok(Self {
             config,
@@ -83,7 +88,9 @@ impl Engine {
             interaction: Interaction::default(),
             ghost: GhostCamera::default(),
             terrain,
+            terrain_chunks,
             terrain_object_id,
+            mesh_building_id,
             building: BuildingGrid::new(),
             place_prev: false,
             spawn_prev: false,
@@ -357,14 +364,18 @@ impl Engine {
             instance_ids.push(pack_instance_id(obj.mesh_type, obj.object_id));
         }
 
-        // Terrain mesh — single instance at identity (vertices in world space).
-        transforms.push(Mat4::IDENTITY);
-        instance_ids.push(pack_instance_id(MESH_TERRAIN, self.terrain_object_id));
+        // Terrain chunks — frustum-culled, each at identity (vertices in world space).
+        for chunk in &self.terrain_chunks {
+            if is_sphere_in_frustum(&frustum, chunk.center, chunk.radius) {
+                transforms.push(Mat4::IDENTITY);
+                instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
+            }
+        }
 
         // Building mesh — single instance at identity (vertices already in world space).
         if !self.building.is_empty() && self.renderer.has_building_blas() {
             transforms.push(Mat4::IDENTITY);
-            instance_ids.push(pack_instance_id(MESH_BUILDING, BUILDING_OBJECT_ID));
+            instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
         }
 
         let player_vp = cull_proj * cull_view;

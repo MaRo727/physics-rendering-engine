@@ -7,6 +7,13 @@ const TERRAIN_HALF: i32 = 450;
 const CELL_SIZE: i32 = 3;
 const MIN_HEIGHT: f64 = -15.0;
 const MAX_HEIGHT: f64 = 40.0;
+const CHUNKS_PER_SIDE: i32 = 6;
+
+pub struct TerrainChunkInfo {
+    pub mesh_type: u32,
+    pub center: Vec3,
+    pub radius: f32,
+}
 
 pub struct TerrainGrid {
     fbm: Fbm<Perlin>,
@@ -34,44 +41,93 @@ impl TerrainGrid {
         self.sample(x as f32, z as f32)
     }
 
-    pub fn generate_mesh(&self) -> (Vec<Vertex>, Vec<u32>) {
-        let grid_half = TERRAIN_HALF / CELL_SIZE; // number of cells in each direction
+    /// Generate terrain as chunked meshes for frustum culling.
+    /// Returns (chunk_meshes for renderer, chunk_infos for engine, full_mesh for physics).
+    pub fn generate_chunks(
+        &self,
+        mesh_type_base: u32,
+    ) -> (Vec<(Vec<Vertex>, Vec<u32>)>, Vec<TerrainChunkInfo>, (Vec<Vertex>, Vec<u32>)) {
+        let grid_half = TERRAIN_HALF / CELL_SIZE;
+        let cells_per_chunk = (grid_half * 2) / CHUNKS_PER_SIDE;
         let step = CELL_SIZE as f32;
 
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
+        let mut chunk_meshes = Vec::new();
+        let mut chunk_infos = Vec::new();
+        let mut all_vertices = Vec::new();
+        let mut all_indices = Vec::new();
 
-        for gx in -grid_half..grid_half {
-            for gz in -grid_half..grid_half {
-                let x = gx as f32 * step;
-                let z = gz as f32 * step;
+        for chunk_x in 0..CHUNKS_PER_SIDE {
+            for chunk_z in 0..CHUNKS_PER_SIDE {
+                let cell_x_start = -grid_half + chunk_x * cells_per_chunk;
+                let cell_z_start = -grid_half + chunk_z * cells_per_chunk;
+                let cell_x_end = cell_x_start + cells_per_chunk;
+                let cell_z_end = cell_z_start + cells_per_chunk;
 
-                let h00 = self.sample(x, z);
-                let h10 = self.sample(x + step, z);
-                let h01 = self.sample(x, z + step);
-                let h11 = self.sample(x + step, z + step);
+                let mut vertices = Vec::new();
+                let mut indices = Vec::new();
+                let mut min_y = f32::MAX;
+                let mut max_y = f32::MIN;
 
-                let v0 = Vec3::new(x, h00, z);
-                let v1 = Vec3::new(x + step, h10, z);
-                let v2 = Vec3::new(x + step, h11, z + step);
-                let v3 = Vec3::new(x, h01, z + step);
+                for gx in cell_x_start..cell_x_end {
+                    for gz in cell_z_start..cell_z_end {
+                        let x = gx as f32 * step;
+                        let z = gz as f32 * step;
 
-                let normal = (v1 - v0).cross(v3 - v0).normalize();
+                        let h00 = self.sample(x, z);
+                        let h10 = self.sample(x + step, z);
+                        let h01 = self.sample(x, z + step);
+                        let h11 = self.sample(x + step, z + step);
 
-                let avg_h = (h00 + h10 + h01 + h11) * 0.25;
-                let color = height_color(avg_h);
+                        min_y = min_y.min(h00).min(h10).min(h01).min(h11);
+                        max_y = max_y.max(h00).max(h10).max(h01).max(h11);
 
-                let base = vertices.len() as u32;
-                vertices.push(Vertex { position: v0, normal, color });
-                vertices.push(Vertex { position: v1, normal, color });
-                vertices.push(Vertex { position: v2, normal, color });
-                vertices.push(Vertex { position: v3, normal, color });
+                        let v0 = Vec3::new(x, h00, z);
+                        let v1 = Vec3::new(x + step, h10, z);
+                        let v2 = Vec3::new(x + step, h11, z + step);
+                        let v3 = Vec3::new(x, h01, z + step);
 
-                indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                        let normal = (v1 - v0).cross(v3 - v0).normalize();
+                        let avg_h = (h00 + h10 + h01 + h11) * 0.25;
+                        let color = height_color(avg_h);
+
+                        let base = vertices.len() as u32;
+                        vertices.push(Vertex { position: v0, normal, color });
+                        vertices.push(Vertex { position: v1, normal, color });
+                        vertices.push(Vertex { position: v2, normal, color });
+                        vertices.push(Vertex { position: v3, normal, color });
+                        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                    }
+                }
+
+                // Append to full mesh (with offset indices).
+                let vert_offset = all_vertices.len() as u32;
+                all_vertices.extend_from_slice(&vertices);
+                for &idx in &indices {
+                    all_indices.push(idx + vert_offset);
+                }
+
+                // Compute bounding sphere.
+                let world_x_min = cell_x_start as f32 * step;
+                let world_x_max = cell_x_end as f32 * step;
+                let world_z_min = cell_z_start as f32 * step;
+                let world_z_max = cell_z_end as f32 * step;
+                let center = Vec3::new(
+                    (world_x_min + world_x_max) * 0.5,
+                    (min_y + max_y) * 0.5,
+                    (world_z_min + world_z_max) * 0.5,
+                );
+                let half_x = (world_x_max - world_x_min) * 0.5;
+                let half_y = (max_y - min_y) * 0.5;
+                let half_z = (world_z_max - world_z_min) * 0.5;
+                let radius = (half_x * half_x + half_y * half_y + half_z * half_z).sqrt();
+
+                let mesh_type = mesh_type_base + chunk_meshes.len() as u32;
+                chunk_infos.push(TerrainChunkInfo { mesh_type, center, radius });
+                chunk_meshes.push((vertices, indices));
             }
         }
 
-        (vertices, indices)
+        (chunk_meshes, chunk_infos, (all_vertices, all_indices))
     }
 
     pub fn physics_trimesh(mesh: &(Vec<Vertex>, Vec<u32>)) -> (Vec<Vec3>, Vec<[u32; 3]>) {
