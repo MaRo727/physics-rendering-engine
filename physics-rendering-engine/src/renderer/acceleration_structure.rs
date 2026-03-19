@@ -17,15 +17,43 @@ pub struct Blas {
 }
 
 impl Blas {
+    /// Build a BLAS from a sub-range of a combined mesh buffer.
+    pub fn from_range(
+        context: &VulkanContext,
+        mesh: &Mesh,
+        info: &super::mesh::SubMeshInfo,
+    ) -> Result<Self> {
+        let vertex_address = mesh::get_device_address(&context.device, mesh.vertex_buffer)
+            + (info.vertex_offset as vk::DeviceSize)
+                * std::mem::size_of::<super::mesh::Vertex>() as vk::DeviceSize;
+        let index_address = mesh::get_device_address(&context.device, mesh.index_buffer)
+            + (info.index_offset as vk::DeviceSize)
+                * std::mem::size_of::<u32>() as vk::DeviceSize;
+        let triangle_count = info.index_count / 3;
+
+        Self::build(context, vertex_address, index_address, info.vertex_count, triangle_count)
+    }
+
     pub fn new(context: &VulkanContext, mesh: &Mesh) -> Result<Self> {
         let vertex_address = mesh::get_device_address(&context.device, mesh.vertex_buffer);
         let index_address = mesh::get_device_address(&context.device, mesh.index_buffer);
+        let triangle_count = mesh.index_count / 3;
 
+        Self::build(context, vertex_address, index_address, mesh.vertex_count, triangle_count)
+    }
+
+    fn build(
+        context: &VulkanContext,
+        vertex_address: vk::DeviceAddress,
+        index_address: vk::DeviceAddress,
+        vertex_count: u32,
+        triangle_count: u32,
+    ) -> Result<Self> {
         let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_address })
             .vertex_stride(std::mem::size_of::<super::mesh::Vertex>() as vk::DeviceSize)
-            .max_vertex(mesh.vertex_count - 1)
+            .max_vertex(vertex_count - 1)
             .index_type(vk::IndexType::UINT32)
             .index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_address });
 
@@ -33,8 +61,6 @@ impl Blas {
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
             .geometry(vk::AccelerationStructureGeometryDataKHR { triangles })
             .flags(vk::GeometryFlagsKHR::OPAQUE);
-
-        let triangle_count = mesh.index_count / 3;
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)

@@ -101,6 +101,12 @@ fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSe
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+        // 5: mesh offsets SSBO (index_base, vertex_base per mesh type)
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(5)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
     ];
 
     unsafe {

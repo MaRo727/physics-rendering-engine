@@ -16,14 +16,27 @@ layout(set = 0, binding = 2) uniform SceneUBO {
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
 layout(set = 0, binding = 4) readonly buffer IndexBuf  { uint  idxs[];  };
 
+struct MeshOffset {
+    uint index_base;
+    uint vertex_base;
+};
+layout(set = 0, binding = 5) readonly buffer MeshOffsetBuf { MeshOffset mesh_offsets[]; };
+
 hitAttributeEXT vec2 attribs;
 
 void main() {
-    // Fetch triangle indices.
-    uint base = uint(gl_PrimitiveID) * 3u;
-    uint i0 = idxs[base];
-    uint i1 = idxs[base + 1u];
-    uint i2 = idxs[base + 2u];
+    // Decode mesh_type (upper 8 bits) and object_id (lower 16 bits).
+    uint mesh_type = gl_InstanceCustomIndexEXT >> 16u;
+    uint object_id = gl_InstanceCustomIndexEXT & 0xFFFFu;
+
+    uint idx_base = mesh_offsets[mesh_type].index_base;
+    uint vtx_base = mesh_offsets[mesh_type].vertex_base;
+
+    // Fetch triangle indices (gl_PrimitiveID is relative to the BLAS geometry).
+    uint base = idx_base + uint(gl_PrimitiveID) * 3u;
+    uint i0 = idxs[base]     + vtx_base;
+    uint i1 = idxs[base + 1u] + vtx_base;
+    uint i2 = idxs[base + 2u] + vtx_base;
 
     // Stride = 9 floats: position(3) + normal(3) + color(3).
     vec3 n0 = vec3(verts[i0 * 9u + 3u], verts[i0 * 9u + 4u], verts[i0 * 9u + 5u]);
@@ -36,14 +49,12 @@ void main() {
     // Transform normal to world space.
     normal = normalize(mat3(gl_ObjectToWorldEXT) * normal);
 
-    // Per-instance color: 1 = floor, 4 = stick, others = cubes.
-    vec3 color;
-    if (gl_InstanceCustomIndexEXT == 1u) {
+    // Read per-vertex color from the first vertex of the triangle.
+    vec3 color = vec3(verts[i0 * 9u + 6u], verts[i0 * 9u + 7u], verts[i0 * 9u + 8u]);
+
+    // Override floor color.
+    if (object_id == 1u) {
         color = vec3(0.85, 0.85, 0.8); // light stone floor
-    } else if (gl_InstanceCustomIndexEXT == 4u) {
-        color = vec3(0.45, 0.30, 0.15); // dark wood stick
-    } else {
-        color = vec3(0.55, 0.35, 0.2); // dark warm cube
     }
 
     // Shadow ray.
@@ -66,9 +77,6 @@ void main() {
 
     float NdotL = dot(normal, L);
     float ambient = 0.15;
-    // Hemisphere fill: faces turned toward the light get a subtle boost
-    // even when in shadow, so shadowed lit surfaces look different from
-    // surfaces facing away from the light.
     float fill = max(0.0, NdotL) * 0.15;
     float diffuse = max(0.0, NdotL) * shadowed;
     payload = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
