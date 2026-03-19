@@ -86,6 +86,9 @@ impl Engine {
             self.interaction.drop_held(&mut self.physics);
         }
 
+        // --- Tool cycling (Tab) ---
+        self.interaction.cycle_tool(input.cycle_tool);
+
         if self.ghost.active {
             self.ghost.update(dt, input);
             self.physics.set_body_linvel(self.player.body.rigid_body, Vec3::ZERO);
@@ -108,7 +111,7 @@ impl Engine {
                     }
                 });
 
-            let pried_cell = self.interaction.update(
+            let interaction_result = self.interaction.update(
                 &mut self.physics,
                 &self.objects,
                 eye,
@@ -121,7 +124,7 @@ impl Engine {
             );
 
             // --- Handle pried building cube: remove from grid, spawn as held dynamic object ---
-            if let Some((cx, cy, cz)) = pried_cell {
+            if let Some((cx, cy, cz)) = interaction_result.pried_cell {
                 self.building.remove(&mut self.physics, cx, cy, cz);
 
                 let center = building::cell_center(cx, cy, cz);
@@ -144,6 +147,11 @@ impl Engine {
                     object_id: obj_id,
                     bounding_radius: UNIT_BOUNDING_RADIUS,
                 });
+            }
+
+            // --- Handle axe split: split cube into two halves ---
+            if let Some(target_body) = interaction_result.axe_hit {
+                self.split_cube(target_body, eye, look_dir);
             }
 
             // --- RMB: place held cube into building grid ---
@@ -197,6 +205,98 @@ impl Engine {
 
             self.player.apply_movement(&mut self.physics, input);
             self.physics.step(dt);
+        }
+    }
+
+    /// Split a cube object into two halves along the axis most aligned with the hit.
+    fn split_cube(&mut self, target_body: rapier3d::prelude::RigidBodyHandle, _eye: Vec3, look_dir: Vec3) {
+        // Find the object and verify it's a cube.
+        let obj_idx = match self.objects.iter().position(|o| o.body.rigid_body == target_body) {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        if self.objects[obj_idx].mesh_type != MESH_CUBE {
+            // Not a cube — just apply a knockback impulse instead.
+            let wc = self.objects[obj_idx].body.weight_class;
+            let force = look_dir * 8.0 * wc.punch_knockback();
+            self.physics.apply_impulse(target_body, force);
+            return;
+        }
+
+        let obj = self.objects.swap_remove(obj_idx);
+        let pos = self.physics.body_position(obj.body.rigid_body);
+        let transform = self.physics.body_transform(obj.body.rigid_body);
+        let scale = obj.render_scale;
+
+        // Determine split axis from look direction (split perpendicular to the
+        // most-aligned local axis so the cut feels natural).
+        // Transform look_dir into object local space.
+        let inv_rot = transform.inverse();
+        let local_dir = inv_rot.transform_vector3(look_dir);
+        let abs = local_dir.abs();
+
+        // Pick the axis with largest component in local space.
+        let split_axis = if abs.x >= abs.y && abs.x >= abs.z {
+            0 // X
+        } else if abs.y >= abs.x && abs.y >= abs.z {
+            1 // Y
+        } else {
+            2 // Z
+        };
+
+        // Remove original object from physics.
+        self.physics.remove_body(obj.body.rigid_body, obj.body.collider);
+
+        // Compute half scales and offsets.
+        let mut half_scale = scale;
+        match split_axis {
+            0 => half_scale.x *= 0.5,
+            1 => half_scale.y *= 0.5,
+            _ => half_scale.z *= 0.5,
+        }
+
+        // Offset in local space (quarter of original scale along split axis).
+        let mut offset = Vec3::ZERO;
+        match split_axis {
+            0 => offset.x = scale.x * 0.25,
+            1 => offset.y = scale.y * 0.25,
+            _ => offset.z = scale.z * 0.25,
+        }
+
+        // Transform offset to world space using the object's rotation.
+        let world_offset = transform.transform_vector3(offset);
+
+        // Half-extents for physics (render_scale / 2 gives the half-extents).
+        let half_extents = half_scale * 0.5;
+
+        // Determine weight class for halves.
+        let wc = obj.body.weight_class;
+
+        // Spawn two halves.
+        for sign in [-1.0_f32, 1.0_f32] {
+            let half_pos = pos + world_offset * sign;
+            let obj_id = self.next_object_id;
+            self.next_object_id += 1;
+
+            let body = PhysicsBody::new_dynamic_box(
+                &mut self.physics,
+                half_pos,
+                half_extents,
+                wc,
+            );
+
+            // Apply a small impulse to push halves apart.
+            let separation_impulse = world_offset.normalize_or_zero() * sign * 2.0;
+            self.physics.apply_impulse(body.rigid_body, separation_impulse);
+
+            self.objects.push(WorldObject {
+                body,
+                mesh_type: MESH_CUBE,
+                render_scale: half_scale,
+                object_id: obj_id,
+                bounding_radius: half_scale.max_element() * UNIT_BOUNDING_RADIUS,
+            });
         }
     }
 
@@ -256,6 +356,10 @@ impl Engine {
         let player_vp = cull_proj * cull_view;
 
         let pry_progress = self.interaction.pry_progress();
+        let tool_type = match self.interaction.equipped_tool {
+            crate::interaction::ToolType::Hands => 0.0,
+            crate::interaction::ToolType::Axe => 1.0,
+        };
 
         self.renderer.draw_frame(
             &transforms,
@@ -267,6 +371,7 @@ impl Engine {
             player_vp,
             self.ghost.active,
             pry_progress,
+            tool_type,
         )
     }
 
