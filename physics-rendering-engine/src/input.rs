@@ -14,6 +14,7 @@ pub struct InputState {
     pub place: bool,       // Right mouse button — place held cube into grid
     pub toggle_ghost: bool, // G — toggle ghost / debug camera
     pub spawn: bool,        // F — spawn a new block
+    pub cycle_tool: bool,    // Tab — cycle equipped tool
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -32,6 +33,7 @@ impl Default for InputState {
             place: false,
             toggle_ghost: false,
             spawn: false,
+            cycle_tool: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

@@ -90,6 +90,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyE) => self.input.interact = pressed,
                     PhysicalKey::Code(KeyCode::KeyG) => self.input.toggle_ghost = pressed,
                     PhysicalKey::Code(KeyCode::KeyF) => self.input.spawn = pressed,
+                    PhysicalKey::Code(KeyCode::Tab) => self.input.cycle_tool = pressed,
                     _ => {}
                 }
             }

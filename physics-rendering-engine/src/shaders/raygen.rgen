@@ -9,7 +9,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 lightDir;
     vec4 lightColor;
     mat4 playerVP;
-    vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1)
+    vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1), .z = tool type (0=hands, 1=axe)
 } scene;
 
 layout(location = 0) rayPayloadEXT vec3 payload;
@@ -67,6 +67,26 @@ void main() {
             if (norm <= pryProgress) {
                 payload = mix(payload, vec3(1.0, 0.9, 0.3), 0.9);
             }
+        }
+    }
+
+    // Tool indicator — draw axe icon below crosshair when equipped.
+    float toolType = scene.ghostMode.z;
+    if (toolType > 0.5) {
+        // Axe equipped — tint crosshair orange-red.
+        if (onCross) {
+            payload = vec3(1.0, 0.4, 0.2);
+        }
+
+        // Draw a small axe shape below the crosshair.
+        vec2 aOff = vec2(pixel - center) - vec2(0.0, 22.0); // offset below center
+        // Handle (vertical line).
+        bool axeHandle = (abs(aOff.x) <= 1.0 && aOff.y >= -6.0 && aOff.y <= 6.0);
+        // Blade (wedge on right side).
+        bool axeBlade = (aOff.x >= 1.0 && aOff.x <= 6.0 && aOff.y >= -4.0 && aOff.y <= 2.0
+                        && aOff.x - 1.0 <= 5.0 * (1.0 - abs(aOff.y - (-1.0)) / 4.0));
+        if (axeHandle || axeBlade) {
+            payload = mix(payload, vec3(0.9, 0.9, 0.9), 0.85);
         }
     }
 

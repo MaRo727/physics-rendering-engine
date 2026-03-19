@@ -499,6 +499,7 @@ impl Renderer {
         player_vp: Mat4,
         ghost_mode: bool,
         pry_progress: f32,
+        tool_type: f32,
     ) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
@@ -519,7 +520,7 @@ impl Renderer {
                 light_dir,
                 light_color,
                 player_vp,
-                ghost_mode: Vec4::new(if ghost_mode { 1.0 } else { 0.0 }, pry_progress, 0.0, 0.0),
+                ghost_mode: Vec4::new(if ghost_mode { 1.0 } else { 0.0 }, pry_progress, tool_type, 0.0),
             };
         }
 

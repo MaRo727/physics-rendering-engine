@@ -10,14 +10,58 @@ const HOLD_STIFFNESS: f32 = 20.0;
 const PUNCH_RANGE: f32 = 3.0;
 const BARE_PUNCH_FORCE: f32 = 8.0;
 const PRY_DURATION: f32 = 1.0;
+const AXE_RANGE: f32 = 4.0;
 
 use crate::scene::WorldObject;
+
+// ---------------------------------------------------------------------------
+// Tool types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolType {
+    Hands,
+    Axe,
+}
+
+impl ToolType {
+    pub fn next(self) -> Self {
+        match self {
+            ToolType::Hands => ToolType::Axe,
+            ToolType::Axe => ToolType::Hands,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            ToolType::Hands => "Hands",
+            ToolType::Axe => "Axe",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interaction result
+// ---------------------------------------------------------------------------
+
+pub struct InteractionResult {
+    pub pried_cell: Option<(i32, i32, i32)>,
+    /// Body handle of an object hit by the axe swing.
+    pub axe_hit: Option<RigidBodyHandle>,
+}
+
+// ---------------------------------------------------------------------------
+// Interaction
+// ---------------------------------------------------------------------------
 
 /// Manages picking up, holding, throwing, punching, and prying building cubes.
 pub struct Interaction {
     pub held_body: Option<RigidBodyHandle>,
+    pub equipped_tool: ToolType,
     interact_prev: bool,
     punch_prev: bool,
+    cycle_prev: bool,
     pry_timer: f32,
     pry_target: Option<(i32, i32, i32)>,
 }
@@ -26,8 +70,10 @@ impl Default for Interaction {
     fn default() -> Self {
         Self {
             held_body: None,
+            equipped_tool: ToolType::Hands,
             interact_prev: false,
             punch_prev: false,
+            cycle_prev: false,
             pry_timer: 0.0,
             pry_target: None,
         }
@@ -44,8 +90,19 @@ impl Interaction {
         self.pry_target = None;
     }
 
+    /// Cycle to the next equipped tool. Returns true if tool changed.
+    pub fn cycle_tool(&mut self, pressed: bool) -> bool {
+        let edge = pressed && !self.cycle_prev;
+        self.cycle_prev = pressed;
+        if edge {
+            self.equipped_tool = self.equipped_tool.next();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Process interact (E) and throw/punch (LMB) input for this frame.
-    /// Returns Some(grid_cell) if a building cube was pried out this frame.
     pub fn update(
         &mut self,
         physics: &mut PhysicsWorld,
@@ -57,11 +114,14 @@ impl Interaction {
         player_collider: rapier3d::prelude::ColliderHandle,
         dt: f32,
         building_cell_aimed_at: Option<(i32, i32, i32)>,
-    ) -> Option<(i32, i32, i32)> {
+    ) -> InteractionResult {
         let interact_edge = interact_pressed && !self.interact_prev;
         self.interact_prev = interact_pressed;
 
-        let mut pried_cell = None;
+        let mut result = InteractionResult {
+            pried_cell: None,
+            axe_hit: None,
+        };
 
         // --- E press (edge): drop held OR pick up dynamic object OR start prying ---
         if interact_edge {
@@ -97,7 +157,7 @@ impl Interaction {
             if building_cell_aimed_at == self.pry_target {
                 self.pry_timer += dt;
                 if self.pry_timer >= PRY_DURATION {
-                    pried_cell = self.pry_target.take();
+                    result.pried_cell = self.pry_target.take();
                     self.pry_timer = 0.0;
                 }
             } else {
@@ -113,7 +173,7 @@ impl Interaction {
             self.pry_target = None;
         }
 
-        // --- LMB: throw held object, or punch ---
+        // --- LMB: throw held object, or punch/axe ---
         let lmb_edge = throw_pressed && !self.punch_prev;
         self.punch_prev = throw_pressed;
 
@@ -123,12 +183,26 @@ impl Interaction {
                 physics.set_gravity_enabled(held, true);
                 physics.set_body_linvel(held, look_dir * throw_speed);
             } else {
-                let hit = physics.cast_ray(eye, look_dir, PUNCH_RANGE, player_collider);
-                if let Some(target_body) = hit {
-                    if physics.is_dynamic(target_body) {
-                        let wc = weight_class_of(objects, target_body);
-                        let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
-                        physics.apply_impulse(target_body, force);
+                match self.equipped_tool {
+                    ToolType::Hands => {
+                        // Bare-fist punch.
+                        let hit = physics.cast_ray(eye, look_dir, PUNCH_RANGE, player_collider);
+                        if let Some(target_body) = hit {
+                            if physics.is_dynamic(target_body) {
+                                let wc = weight_class_of(objects, target_body);
+                                let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
+                                physics.apply_impulse(target_body, force);
+                            }
+                        }
+                    }
+                    ToolType::Axe => {
+                        // Axe swing — report hit target for engine to split.
+                        let hit = physics.cast_ray(eye, look_dir, AXE_RANGE, player_collider);
+                        if let Some(target_body) = hit {
+                            if physics.is_dynamic(target_body) {
+                                result.axe_hit = Some(target_body);
+                            }
+                        }
                     }
                 }
             }
@@ -142,7 +216,7 @@ impl Interaction {
             physics.set_body_linvel(held, delta * HOLD_STIFFNESS);
         }
 
-        pried_cell
+        result
     }
 
     /// Progress of the current pry action (0.0 to 1.0). 0 when not prying.
