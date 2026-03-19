@@ -9,7 +9,8 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::engine::{Engine, EngineConfig, InputState};
+use crate::engine::{Engine, EngineConfig};
+use crate::input::InputState;
 
 pub struct App {
     engine: Option<Engine>,

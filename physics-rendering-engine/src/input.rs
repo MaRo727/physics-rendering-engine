@@ -1,0 +1,35 @@
+// ---------------------------------------------------------------------------
+// Input state
+// ---------------------------------------------------------------------------
+
+pub struct InputState {
+    pub forward: bool,
+    pub backward: bool,
+    pub left: bool,
+    pub right: bool,
+    pub jump: bool,
+    pub descend: bool,     // Left Shift — ghost descend
+    pub interact: bool,    // E — pick up / drop
+    pub throw: bool,       // Left mouse button — throw held object
+    pub toggle_ghost: bool, // G — toggle ghost / debug camera
+    pub mouse_dx: f32,
+    pub mouse_dy: f32,
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            forward: false,
+            backward: false,
+            left: false,
+            right: false,
+            jump: false,
+            descend: false,
+            interact: false,
+            throw: false,
+            toggle_ghost: false,
+            mouse_dx: 0.0,
+            mouse_dy: 0.0,
+        }
+    }
+}

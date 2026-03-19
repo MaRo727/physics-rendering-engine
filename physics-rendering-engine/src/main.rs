@@ -1,7 +1,11 @@
 mod app;
 mod engine;
+mod input;
+mod interaction;
 mod physics;
+mod player;
 mod renderer;
+mod scene;
 
 use app::App;
 use winit::event_loop::EventLoop;
