@@ -54,11 +54,6 @@ void main() {
     // Read per-vertex color from the first vertex of the triangle.
     vec3 color = vec3(verts[i0 * 9u + 6u], verts[i0 * 9u + 7u], verts[i0 * 9u + 8u]);
 
-    // Override floor color.
-    if (object_id == 1u) {
-        color = vec3(0.85, 0.85, 0.8); // light stone floor
-    }
-
     // Shadow ray.
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
     vec3 L = normalize(scene.lightDir.xyz);

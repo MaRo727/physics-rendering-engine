@@ -90,6 +90,7 @@ impl BuildingGrid {
                     Vec3::new(x + 1.0, y + 1.0, z),
                     Vec3::new(x + 1.0, y,       z),
                     Vec3::X,
+                    BUILDING_COLOR,
                 );
             }
             // -X face
@@ -101,6 +102,7 @@ impl BuildingGrid {
                     Vec3::new(x, y + 1.0, z + 1.0),
                     Vec3::new(x, y,       z + 1.0),
                     Vec3::NEG_X,
+                    BUILDING_COLOR,
                 );
             }
             // +Y face
@@ -112,6 +114,7 @@ impl BuildingGrid {
                     Vec3::new(x + 1.0, y + 1.0, z),
                     Vec3::new(x,       y + 1.0, z),
                     Vec3::Y,
+                    BUILDING_COLOR,
                 );
             }
             // -Y face
@@ -123,6 +126,7 @@ impl BuildingGrid {
                     Vec3::new(x + 1.0, y, z + 1.0),
                     Vec3::new(x,       y, z + 1.0),
                     Vec3::NEG_Y,
+                    BUILDING_COLOR,
                 );
             }
             // +Z face
@@ -134,6 +138,7 @@ impl BuildingGrid {
                     Vec3::new(x + 1.0, y + 1.0, z + 1.0),
                     Vec3::new(x,       y + 1.0, z + 1.0),
                     Vec3::Z,
+                    BUILDING_COLOR,
                 );
             }
             // -Z face
@@ -145,6 +150,7 @@ impl BuildingGrid {
                     Vec3::new(x,       y + 1.0, z),
                     Vec3::new(x + 1.0, y + 1.0, z),
                     Vec3::NEG_Z,
+                    BUILDING_COLOR,
                 );
             }
         }
@@ -164,16 +170,17 @@ pub fn snap_to_grid(pos: Vec3) -> (i32, i32, i32) {
     (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32)
 }
 
-fn push_quad(
+pub(crate) fn push_quad(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
     a: Vec3, b: Vec3, c: Vec3, d: Vec3,
     normal: Vec3,
+    color: Vec3,
 ) {
     let base = vertices.len() as u32;
-    vertices.push(Vertex { position: a, normal, color: BUILDING_COLOR });
-    vertices.push(Vertex { position: b, normal, color: BUILDING_COLOR });
-    vertices.push(Vertex { position: c, normal, color: BUILDING_COLOR });
-    vertices.push(Vertex { position: d, normal, color: BUILDING_COLOR });
+    vertices.push(Vertex { position: a, normal, color });
+    vertices.push(Vertex { position: b, normal, color });
+    vertices.push(Vertex { position: c, normal, color });
+    vertices.push(Vertex { position: d, normal, color });
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }

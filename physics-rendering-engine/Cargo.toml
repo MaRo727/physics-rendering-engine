@@ -15,6 +15,9 @@ winit = "0.30"
 # Physics simulation
 rapier3d = "0.22"
 
+# Noise generation
+noise = "0.9"
+
 # Math
 glam = "0.29"
 

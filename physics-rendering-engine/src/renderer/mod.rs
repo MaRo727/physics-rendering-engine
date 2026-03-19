@@ -28,8 +28,9 @@ pub const MESH_BALL: u32 = 1;
 pub const MESH_PYRAMID: u32 = 2;
 pub const MESH_TRIANGLE: u32 = 3;
 pub const MESH_SLOPE: u32 = 4;
-pub const MESH_BUILDING: u32 = 5;
-pub const BASE_MESH_COUNT: usize = 5;
+pub const MESH_TERRAIN: u32 = 5;
+pub const MESH_BUILDING: u32 = 6;
+pub const BASE_MESH_COUNT: usize = 6;
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -199,7 +200,11 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: &Arc<Window>, max_instances: u32) -> Result<Self> {
+    pub fn new(
+        window: &Arc<Window>,
+        max_instances: u32,
+        terrain_mesh: (Vec<mesh::Vertex>, Vec<u32>),
+    ) -> Result<Self> {
         let size = window.inner_size();
         let context = VulkanContext::new(window.as_ref())?;
 
@@ -218,6 +223,7 @@ impl Renderer {
             shapes::pyramid(),        // MESH_PYRAMID = 2
             shapes::triangle_prism(), // MESH_TRIANGLE = 3
             shapes::slope(),          // MESH_SLOPE = 4
+            terrain_mesh,             // MESH_TERRAIN = 5
         ];
 
         let (combined_verts, combined_indices, sub_mesh_infos) =
