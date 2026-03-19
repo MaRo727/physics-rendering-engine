@@ -85,6 +85,59 @@ impl PhysicsBody {
         Self { rigid_body, collider, weight_class: WeightClass::Medium }
     }
 
+    /// Dynamic rigid body with a ball (sphere) collider — falls under gravity.
+    pub fn new_dynamic_ball(
+        world: &mut PhysicsWorld,
+        position: Vec3,
+        radius: f32,
+        weight_class: WeightClass,
+    ) -> Self {
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(vector![position.x, position.y, position.z])
+            .additional_mass(weight_class.mass())
+            .build();
+        let rigid_body = world.rigid_body_set.insert(rigid_body);
+
+        let collider = ColliderBuilder::ball(radius)
+            .restitution(0.6)
+            .build();
+        let collider =
+            world
+                .collider_set
+                .insert_with_parent(collider, rigid_body, &mut world.rigid_body_set);
+
+        Self { rigid_body, collider, weight_class }
+    }
+
+    /// Dynamic rigid body with a convex hull collider — falls under gravity.
+    pub fn new_dynamic_convex(
+        world: &mut PhysicsWorld,
+        position: Vec3,
+        points: &[Vec3],
+        weight_class: WeightClass,
+    ) -> Self {
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(vector![position.x, position.y, position.z])
+            .additional_mass(weight_class.mass())
+            .build();
+        let rigid_body = world.rigid_body_set.insert(rigid_body);
+
+        let rapier_points: Vec<_> = points
+            .iter()
+            .map(|p| point![p.x, p.y, p.z])
+            .collect();
+        let collider = ColliderBuilder::convex_hull(&rapier_points)
+            .unwrap_or_else(|| ColliderBuilder::cuboid(0.5, 0.5, 0.5))
+            .restitution(0.4)
+            .build();
+        let collider =
+            world
+                .collider_set
+                .insert_with_parent(collider, rigid_body, &mut world.rigid_body_set);
+
+        Self { rigid_body, collider, weight_class }
+    }
+
     /// Static rigid body with a box collider — never moves.
     pub fn new_static_box(world: &mut PhysicsWorld, position: Vec3, half_extents: Vec3) -> Self {
         let rigid_body = RigidBodyBuilder::fixed()

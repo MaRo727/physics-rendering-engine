@@ -19,6 +19,22 @@ use rt_pipeline::{RtPipeline, SceneUBO};
 use swapchain::Swapchain;
 
 // ---------------------------------------------------------------------------
+// Mesh type constants
+// ---------------------------------------------------------------------------
+
+pub const MESH_CUBE: u32 = 0;
+pub const MESH_BALL: u32 = 1;
+pub const MESH_PYRAMID: u32 = 2;
+pub const MESH_TRIANGLE: u32 = 3;
+pub const MESH_SLOPE: u32 = 4;
+pub const MESH_TYPE_COUNT: usize = 5;
+
+/// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
+pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
+    (mesh_type << 16) | (object_id & 0xFFFF)
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame UBO buffer
 // ---------------------------------------------------------------------------
 
@@ -45,6 +61,43 @@ fn create_scene_ubo_buffer(context: &VulkanContext) -> Result<SceneUboBuffer> {
     }
     .context("Failed to map SceneUBO memory")? as *mut SceneUBO;
     Ok(SceneUboBuffer { buffer, memory, mapped })
+}
+
+// ---------------------------------------------------------------------------
+// Mesh offsets GPU buffer
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuMeshOffset {
+    index_base: u32,
+    vertex_base: u32,
+}
+
+struct MeshOffsetsBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+}
+
+fn create_mesh_offsets_buffer(
+    context: &VulkanContext,
+    infos: &[mesh::SubMeshInfo],
+) -> Result<MeshOffsetsBuffer> {
+    let offsets: Vec<GpuMeshOffset> = infos
+        .iter()
+        .map(|info| GpuMeshOffset {
+            index_base: info.index_offset,
+            vertex_base: info.vertex_offset,
+        })
+        .collect();
+
+    let (buffer, memory) = mesh::upload_via_staging(
+        context,
+        &offsets,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+    )?;
+
+    Ok(MeshOffsetsBuffer { buffer, memory })
 }
 
 // ---------------------------------------------------------------------------
@@ -127,13 +180,14 @@ pub struct Renderer {
     swapchain: Swapchain,
     frames: [FrameData; MAX_FRAMES_IN_FLIGHT],
     mesh: Mesh,
-    blas: Blas,
+    blas_list: Vec<Blas>,
     tlas: Tlas,
     rt_pipeline: RtPipeline,
     storage_image: StorageImage,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     scene_ubo_buffers: [SceneUboBuffer; MAX_FRAMES_IN_FLIGHT],
+    mesh_offsets_buf: MeshOffsetsBuffer,
     current_frame: usize,
     extent: vk::Extent2D,
     surface_width: u32,
@@ -142,7 +196,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: &Arc<Window>) -> Result<Self> {
+    pub fn new(window: &Arc<Window>, max_instances: u32) -> Result<Self> {
         let size = window.inner_size();
         let context = VulkanContext::new(window.as_ref())?;
 
@@ -154,12 +208,30 @@ impl Renderer {
             create_frame(&context.device, context.graphics_queue_family)?,
         ];
 
-        let (vertices, indices) = mesh::cube();
-        let mesh = Mesh::new(&context, &vertices, &indices)?;
-        let blas = Blas::new(&context, &mesh)?;
+        // Generate all mesh types and combine into single buffers.
+        let cube_data = mesh::cube();
+        let ball_data = mesh::ball(16, 24);
+        let pyramid_data = mesh::pyramid();
+        let triangle_data = mesh::triangle_prism();
+        let slope_data = mesh::slope();
 
-        // 5 objects: cube, floor, player, cube2, stick
-        let tlas = Tlas::new(&context, 5)?;
+        let (combined_verts, combined_indices, sub_mesh_infos) = mesh::combine_meshes(&[
+            cube_data,     // MESH_CUBE = 0
+            ball_data,     // MESH_BALL = 1
+            pyramid_data,  // MESH_PYRAMID = 2
+            triangle_data, // MESH_TRIANGLE = 3
+            slope_data,    // MESH_SLOPE = 4
+        ]);
+
+        let combined_mesh = Mesh::new(&context, &combined_verts, &combined_indices)?;
+
+        // Build one BLAS per mesh type from sub-ranges of the combined buffer.
+        let mut blas_list = Vec::with_capacity(MESH_TYPE_COUNT);
+        for info in &sub_mesh_infos {
+            blas_list.push(Blas::from_range(&context, &combined_mesh, info)?);
+        }
+
+        let tlas = Tlas::new(&context, max_instances)?;
 
         let rt_pipeline = RtPipeline::new(&context)?;
 
@@ -184,6 +256,8 @@ impl Renderer {
         let ubo1 = create_scene_ubo_buffer(&context)?;
         let scene_ubo_buffers = [ubo0, ubo1];
 
+        let mesh_offsets_buf = create_mesh_offsets_buffer(&context, &sub_mesh_infos)?;
+
         // Descriptor pool.
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -197,7 +271,7 @@ impl Renderer {
                 .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 2),
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 3),
         ];
         let descriptor_pool = unsafe {
             context.device.create_descriptor_pool(
@@ -220,18 +294,19 @@ impl Renderer {
         .context("Failed to allocate descriptor sets")?;
         let descriptor_sets = [sets[0], sets[1]];
 
-        let mut renderer = Self {
+        let renderer = Self {
             context,
             swapchain,
             frames,
-            mesh,
-            blas,
+            mesh: combined_mesh,
+            blas_list,
             tlas,
             rt_pipeline,
             storage_image,
             descriptor_pool,
             descriptor_sets,
             scene_ubo_buffers,
+            mesh_offsets_buf,
             current_frame: 0,
             extent,
             surface_width: size.width,
@@ -239,7 +314,7 @@ impl Renderer {
             swapchain_dirty: false,
         };
 
-        // Write initial descriptor sets (tlas handle set after first update, skip for now).
+        // Write initial descriptor sets.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             renderer.write_descriptor_set(i);
         }
@@ -271,6 +346,11 @@ impl Renderer {
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
+        let mesh_offset_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.mesh_offsets_buf.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+
         let set = self.descriptor_sets[i];
         let writes = [
             vk::WriteDescriptorSet::default()
@@ -299,6 +379,11 @@ impl Renderer {
                 .dst_binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&index_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&mesh_offset_info)),
         ];
 
         unsafe { self.context.device.update_descriptor_sets(&writes, &[]) };
@@ -350,7 +435,7 @@ impl Renderer {
     pub fn draw_frame(
         &mut self,
         transforms: &[Mat4],
-        instance_ids: &[u32],
+        instance_ids: &[u32],   // packed: mesh_type << 16 | object_id
         view: Mat4,
         proj: Mat4,
         light_dir: Vec4,
@@ -420,20 +505,22 @@ impl Renderer {
             )?;
         }
 
-        // Build TLAS instances.
+        // Build TLAS instances — each references the correct BLAS for its mesh type.
         let instances: Vec<vk::AccelerationStructureInstanceKHR> = transforms
             .iter()
             .zip(instance_ids.iter())
-            .map(|(&t, &custom_index)| {
+            .map(|(&t, &packed_id)| {
+                let mesh_type = (packed_id >> 16) as usize;
+                let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
                 vk::AccelerationStructureInstanceKHR {
                     transform: mat4_to_transform(t),
-                    instance_custom_index_and_mask: vk::Packed24_8::new(custom_index, 0xFF),
+                    instance_custom_index_and_mask: vk::Packed24_8::new(packed_id, 0xFF),
                     instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                         0,
                         vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
                     ),
                     acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                        device_handle: self.blas.device_address,
+                        device_handle: blas_address,
                     },
                 }
             })
@@ -620,11 +707,15 @@ impl Drop for Renderer {
             }
         }
         unsafe {
+            self.context.device.destroy_buffer(self.mesh_offsets_buf.buffer, None);
+            self.context.device.free_memory(self.mesh_offsets_buf.memory, None);
             self.context.device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
         self.rt_pipeline.destroy(&self.context.device);
         self.tlas.destroy(&self.context);
-        self.blas.destroy(&self.context);
+        for blas in &self.blas_list {
+            blas.destroy(&self.context);
+        }
         self.mesh.destroy(&self.context.device);
         unsafe {
             self.context.device.destroy_image_view(self.storage_image.view, None);

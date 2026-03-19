@@ -8,7 +8,7 @@ use rapier3d::prelude::RigidBodyHandle;
 
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
-use crate::renderer::Renderer;
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BALL, MESH_PYRAMID, MESH_TRIANGLE, MESH_SLOPE};
 
 const PLAYER_SPEED: f32 = 5.0;
 const JUMP_VELOCITY: f32 = 6.0;
@@ -18,12 +18,6 @@ const HOLD_DISTANCE: f32 = 3.0;
 const HOLD_STIFFNESS: f32 = 20.0;
 const PUNCH_RANGE: f32 = 3.0;
 const BARE_PUNCH_FORCE: f32 = 8.0;
-
-// Render-object indices.
-const CUBE_IDX: usize = 0;
-const PLAYER_IDX: usize = 2;
-const CUBE2_IDX: usize = 3;
-const STICK_IDX: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -61,13 +55,6 @@ impl Default for InputState {
 // Engine types
 // ---------------------------------------------------------------------------
 
-pub struct MeshId(pub u32);
-
-pub struct RenderObject {
-    pub mesh_id: MeshId,
-    pub transform: Mat4,
-}
-
 pub struct EngineConfig {
     pub window_width: u32,
     pub window_height: u32,
@@ -75,23 +62,29 @@ pub struct EngineConfig {
     pub gravity: Vec3,
 }
 
+/// A world object with physics, a mesh type, a render scale, and an object id.
+struct WorldObject {
+    body: PhysicsBody,
+    mesh_type: u32,
+    render_scale: Vec3,
+    object_id: u32,
+}
+
 pub struct Engine {
     pub config: EngineConfig,
     physics: PhysicsWorld,
-    cube: PhysicsBody,
-    cube2: PhysicsBody,
-    stick: PhysicsBody,
+    objects: Vec<WorldObject>,
     player: PhysicsBody,
+    player_object_id: u32,
     renderer: Renderer,
-    render_objects: Vec<RenderObject>,
-    yaw: f32,   // camera horizontal rotation (radians)
-    pitch: f32, // camera vertical rotation (radians)
+    yaw: f32,
+    pitch: f32,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
     held_body: Option<RigidBodyHandle>,
-    interact_prev: bool, // edge-detect E key
-    punch_prev: bool,    // edge-detect LMB
+    interact_prev: bool,
+    punch_prev: bool,
 }
 
 impl Engine {
@@ -99,76 +92,165 @@ impl Engine {
         let surface_width = config.window_width;
         let surface_height = config.window_height;
 
-        let renderer = Renderer::new(window)?;
-
         let mut physics = PhysicsWorld::new(config.gravity);
 
-        // Falling cube — 1×1×1 box, starts 4 units above the floor.
-        let cube = PhysicsBody::new_dynamic_box(
-            &mut physics,
-            Vec3::new(0.0, 4.0, 0.0),
-            Vec3::new(0.5, 0.5, 0.5),
-            WeightClass::Medium,
-        );
+        let mut objects: Vec<WorldObject> = Vec::new();
+        let mut next_id: u32 = 0;
+        let mut alloc_id = || { let id = next_id; next_id += 1; id };
 
-        // Static floor — thin wide slab at y = -0.5 (top surface at y = 0).
+        // --- Cube (medium, 1x1x1) ---
+        let cube_id = alloc_id();
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_box(
+                &mut physics,
+                Vec3::new(0.0, 4.0, 0.0),
+                Vec3::new(0.5, 0.5, 0.5),
+                WeightClass::Medium,
+            ),
+            mesh_type: MESH_CUBE,
+            render_scale: Vec3::ONE,
+            object_id: cube_id,
+        });
+
+        // --- Floor (static, wide slab) ---
+        let _floor_id = alloc_id();
         PhysicsBody::new_static_box(
             &mut physics,
             Vec3::new(0.0, -0.5, 0.0),
             Vec3::new(45.0, 0.5, 45.0),
         );
+        // Floor has a static render object (no physics body tracked).
+        // We'll handle it specially below.
 
-        // Second falling cube — 3×3×3, offset so it doesn't land on the first.
-        let cube2 = PhysicsBody::new_dynamic_box(
-            &mut physics,
-            Vec3::new(3.0, 8.0, 0.0),
-            Vec3::new(1.5, 1.5, 1.5),
-            WeightClass::Heavy,
-        );
+        // --- Big cube (heavy, 3x3x3) ---
+        let cube2_id = alloc_id();
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_box(
+                &mut physics,
+                Vec3::new(3.0, 8.0, 0.0),
+                Vec3::new(1.5, 1.5, 1.5),
+                WeightClass::Heavy,
+            ),
+            mesh_type: MESH_CUBE,
+            render_scale: Vec3::splat(3.0),
+            object_id: cube2_id,
+        });
 
-        // Stick — thin elongated box, lying on the ground near the player.
-        // Half-extents (0.06, 0.06, 0.5) → full size 0.12 × 0.12 × 1.0
-        let stick = PhysicsBody::new_dynamic_box(
-            &mut physics,
-            Vec3::new(-2.0, 1.0, 3.0),
-            Vec3::new(0.06, 0.06, 0.5),
-            WeightClass::Light,
-        );
+        // --- Stick (light, thin box) ---
+        let stick_id = alloc_id();
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_box(
+                &mut physics,
+                Vec3::new(-2.0, 1.0, 3.0),
+                Vec3::new(0.06, 0.06, 0.5),
+                WeightClass::Light,
+            ),
+            mesh_type: MESH_CUBE,
+            render_scale: Vec3::new(0.12, 0.12, 1.0),
+            object_id: stick_id,
+        });
 
-        // Player — tall box on the floor, 4 units back from centre.
-        // Half-extents (0.4, 0.9, 0.4) → full size 0.8 × 1.8 × 0.8, centre at y = 0.9.
+        // --- Ball (medium, radius 0.5) ---
+        let ball_id = alloc_id();
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_ball(
+                &mut physics,
+                Vec3::new(-3.0, 5.0, -2.0),
+                0.5,
+                WeightClass::Medium,
+            ),
+            mesh_type: MESH_BALL,
+            render_scale: Vec3::ONE,
+            object_id: ball_id,
+        });
+
+        // --- Pyramid (medium) ---
+        let pyramid_id = alloc_id();
+        let pyramid_half = 0.5_f32;
+        let pyramid_points = vec![
+            Vec3::new(0.0, pyramid_half, 0.0),
+            Vec3::new(-pyramid_half, -pyramid_half, pyramid_half),
+            Vec3::new(pyramid_half, -pyramid_half, pyramid_half),
+            Vec3::new(pyramid_half, -pyramid_half, -pyramid_half),
+            Vec3::new(-pyramid_half, -pyramid_half, -pyramid_half),
+        ];
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_convex(
+                &mut physics,
+                Vec3::new(2.0, 6.0, -3.0),
+                &pyramid_points,
+                WeightClass::Medium,
+            ),
+            mesh_type: MESH_PYRAMID,
+            render_scale: Vec3::ONE,
+            object_id: pyramid_id,
+        });
+
+        // --- Triangle prism (light) ---
+        let tri_id = alloc_id();
+        let tri_points = vec![
+            Vec3::new(-0.5, -0.5, 0.5),
+            Vec3::new(0.5, -0.5, 0.5),
+            Vec3::new(0.0, 0.5, 0.5),
+            Vec3::new(-0.5, -0.5, -0.5),
+            Vec3::new(0.5, -0.5, -0.5),
+            Vec3::new(0.0, 0.5, -0.5),
+        ];
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_convex(
+                &mut physics,
+                Vec3::new(-4.0, 3.0, 1.0),
+                &tri_points,
+                WeightClass::Light,
+            ),
+            mesh_type: MESH_TRIANGLE,
+            render_scale: Vec3::ONE,
+            object_id: tri_id,
+        });
+
+        // --- Slope / ramp (heavy, static-like but dynamic so it can be punched) ---
+        let slope_id = alloc_id();
+        let slope_points = vec![
+            Vec3::new(-0.5, -0.5, 0.5),
+            Vec3::new(0.5, -0.5, 0.5),
+            Vec3::new(-0.5, 0.5, 0.5),
+            Vec3::new(-0.5, -0.5, -0.5),
+            Vec3::new(0.5, -0.5, -0.5),
+            Vec3::new(-0.5, 0.5, -0.5),
+        ];
+        objects.push(WorldObject {
+            body: PhysicsBody::new_dynamic_convex(
+                &mut physics,
+                Vec3::new(5.0, 1.0, 2.0),
+                &slope_points,
+                WeightClass::Heavy,
+            ),
+            mesh_type: MESH_SLOPE,
+            render_scale: Vec3::splat(2.0),
+            object_id: slope_id,
+        });
+
+        // --- Player ---
+        let player_id = alloc_id();
         let player = PhysicsBody::new_player_box(
             &mut physics,
             Vec3::new(0.0, 0.9, 4.0),
             Vec3::new(0.4, 0.9, 0.4),
         );
 
-        let floor_transform = Mat4::from_scale_rotation_translation(
-            Vec3::new(90.0, 1.0, 90.0),
-            Quat::IDENTITY,
-            Vec3::new(0.0, -0.5, 0.0),
-        );
+        // Total render instances: objects + floor + player
+        let max_instances = (objects.len() + 2) as u32;
+        let renderer = Renderer::new(window, max_instances)?;
 
-        let render_objects = vec![
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE_IDX  = 0
-            RenderObject { mesh_id: MeshId(0), transform: floor_transform }, // FLOOR_IDX = 1
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // PLAYER_IDX = 2
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE2_IDX = 3
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // STICK_IDX = 4
-        ];
-
-        // Start facing toward the falling cube (-Z direction).
         let yaw = -std::f32::consts::FRAC_PI_2;
 
         Ok(Self {
             config,
             physics,
-            cube,
-            cube2,
-            stick,
+            objects,
             player,
+            player_object_id: player_id,
             renderer,
-            render_objects,
             yaw,
             pitch: 0.0,
             surface_width,
@@ -181,12 +263,10 @@ impl Engine {
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
-        // Update camera orientation from mouse delta.
         self.yaw   -= input.mouse_dx * MOUSE_SENSITIVITY;
         self.pitch  = (self.pitch - input.mouse_dy * MOUSE_SENSITIVITY)
             .clamp(-89_f32.to_radians(), 89_f32.to_radians());
 
-        // Camera look direction (used for pickup raycast, hold target, throw).
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         let look_dir = Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch);
@@ -200,10 +280,8 @@ impl Engine {
 
         if interact_pressed {
             if let Some(held) = self.held_body.take() {
-                // Drop: re-enable gravity, zero velocity.
                 self.physics.set_gravity_enabled(held, true);
             } else {
-                // Try to pick up: raycast from eye in look direction.
                 let hit = self.physics.cast_ray(
                     eye,
                     look_dir,
@@ -211,7 +289,6 @@ impl Engine {
                     self.player.collider,
                 );
                 if let Some(handle) = hit {
-                    // Only pick up dynamic bodies (not the floor).
                     if self.physics.is_dynamic(handle) {
                         self.held_body = Some(handle);
                         self.physics.set_gravity_enabled(handle, false);
@@ -226,12 +303,10 @@ impl Engine {
 
         if lmb_pressed {
             if let Some(held) = self.held_body.take() {
-                // Throw: speed depends on held object's weight class.
                 let throw_speed = self.weight_class_of(held).throw_speed();
                 self.physics.set_gravity_enabled(held, true);
                 self.physics.set_body_linvel(held, look_dir * throw_speed);
             } else {
-                // Punch: raycast, apply knockback impulse.
                 let hit = self.physics.cast_ray(
                     eye,
                     look_dir,
@@ -253,7 +328,6 @@ impl Engine {
             let target = eye + look_dir * HOLD_DISTANCE;
             let obj_pos = self.physics.body_position(held);
             let delta = target - obj_pos;
-            // Velocity-based spring: move toward target.
             self.physics.set_body_linvel(held, delta * HOLD_STIFFNESS);
         }
 
@@ -270,7 +344,6 @@ impl Engine {
             move_vel = move_vel.normalize() * PLAYER_SPEED;
         }
 
-        // Set player XZ velocity; preserve Y so gravity still applies.
         let mut vy = self.physics.body_linvel_y(self.player.rigid_body);
         if input.jump && self.physics.is_on_ground(self.player.collider) {
             vy = JUMP_VELOCITY;
@@ -281,31 +354,31 @@ impl Engine {
         );
 
         self.physics.step(dt);
-
-        // Extract render transforms.
-        self.render_objects[CUBE_IDX].transform =
-            self.physics.body_transform(self.cube.rigid_body);
-
-        self.render_objects[CUBE2_IDX].transform =
-            self.physics.body_transform(self.cube2.rigid_body) * Mat4::from_scale(Vec3::splat(3.0));
-
-        self.render_objects[STICK_IDX].transform =
-            self.physics.body_transform(self.stick.rigid_body) * Mat4::from_scale(Vec3::new(0.12, 0.12, 1.0));
-
-        let body_t = self.physics.body_transform(self.player.rigid_body);
-        self.render_objects[PLAYER_IDX].transform =
-            body_t * Mat4::from_scale(Vec3::new(0.8, 1.8, 0.8));
-        // FLOOR_IDX is static — transform never changes.
     }
 
     pub fn render(&mut self) -> Result<()> {
-        // Skip the player mesh — the camera is inside it, and its inner faces
-        // would occlude the entire scene.
-        let (transforms, instance_ids): (Vec<Mat4>, Vec<u32>) = self.render_objects.iter()
-            .enumerate()
-            .filter(|(i, _)| *i != PLAYER_IDX)
-            .map(|(i, o)| (o.transform, i as u32))
-            .unzip();
+        let mut transforms = Vec::new();
+        let mut instance_ids = Vec::new();
+
+        // Dynamic objects.
+        for obj in &self.objects {
+            let t = self.physics.body_transform(obj.body.rigid_body)
+                * Mat4::from_scale(obj.render_scale);
+            transforms.push(t);
+            instance_ids.push(pack_instance_id(obj.mesh_type, obj.object_id));
+        }
+
+        // Static floor.
+        let floor_transform = Mat4::from_scale_rotation_translation(
+            Vec3::new(90.0, 1.0, 90.0),
+            Quat::IDENTITY,
+            Vec3::new(0.0, -0.5, 0.0),
+        );
+        transforms.push(floor_transform);
+        instance_ids.push(pack_instance_id(MESH_CUBE, 1)); // object_id 1 = floor
+
+        // Player (skip rendering — camera is inside).
+        // Not added to the render list.
 
         let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
         let (view, proj) = self.camera_matrices(aspect);
@@ -326,22 +399,19 @@ impl Engine {
         self.renderer.resize(width, height);
     }
 
-    /// Look up the WeightClass for a rigid body handle.
     fn weight_class_of(&self, handle: RigidBodyHandle) -> WeightClass {
-        for body in [&self.cube, &self.cube2, &self.stick] {
-            if body.rigid_body == handle {
-                return body.weight_class;
+        for obj in &self.objects {
+            if obj.body.rigid_body == handle {
+                return obj.body.weight_class;
             }
         }
-        WeightClass::Medium // fallback
+        WeightClass::Medium
     }
 
     fn camera_matrices(&self, aspect: f32) -> (Mat4, Mat4) {
-        // Eye at the player's head — 0.7 m above body centre.
         let pos = self.physics.body_position(self.player.rigid_body);
         let eye = pos + Vec3::new(0.0, 0.7, 0.0);
 
-        // Look direction from yaw + pitch.
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         let dir = Vec3::new(
