@@ -82,6 +82,12 @@ impl PhysicsWorld {
         self.rigid_body_set[handle].linvel().y
     }
 
+    /// Return the full linear velocity as a Vec3.
+    pub fn body_linvel_xz(&self, handle: RigidBodyHandle) -> Vec3 {
+        let v = self.rigid_body_set[handle].linvel();
+        Vec3::new(v.x, v.y, v.z)
+    }
+
     pub fn set_body_linvel(&mut self, handle: RigidBodyHandle, vel: Vec3) {
         if let Some(body) = self.rigid_body_set.get_mut(handle) {
             body.set_linvel(vector![vel.x, vel.y, vel.z], true);
@@ -212,6 +218,31 @@ impl PhysicsWorld {
             &mut self.multibody_joint_set,
             true,
         );
+    }
+
+    /// Cast a ray and return the distance to the first hit (excluding `exclude`).
+    pub fn cast_ray_distance(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_toi: f32,
+        exclude: ColliderHandle,
+    ) -> Option<f32> {
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = QueryFilter::default().exclude_collider(exclude);
+        self.query_pipeline
+            .cast_ray(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_toi,
+                true,
+                filter,
+            )
+            .map(|(_handle, toi)| toi)
     }
 
     /// Cast a ray and return hit position + surface normal (excluding `exclude`).

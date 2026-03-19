@@ -96,6 +96,72 @@ pub fn ball(stacks: u32, slices: u32) -> (Vec<Vertex>, Vec<u32>) {
 }
 
 // ---------------------------------------------------------------------------
+// Capsule (pill) mesh data
+// ---------------------------------------------------------------------------
+
+/// Capsule (pill shape) centered at origin: cylinder along Y with hemispherical caps.
+/// Total height = `height`, radius = `radius`. `stacks` and `slices` control tessellation.
+pub fn capsule(radius: f32, height: f32, stacks: u32, slices: u32) -> (Vec<Vertex>, Vec<u32>) {
+    let color = Vec3::new(0.35, 0.75, 0.55);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let half_cyl = (height - 2.0 * radius).max(0.0) * 0.5;
+    let hemi_stacks = stacks / 2;
+
+    // Top hemisphere (from pole down to equator).
+    for i in 0..=hemi_stacks {
+        let phi = PI * 0.5 * i as f32 / hemi_stacks as f32; // 0 at pole, PI/2 at equator
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        for j in 0..=slices {
+            let theta = 2.0 * PI * j as f32 / slices as f32;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+
+            let normal = Vec3::new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta);
+            let position = Vec3::new(
+                radius * sin_phi * cos_theta,
+                half_cyl + radius * cos_phi,
+                radius * sin_phi * sin_theta,
+            );
+            vertices.push(Vertex { position, normal, color });
+        }
+    }
+
+    // Bottom hemisphere (from equator down to pole).
+    for i in 0..=hemi_stacks {
+        let phi = PI * 0.5 + PI * 0.5 * i as f32 / hemi_stacks as f32; // PI/2 to PI
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        for j in 0..=slices {
+            let theta = 2.0 * PI * j as f32 / slices as f32;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+
+            let normal = Vec3::new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta);
+            let position = Vec3::new(
+                radius * sin_phi * cos_theta,
+                -half_cyl + radius * cos_phi,
+                radius * sin_phi * sin_theta,
+            );
+            vertices.push(Vertex { position, normal, color });
+        }
+    }
+
+    // Generate indices for both hemispheres.
+    let total_rows = 2 * hemi_stacks;
+    for i in 0..total_rows {
+        for j in 0..slices {
+            let row0 = i * (slices + 1) + j;
+            let row1 = (i + 1) * (slices + 1) + j;
+            // Skip degenerate triangles at the seam between hemispheres
+            // (row hemi_stacks and hemi_stacks share the equator).
+            indices.extend_from_slice(&[row0, row1, row0 + 1]);
+            indices.extend_from_slice(&[row0 + 1, row1, row1 + 1]);
+        }
+    }
+
+    (vertices, indices)
+}
+
+// ---------------------------------------------------------------------------
 // Pyramid mesh data
 // ---------------------------------------------------------------------------
 

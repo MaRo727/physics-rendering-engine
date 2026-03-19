@@ -28,8 +28,9 @@ pub const MESH_BALL: u32 = 1;
 pub const MESH_PYRAMID: u32 = 2;
 pub const MESH_TRIANGLE: u32 = 3;
 pub const MESH_SLOPE: u32 = 4;
-pub const MESH_TERRAIN_BASE: u32 = 5;
-const SHAPE_MESH_COUNT: usize = 5; // cube, ball, pyramid, triangle, slope
+pub const MESH_CAPSULE: u32 = 5;
+pub const MESH_TERRAIN_BASE: u32 = 6;
+const SHAPE_MESH_COUNT: usize = 6; // cube, ball, pyramid, triangle, slope, capsule
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -218,11 +219,12 @@ impl Renderer {
 
         // Generate all mesh types and combine into single buffers.
         let mut base_mesh_data = vec![
-            shapes::cube(),           // MESH_CUBE = 0
-            shapes::ball(16, 24),     // MESH_BALL = 1
-            shapes::pyramid(),        // MESH_PYRAMID = 2
-            shapes::triangle_prism(), // MESH_TRIANGLE = 3
-            shapes::slope(),          // MESH_SLOPE = 4
+            shapes::cube(),               // MESH_CUBE = 0
+            shapes::ball(16, 24),         // MESH_BALL = 1
+            shapes::pyramid(),            // MESH_PYRAMID = 2
+            shapes::triangle_prism(),     // MESH_TRIANGLE = 3
+            shapes::slope(),              // MESH_SLOPE = 4
+            shapes::capsule(0.5, 1.0, 12, 16), // MESH_CAPSULE = 5
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);
