@@ -72,6 +72,12 @@ impl PhysicsWorld {
         Vec3::new(t.x, t.y, t.z)
     }
 
+    pub fn set_body_position(&mut self, handle: RigidBodyHandle, pos: Vec3) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            body.set_translation(vector![pos.x, pos.y, pos.z], true);
+        }
+    }
+
     pub fn body_linvel_y(&self, handle: RigidBodyHandle) -> f32 {
         self.rigid_body_set[handle].linvel().y
     }
@@ -169,6 +175,25 @@ impl PhysicsWorld {
                 .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
 
         (rb_handle, col_handle)
+    }
+
+    /// Add a trimesh collider on a fixed body.
+    pub fn add_trimesh(
+        &mut self,
+        vertices: Vec<Vec3>,
+        triangles: Vec<[u32; 3]>,
+    ) {
+        let points: Vec<_> = vertices
+            .iter()
+            .map(|v| point![v.x, v.y, v.z])
+            .collect();
+
+        let rb = RigidBodyBuilder::fixed().build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+
+        let col = ColliderBuilder::trimesh(points, triangles).build();
+        self.collider_set
+            .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
     }
 
     /// Remove a rigid body and its collider from the world.

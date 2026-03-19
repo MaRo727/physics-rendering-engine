@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use winit::window::Window;
 
 use crate::building::{self, BuildingGrid};
@@ -10,8 +10,9 @@ use crate::interaction::Interaction;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{Player, GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BUILDING};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BUILDING, MESH_TERRAIN};
 use crate::scene::{self, WorldObject, UNIT_BOUNDING_RADIUS};
+use crate::terrain::TerrainGrid;
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -35,6 +36,8 @@ pub struct Engine {
     renderer: Renderer,
     interaction: Interaction,
     ghost: GhostCamera,
+    terrain: TerrainGrid,
+    terrain_object_id: u32,
     building: BuildingGrid,
     place_prev: bool,
     spawn_prev: bool,
@@ -51,11 +54,25 @@ impl Engine {
 
         let mut physics = PhysicsWorld::new(config.gravity);
         let (objects, player_body, player_id, next_object_id) = scene::build_scene(&mut physics);
+
+        // Generate terrain.
+        let terrain = TerrainGrid::generate(42);
+        let terrain_mesh = terrain.generate_mesh();
+
+        // Add trimesh collider for terrain (exact match with visual mesh).
+        let (phys_verts, phys_tris) = TerrainGrid::physics_trimesh(&terrain_mesh);
+        physics.add_trimesh(phys_verts, phys_tris);
+
+        // Spawn player on terrain surface.
+        let spawn_h = terrain.get_height(0, 4) as f32 + 1.0 + 0.9;
         let player = Player::new(player_body, player_id);
+        physics.set_body_position(player.body.rigid_body, Vec3::new(0.0, spawn_h, 4.0));
+
+        let terrain_object_id = 0xFFF1;
 
         // Headroom for dynamically-spawned cubes pried from the building grid.
         let max_instances = (objects.len() + 3 + 256) as u32;
-        let renderer = Renderer::new(window, max_instances)?;
+        let renderer = Renderer::new(window, max_instances, terrain_mesh)?;
 
         Ok(Self {
             config,
@@ -65,6 +82,8 @@ impl Engine {
             renderer,
             interaction: Interaction::default(),
             ghost: GhostCamera::default(),
+            terrain,
+            terrain_object_id,
             building: BuildingGrid::new(),
             place_prev: false,
             spawn_prev: false,
@@ -338,14 +357,9 @@ impl Engine {
             instance_ids.push(pack_instance_id(obj.mesh_type, obj.object_id));
         }
 
-        // Static floor — always rendered.
-        let floor_transform = Mat4::from_scale_rotation_translation(
-            Vec3::new(90.0, 1.0, 90.0),
-            Quat::IDENTITY,
-            Vec3::new(0.0, -0.5, 0.0),
-        );
-        transforms.push(floor_transform);
-        instance_ids.push(pack_instance_id(MESH_CUBE, 1));
+        // Terrain mesh — single instance at identity (vertices in world space).
+        transforms.push(Mat4::IDENTITY);
+        instance_ids.push(pack_instance_id(MESH_TERRAIN, self.terrain_object_id));
 
         // Building mesh — single instance at identity (vertices already in world space).
         if !self.building.is_empty() && self.renderer.has_building_blas() {

@@ -38,13 +38,8 @@ pub fn build_scene(physics: &mut PhysicsWorld) -> (Vec<WorldObject>, PhysicsBody
         bounding_radius: scale.max_element() * UNIT_BOUNDING_RADIUS,
     });
 
-    // --- Floor (static, wide slab) ---
+    // Floor ID reserved (terrain replaces the floor).
     let _floor_id = alloc_id();
-    PhysicsBody::new_static_box(
-        physics,
-        Vec3::new(0.0, -0.5, 0.0),
-        Vec3::new(45.0, 0.5, 45.0),
-    );
 
     // --- Big cube (heavy, 3x3x3) ---
     let cube2_id = alloc_id();

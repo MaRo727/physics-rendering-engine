@@ -7,6 +7,7 @@ mod physics;
 mod player;
 mod renderer;
 mod scene;
+mod terrain;
 
 use app::App;
 use winit::event_loop::EventLoop;
