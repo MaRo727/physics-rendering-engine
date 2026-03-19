@@ -150,4 +150,71 @@ impl PhysicsWorld {
             body.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
         }
     }
+
+    /// Add a fixed (static) rigid body with a box collider. Returns handles.
+    pub fn add_static_box(
+        &mut self,
+        position: Vec3,
+        half_extents: Vec3,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let rb = RigidBodyBuilder::fixed()
+            .translation(vector![position.x, position.y, position.z])
+            .build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+
+        let col = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+            .build();
+        let col_handle =
+            self.collider_set
+                .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+
+        (rb_handle, col_handle)
+    }
+
+    /// Remove a rigid body and its collider from the world.
+    pub fn remove_body(&mut self, rb: RigidBodyHandle, col: ColliderHandle) {
+        self.collider_set.remove(
+            col,
+            &mut self.island_manager,
+            &mut self.rigid_body_set,
+            true,
+        );
+        self.rigid_body_set.remove(
+            rb,
+            &mut self.island_manager,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            true,
+        );
+    }
+
+    /// Cast a ray and return hit position + surface normal (excluding `exclude`).
+    pub fn cast_ray_detailed(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_toi: f32,
+        exclude: ColliderHandle,
+    ) -> Option<(Vec3, Vec3)> {
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = QueryFilter::default().exclude_collider(exclude);
+        self.query_pipeline
+            .cast_ray_and_get_normal(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_toi,
+                true,
+                filter,
+            )
+            .map(|(_handle, intersection)| {
+                let hit_pos = origin + direction * intersection.time_of_impact;
+                let n = intersection.normal;
+                (hit_pos, Vec3::new(n.x, n.y, n.z))
+            })
+    }
 }
