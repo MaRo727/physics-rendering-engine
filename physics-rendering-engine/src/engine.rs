@@ -4,6 +4,8 @@ use anyhow::Result;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use winit::window::Window;
 
+use rapier3d::prelude::RigidBodyHandle;
+
 use crate::physics::body::PhysicsBody;
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::Renderer;
@@ -11,6 +13,10 @@ use crate::renderer::Renderer;
 const PLAYER_SPEED: f32 = 5.0;
 const JUMP_VELOCITY: f32 = 6.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
+const PICKUP_RANGE: f32 = 5.0;
+const HOLD_DISTANCE: f32 = 3.0;
+const HOLD_STIFFNESS: f32 = 20.0;
+const THROW_SPEED: f32 = 20.0;
 
 // Render-object indices.
 const CUBE_IDX: usize = 0;
@@ -27,6 +33,8 @@ pub struct InputState {
     pub left: bool,
     pub right: bool,
     pub jump: bool,
+    pub interact: bool,    // E — pick up / drop
+    pub throw: bool,       // Left mouse button — throw held object
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -39,6 +47,8 @@ impl Default for InputState {
             left: false,
             right: false,
             jump: false,
+            interact: false,
+            throw: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }
@@ -76,6 +86,8 @@ pub struct Engine {
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
+    held_body: Option<RigidBodyHandle>,
+    interact_prev: bool, // edge-detect E key
 }
 
 impl Engine {
@@ -145,6 +157,8 @@ impl Engine {
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
+            held_body: None,
+            interact_prev: false,
         })
     }
 
@@ -153,6 +167,57 @@ impl Engine {
         self.yaw   -= input.mouse_dx * MOUSE_SENSITIVITY;
         self.pitch  = (self.pitch - input.mouse_dy * MOUSE_SENSITIVITY)
             .clamp(-89_f32.to_radians(), 89_f32.to_radians());
+
+        // Camera look direction (used for pickup raycast, hold target, throw).
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        let look_dir = Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch);
+
+        let player_pos = self.physics.body_position(self.player.rigid_body);
+        let eye = player_pos + Vec3::new(0.0, 0.7, 0.0);
+
+        // --- Interact (E) — edge-triggered pickup / drop ---
+        let interact_pressed = input.interact && !self.interact_prev;
+        self.interact_prev = input.interact;
+
+        if interact_pressed {
+            if let Some(held) = self.held_body.take() {
+                // Drop: re-enable gravity, zero velocity.
+                self.physics.set_gravity_enabled(held, true);
+            } else {
+                // Try to pick up: raycast from eye in look direction.
+                let hit = self.physics.cast_ray(
+                    eye,
+                    look_dir,
+                    PICKUP_RANGE,
+                    self.player.collider,
+                );
+                if let Some(handle) = hit {
+                    // Only pick up dynamic bodies (not the floor).
+                    if self.physics.is_dynamic(handle) {
+                        self.held_body = Some(handle);
+                        self.physics.set_gravity_enabled(handle, false);
+                    }
+                }
+            }
+        }
+
+        // --- Throw (left mouse button) ---
+        if input.throw {
+            if let Some(held) = self.held_body.take() {
+                self.physics.set_gravity_enabled(held, true);
+                self.physics.set_body_linvel(held, look_dir * THROW_SPEED);
+            }
+        }
+
+        // --- Hold: steer held object toward target point ---
+        if let Some(held) = self.held_body {
+            let target = eye + look_dir * HOLD_DISTANCE;
+            let obj_pos = self.physics.body_position(held);
+            let delta = target - obj_pos;
+            // Velocity-based spring: move toward target.
+            self.physics.set_body_linvel(held, delta * HOLD_STIFFNESS);
+        }
 
         // Flat (XZ-plane) movement directions derived from yaw only.
         let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());

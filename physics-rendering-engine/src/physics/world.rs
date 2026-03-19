@@ -1,5 +1,6 @@
 use glam::{Mat4, Quat, Vec3};
 use rapier3d::prelude::*;
+use rapier3d::geometry::Ray;
 
 pub struct PhysicsWorld {
     pub rigid_body_set: RigidBodySet,
@@ -13,6 +14,7 @@ pub struct PhysicsWorld {
     impulse_joint_set: ImpulseJointSet,
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
+    query_pipeline: QueryPipeline,
 }
 
 impl PhysicsWorld {
@@ -29,6 +31,7 @@ impl PhysicsWorld {
             impulse_joint_set: ImpulseJointSet::new(),
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
+            query_pipeline: QueryPipeline::new(),
         }
     }
 
@@ -49,6 +52,7 @@ impl PhysicsWorld {
             &(),
             &(),
         );
+        self.query_pipeline.update(&self.collider_set);
     }
 
     /// Extract the world-space transform of a rigid body as a glam Mat4.
@@ -98,5 +102,45 @@ impl PhysicsWorld {
             }
         }
         false
+    }
+
+    /// Cast a ray and return the RigidBodyHandle of the first hit (excluding `exclude`).
+    pub fn cast_ray(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_toi: f32,
+        exclude: ColliderHandle,
+    ) -> Option<RigidBodyHandle> {
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = QueryFilter::default()
+            .exclude_collider(exclude);
+        self.query_pipeline
+            .cast_ray(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_toi,
+                true,
+                filter,
+            )
+            .and_then(|(collider_handle, _toi)| {
+                self.collider_set[collider_handle].parent()
+            })
+    }
+
+    /// Enable or disable gravity for a rigid body.
+    pub fn set_gravity_enabled(&mut self, handle: RigidBodyHandle, enabled: bool) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            body.set_gravity_scale(if enabled { 1.0 } else { 0.0 }, true);
+        }
+    }
+
+    /// Returns true if the body is dynamic (not static or kinematic).
+    pub fn is_dynamic(&self, handle: RigidBodyHandle) -> bool {
+        self.rigid_body_set[handle].is_dynamic()
     }
 }
