@@ -4,12 +4,16 @@ use anyhow::Result;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use winit::window::Window;
 
+use crate::building::{self, BuildingGrid};
 use crate::input::InputState;
 use crate::interaction::Interaction;
 use crate::physics::world::PhysicsWorld;
 use crate::player::{Player, GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_BUILDING};
 use crate::scene::{self, WorldObject};
+
+const PLACE_RANGE: f32 = 8.0;
+const BUILDING_OBJECT_ID: u32 = 0xFFF0;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -30,6 +34,9 @@ pub struct Engine {
     renderer: Renderer,
     interaction: Interaction,
     ghost: GhostCamera,
+    building: BuildingGrid,
+    place_prev: bool,
+    remove_prev: bool,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
@@ -44,8 +51,8 @@ impl Engine {
         let (objects, player_body, player_id) = scene::build_scene(&mut physics);
         let player = Player::new(player_body, player_id);
 
-        // Total render instances: objects + floor + player
-        let max_instances = (objects.len() + 2) as u32;
+        // Total render instances: objects + floor + building + headroom
+        let max_instances = (objects.len() + 3) as u32;
         let renderer = Renderer::new(window, max_instances)?;
 
         Ok(Self {
@@ -56,6 +63,9 @@ impl Engine {
             renderer,
             interaction: Interaction::default(),
             ghost: GhostCamera::default(),
+            building: BuildingGrid::new(),
+            place_prev: false,
+            remove_prev: false,
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
@@ -92,12 +102,49 @@ impl Engine {
                 self.player.body.collider,
             );
 
+            // --- Building: place (RMB, edge-triggered) ---
+            let place_pressed = input.place && !self.place_prev;
+            self.place_prev = input.place;
+
+            if place_pressed {
+                if let Some((hit_pos, normal)) = self.physics.cast_ray_detailed(
+                    eye, look_dir, PLACE_RANGE, self.player.body.collider,
+                ) {
+                    // Step slightly outside the surface to land in the target cell.
+                    let target = hit_pos + normal * 0.01;
+                    let (cx, cy, cz) = building::snap_to_grid(target);
+                    self.building.place(&mut self.physics, cx, cy, cz);
+                }
+            }
+
+            // --- Building: remove (Q, edge-triggered) ---
+            let remove_pressed = input.remove && !self.remove_prev;
+            self.remove_prev = input.remove;
+
+            if remove_pressed {
+                if let Some((hit_pos, normal)) = self.physics.cast_ray_detailed(
+                    eye, look_dir, PLACE_RANGE, self.player.body.collider,
+                ) {
+                    // Step slightly inside the surface to land in the hit cell.
+                    let target = hit_pos - normal * 0.01;
+                    let (cx, cy, cz) = building::snap_to_grid(target);
+                    self.building.remove(&mut self.physics, cx, cy, cz);
+                }
+            }
+
             self.player.apply_movement(&mut self.physics, input);
             self.physics.step(dt);
         }
     }
 
     pub fn render(&mut self) -> Result<()> {
+        // Rebuild building mesh on GPU if grid changed.
+        if self.building.is_dirty() {
+            let (verts, indices) = self.building.generate_mesh();
+            self.renderer.update_building_mesh(&verts, &indices)?;
+            self.building.clear_dirty();
+        }
+
         let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
 
         let (cull_view, cull_proj) = if self.ghost.active {
@@ -136,6 +183,12 @@ impl Engine {
         );
         transforms.push(floor_transform);
         instance_ids.push(pack_instance_id(MESH_CUBE, 1));
+
+        // Building mesh — single instance at identity (vertices already in world space).
+        if !self.building.is_empty() && self.renderer.has_building_blas() {
+            transforms.push(Mat4::IDENTITY);
+            instance_ids.push(pack_instance_id(MESH_BUILDING, BUILDING_OBJECT_ID));
+        }
 
         let player_vp = cull_proj * cull_view;
 

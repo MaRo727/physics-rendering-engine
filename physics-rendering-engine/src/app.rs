@@ -88,12 +88,16 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Space) => self.input.jump   = pressed,
                     PhysicalKey::Code(KeyCode::ShiftLeft) => self.input.descend = pressed,
                     PhysicalKey::Code(KeyCode::KeyE) => self.input.interact = pressed,
+                    PhysicalKey::Code(KeyCode::KeyQ) => self.input.remove = pressed,
                     PhysicalKey::Code(KeyCode::KeyG) => self.input.toggle_ghost = pressed,
                     _ => {}
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 self.input.throw = state == ElementState::Pressed;
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                self.input.place = state == ElementState::Pressed;
             }
             WindowEvent::Resized(size) => {
                 if let Some(engine) = self.engine.as_mut() {
