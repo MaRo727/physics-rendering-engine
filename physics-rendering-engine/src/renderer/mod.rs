@@ -440,6 +440,8 @@ impl Renderer {
         proj: Mat4,
         light_dir: Vec4,
         light_color: Vec4,
+        player_vp: Mat4,
+        ghost_mode: bool,
     ) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
@@ -459,6 +461,8 @@ impl Renderer {
                 inv_proj: proj.inverse(),
                 light_dir,
                 light_color,
+                player_vp,
+                ghost_mode: Vec4::new(if ghost_mode { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
             };
         }
 

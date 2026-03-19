@@ -11,6 +11,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     mat4 invProj;
     vec4 lightDir;
     vec4 lightColor;
+    mat4 playerVP;
+    vec4 ghostMode;   // .x > 0 when ghost mode active
 } scene;
 
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
@@ -79,5 +81,29 @@ void main() {
     float ambient = 0.15;
     float fill = max(0.0, NdotL) * 0.15;
     float diffuse = max(0.0, NdotL) * shadowed;
-    payload = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
+    vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
+
+    // Ghost mode: green highlight for surfaces inside the player's frozen frustum.
+    if (scene.ghostMode.x > 0.0) {
+        vec4 clip = scene.playerVP * vec4(hitPos, 1.0);
+        vec3 ndc = clip.xyz / clip.w;
+        // Vulkan clip space: x,y in [-1,1], z in [0,1].
+        if (ndc.x >= -1.0 && ndc.x <= 1.0 &&
+            ndc.y >= -1.0 && ndc.y <= 1.0 &&
+            ndc.z >=  0.0 && ndc.z <= 1.0) {
+            // Distance from frustum edge (0 at edge, 1 at center).
+            float ex = 1.0 - abs(ndc.x);
+            float ey = 1.0 - abs(ndc.y);
+            float edge = min(ex, ey);
+            // Bright green edge line, subtle tint inside.
+            float edgeWidth = 0.02;
+            if (edge < edgeWidth) {
+                lit = mix(vec3(0.0, 1.0, 0.0), lit, 0.2);
+            } else {
+                lit = mix(lit, lit * vec3(0.7, 1.3, 0.7), 0.4);
+            }
+        }
+    }
+
+    payload = lit;
 }

@@ -488,6 +488,8 @@ impl Engine {
         transforms.push(floor_transform);
         instance_ids.push(pack_instance_id(MESH_CUBE, 1));
 
+        let player_vp = cull_proj * cull_view;
+
         self.renderer.draw_frame(
             &transforms,
             &instance_ids,
@@ -495,6 +497,8 @@ impl Engine {
             render_proj,
             Vec4::from((self.light_dir, 0.0)),
             Vec4::new(1.0, 0.95, 0.9, 1.0),
+            player_vp,
+            self.ghost_mode,
         )
     }
 
