@@ -64,7 +64,7 @@ impl Engine {
         physics.add_trimesh(phys_verts, phys_tris);
 
         // Spawn player on terrain surface.
-        let spawn_h = terrain.get_height(0, 4) as f32 + 1.0 + 0.9;
+        let spawn_h = terrain.get_height(0, 4) + 1.0 + 0.9;
         let player = Player::new(player_body, player_id);
         physics.set_body_position(player.body.rigid_body, Vec3::new(0.0, spawn_h, 4.0));
 
