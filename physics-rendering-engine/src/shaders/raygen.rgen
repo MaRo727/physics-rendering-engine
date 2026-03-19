@@ -36,5 +36,18 @@ void main() {
         0     // payload location
     );
 
+    // Crosshair overlay.
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    ivec2 center = ivec2(gl_LaunchSizeEXT.xy) / 2;
+    ivec2 d = abs(pixel - center);
+    int thickness = 1;
+    int gap = 3;
+    int arm = 10;
+    bool onCross = (d.x <= thickness && d.y >= gap && d.y <= arm)
+               || (d.y <= thickness && d.x >= gap && d.x <= arm);
+    if (onCross) {
+        payload = vec3(1.0);
+    }
+
     imageStore(outputImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload, 1.0));
 }

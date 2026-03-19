@@ -143,4 +143,11 @@ impl PhysicsWorld {
     pub fn is_dynamic(&self, handle: RigidBodyHandle) -> bool {
         self.rigid_body_set[handle].is_dynamic()
     }
+
+    /// Apply an impulse (instantaneous velocity change scaled by mass) to a body.
+    pub fn apply_impulse(&mut self, handle: RigidBodyHandle, impulse: Vec3) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            body.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+        }
+    }
 }
