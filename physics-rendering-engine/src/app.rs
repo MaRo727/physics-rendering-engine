@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use winit::{
     application::ApplicationHandler,
-    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
@@ -85,8 +85,12 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyA) => self.input.left     = pressed,
                     PhysicalKey::Code(KeyCode::KeyD) => self.input.right    = pressed,
                     PhysicalKey::Code(KeyCode::Space) => self.input.jump   = pressed,
+                    PhysicalKey::Code(KeyCode::KeyE) => self.input.interact = pressed,
                     _ => {}
                 }
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                self.input.throw = state == ElementState::Pressed;
             }
             WindowEvent::Resized(size) => {
                 if let Some(engine) = self.engine.as_mut() {
