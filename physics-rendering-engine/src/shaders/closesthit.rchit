@@ -36,10 +36,12 @@ void main() {
     // Transform normal to world space.
     normal = normalize(mat3(gl_ObjectToWorldEXT) * normal);
 
-    // Instance custom index: 1 = floor (bright), others = cubes (darker).
+    // Per-instance color: 1 = floor, 4 = stick, others = cubes.
     vec3 color;
     if (gl_InstanceCustomIndexEXT == 1u) {
         color = vec3(0.85, 0.85, 0.8); // light stone floor
+    } else if (gl_InstanceCustomIndexEXT == 4u) {
+        color = vec3(0.45, 0.30, 0.15); // dark wood stick
     } else {
         color = vec3(0.55, 0.35, 0.2); // dark warm cube
     }

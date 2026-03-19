@@ -6,7 +6,7 @@ use winit::window::Window;
 
 use rapier3d::prelude::RigidBodyHandle;
 
-use crate::physics::body::PhysicsBody;
+use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::Renderer;
 
@@ -16,12 +16,14 @@ const MOUSE_SENSITIVITY: f32 = 0.002;
 const PICKUP_RANGE: f32 = 5.0;
 const HOLD_DISTANCE: f32 = 3.0;
 const HOLD_STIFFNESS: f32 = 20.0;
-const THROW_SPEED: f32 = 20.0;
+const PUNCH_RANGE: f32 = 3.0;
+const BARE_PUNCH_FORCE: f32 = 8.0;
 
 // Render-object indices.
 const CUBE_IDX: usize = 0;
 const PLAYER_IDX: usize = 2;
 const CUBE2_IDX: usize = 3;
+const STICK_IDX: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -78,6 +80,7 @@ pub struct Engine {
     physics: PhysicsWorld,
     cube: PhysicsBody,
     cube2: PhysicsBody,
+    stick: PhysicsBody,
     player: PhysicsBody,
     renderer: Renderer,
     render_objects: Vec<RenderObject>,
@@ -88,6 +91,7 @@ pub struct Engine {
     light_dir: Vec3,
     held_body: Option<RigidBodyHandle>,
     interact_prev: bool, // edge-detect E key
+    punch_prev: bool,    // edge-detect LMB
 }
 
 impl Engine {
@@ -104,6 +108,7 @@ impl Engine {
             &mut physics,
             Vec3::new(0.0, 4.0, 0.0),
             Vec3::new(0.5, 0.5, 0.5),
+            WeightClass::Medium,
         );
 
         // Static floor — thin wide slab at y = -0.5 (top surface at y = 0).
@@ -118,6 +123,16 @@ impl Engine {
             &mut physics,
             Vec3::new(3.0, 8.0, 0.0),
             Vec3::new(1.5, 1.5, 1.5),
+            WeightClass::Heavy,
+        );
+
+        // Stick — thin elongated box, lying on the ground near the player.
+        // Half-extents (0.06, 0.06, 0.5) → full size 0.12 × 0.12 × 1.0
+        let stick = PhysicsBody::new_dynamic_box(
+            &mut physics,
+            Vec3::new(-2.0, 1.0, 3.0),
+            Vec3::new(0.06, 0.06, 0.5),
+            WeightClass::Light,
         );
 
         // Player — tall box on the floor, 4 units back from centre.
@@ -135,10 +150,11 @@ impl Engine {
         );
 
         let render_objects = vec![
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE_IDX
-            RenderObject { mesh_id: MeshId(0), transform: floor_transform }, // FLOOR_IDX
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // PLAYER_IDX
-            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE2_IDX
+            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE_IDX  = 0
+            RenderObject { mesh_id: MeshId(0), transform: floor_transform }, // FLOOR_IDX = 1
+            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // PLAYER_IDX = 2
+            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // CUBE2_IDX = 3
+            RenderObject { mesh_id: MeshId(0), transform: Mat4::IDENTITY }, // STICK_IDX = 4
         ];
 
         // Start facing toward the falling cube (-Z direction).
@@ -149,6 +165,7 @@ impl Engine {
             physics,
             cube,
             cube2,
+            stick,
             player,
             renderer,
             render_objects,
@@ -159,6 +176,7 @@ impl Engine {
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
             held_body: None,
             interact_prev: false,
+            punch_prev: false,
         })
     }
 
@@ -202,11 +220,31 @@ impl Engine {
             }
         }
 
-        // --- Throw (left mouse button) ---
-        if input.throw {
+        // --- LMB: throw held object, or punch ---
+        let lmb_pressed = input.throw && !self.punch_prev;
+        self.punch_prev = input.throw;
+
+        if lmb_pressed {
             if let Some(held) = self.held_body.take() {
+                // Throw: speed depends on held object's weight class.
+                let throw_speed = self.weight_class_of(held).throw_speed();
                 self.physics.set_gravity_enabled(held, true);
-                self.physics.set_body_linvel(held, look_dir * THROW_SPEED);
+                self.physics.set_body_linvel(held, look_dir * throw_speed);
+            } else {
+                // Punch: raycast, apply knockback impulse.
+                let hit = self.physics.cast_ray(
+                    eye,
+                    look_dir,
+                    PUNCH_RANGE,
+                    self.player.collider,
+                );
+                if let Some(target_body) = hit {
+                    if self.physics.is_dynamic(target_body) {
+                        let wc = self.weight_class_of(target_body);
+                        let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
+                        self.physics.apply_impulse(target_body, force);
+                    }
+                }
             }
         }
 
@@ -251,6 +289,9 @@ impl Engine {
         self.render_objects[CUBE2_IDX].transform =
             self.physics.body_transform(self.cube2.rigid_body) * Mat4::from_scale(Vec3::splat(3.0));
 
+        self.render_objects[STICK_IDX].transform =
+            self.physics.body_transform(self.stick.rigid_body) * Mat4::from_scale(Vec3::new(0.12, 0.12, 1.0));
+
         let body_t = self.physics.body_transform(self.player.rigid_body);
         self.render_objects[PLAYER_IDX].transform =
             body_t * Mat4::from_scale(Vec3::new(0.8, 1.8, 0.8));
@@ -283,6 +324,16 @@ impl Engine {
         self.surface_width = width;
         self.surface_height = height;
         self.renderer.resize(width, height);
+    }
+
+    /// Look up the WeightClass for a rigid body handle.
+    fn weight_class_of(&self, handle: RigidBodyHandle) -> WeightClass {
+        for body in [&self.cube, &self.cube2, &self.stick] {
+            if body.rigid_body == handle {
+                return body.weight_class;
+            }
+        }
+        WeightClass::Medium // fallback
     }
 
     fn camera_matrices(&self, aspect: f32) -> (Mat4, Mat4) {

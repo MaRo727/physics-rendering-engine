@@ -158,8 +158,8 @@ impl Renderer {
         let mesh = Mesh::new(&context, &vertices, &indices)?;
         let blas = Blas::new(&context, &mesh)?;
 
-        // 4 objects: cube, floor, player, cube2
-        let tlas = Tlas::new(&context, 4)?;
+        // 5 objects: cube, floor, player, cube2, stick
+        let tlas = Tlas::new(&context, 5)?;
 
         let rt_pipeline = RtPipeline::new(&context)?;
 
