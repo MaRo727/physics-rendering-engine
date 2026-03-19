@@ -3,6 +3,7 @@ pub mod context;
 pub mod frame;
 pub mod mesh;
 pub mod rt_pipeline;
+pub mod shapes;
 pub mod swapchain;
 
 use anyhow::{Context, Result};
@@ -209,11 +210,11 @@ impl Renderer {
         ];
 
         // Generate all mesh types and combine into single buffers.
-        let cube_data = mesh::cube();
-        let ball_data = mesh::ball(16, 24);
-        let pyramid_data = mesh::pyramid();
-        let triangle_data = mesh::triangle_prism();
-        let slope_data = mesh::slope();
+        let cube_data = shapes::cube();
+        let ball_data = shapes::ball(16, 24);
+        let pyramid_data = shapes::pyramid();
+        let triangle_data = shapes::triangle_prism();
+        let slope_data = shapes::slope();
 
         let (combined_verts, combined_indices, sub_mesh_infos) = mesh::combine_meshes(&[
             cube_data,     // MESH_CUBE = 0
