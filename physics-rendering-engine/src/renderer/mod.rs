@@ -28,9 +28,8 @@ pub const MESH_BALL: u32 = 1;
 pub const MESH_PYRAMID: u32 = 2;
 pub const MESH_TRIANGLE: u32 = 3;
 pub const MESH_SLOPE: u32 = 4;
-pub const MESH_TERRAIN: u32 = 5;
-pub const MESH_BUILDING: u32 = 6;
-pub const BASE_MESH_COUNT: usize = 6;
+pub const MESH_TERRAIN_BASE: u32 = 5;
+const SHAPE_MESH_COUNT: usize = 5; // cube, ball, pyramid, triangle, slope
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -184,6 +183,7 @@ pub struct Renderer {
     frames: [FrameData; MAX_FRAMES_IN_FLIGHT],
     mesh: Mesh,
     base_mesh_data: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
+    base_mesh_count: usize,
     blas_list: Vec<Blas>,
     tlas: Tlas,
     rt_pipeline: RtPipeline,
@@ -203,7 +203,7 @@ impl Renderer {
     pub fn new(
         window: &Arc<Window>,
         max_instances: u32,
-        terrain_mesh: (Vec<mesh::Vertex>, Vec<u32>),
+        terrain_chunks: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
     ) -> Result<Self> {
         let size = window.inner_size();
         let context = VulkanContext::new(window.as_ref())?;
@@ -217,14 +217,16 @@ impl Renderer {
         ];
 
         // Generate all mesh types and combine into single buffers.
-        let base_mesh_data = vec![
+        let mut base_mesh_data = vec![
             shapes::cube(),           // MESH_CUBE = 0
             shapes::ball(16, 24),     // MESH_BALL = 1
             shapes::pyramid(),        // MESH_PYRAMID = 2
             shapes::triangle_prism(), // MESH_TRIANGLE = 3
             shapes::slope(),          // MESH_SLOPE = 4
-            terrain_mesh,             // MESH_TERRAIN = 5
         ];
+        // Terrain chunks follow the shape meshes.
+        base_mesh_data.extend(terrain_chunks);
+        let base_mesh_count = base_mesh_data.len();
 
         let (combined_verts, combined_indices, sub_mesh_infos) =
             mesh::combine_meshes(&base_mesh_data);
@@ -232,7 +234,7 @@ impl Renderer {
         let combined_mesh = Mesh::new(&context, &combined_verts, &combined_indices)?;
 
         // Build one BLAS per mesh type from sub-ranges of the combined buffer.
-        let mut blas_list = Vec::with_capacity(BASE_MESH_COUNT);
+        let mut blas_list = Vec::with_capacity(base_mesh_count);
         for info in &sub_mesh_infos {
             blas_list.push(Blas::from_range(&context, &combined_mesh, info)?);
         }
@@ -306,6 +308,7 @@ impl Renderer {
             frames,
             mesh: combined_mesh,
             base_mesh_data,
+            base_mesh_count,
             blas_list,
             tlas,
             rt_pipeline,
@@ -449,7 +452,7 @@ impl Renderer {
         unsafe { self.context.device.device_wait_idle()? };
 
         // Remove old building BLAS if it exists.
-        if self.blas_list.len() > BASE_MESH_COUNT {
+        if self.blas_list.len() > self.base_mesh_count {
             self.blas_list.pop().unwrap().destroy(&self.context);
         }
 
@@ -470,7 +473,7 @@ impl Renderer {
         if building_verts.is_empty() {
             // No building — blas_list stays at BASE_MESH_COUNT.
         } else {
-            let building_info = &sub_mesh_infos[BASE_MESH_COUNT];
+            let building_info = &sub_mesh_infos[self.base_mesh_count];
             let building_blas = Blas::from_range(&self.context, &self.mesh, building_info)?;
             self.blas_list.push(building_blas);
         }
@@ -491,7 +494,11 @@ impl Renderer {
     }
 
     pub fn has_building_blas(&self) -> bool {
-        self.blas_list.len() > BASE_MESH_COUNT
+        self.blas_list.len() > self.base_mesh_count
+    }
+
+    pub fn mesh_building_id(&self) -> u32 {
+        self.base_mesh_count as u32
     }
 
     pub fn draw_frame(
