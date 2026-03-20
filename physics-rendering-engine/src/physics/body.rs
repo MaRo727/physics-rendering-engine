@@ -76,15 +76,19 @@ impl PhysicsBody {
         Self { rigid_body, collider, weight_class }
     }
 
-    /// Dynamic rigid body with a box collider, all rotations locked — for the player.
+    /// Dynamic rigid body with a capsule collider, all rotations locked — for the player.
+    /// Capsule prevents edge-catching on walls and terrain that causes box colliders to stick.
     pub fn new_player_box(world: &mut PhysicsWorld, position: Vec3, half_extents: Vec3) -> Self {
+        let radius = half_extents.x; // 0.4
+        let half_height = (half_extents.y - radius).max(0.0); // cylinder half-height
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![position.x, position.y, position.z])
             .locked_axes(LockedAxes::ROTATION_LOCKED)
             .build();
         let rigid_body = world.rigid_body_set.insert(rigid_body);
 
-        let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+        let collider = ColliderBuilder::capsule_y(half_height, radius)
+            .friction(0.0)
             .build();
         let collider =
             world

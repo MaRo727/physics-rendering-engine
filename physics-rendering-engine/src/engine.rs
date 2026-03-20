@@ -322,6 +322,14 @@ impl Engine {
             move_vel = move_vel.normalize() * speed;
         }
 
+        // Slide along walls: remove the velocity component pushing into each wall.
+        for wall_n in self.physics.wall_normals(self.player_col) {
+            let into_wall = move_vel.dot(wall_n);
+            if into_wall < 0.0 {
+                move_vel -= wall_n * into_wall;
+            }
+        }
+
         let mut vy = self.physics.body_linvel_y(self.player_rb);
         if input.jump && self.physics.is_on_ground(self.player_col) {
             vy = JUMP_VELOCITY;
