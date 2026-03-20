@@ -54,8 +54,9 @@ void main() {
     // Read per-vertex color from the first vertex of the triangle.
     vec3 color = vec3(verts[i0 * 9u + 6u], verts[i0 * 9u + 7u], verts[i0 * 9u + 8u]);
 
-    // Shadow ray.
+    // Shadow ray — offset origin along surface normal to avoid self-intersection.
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+    vec3 shadowOrigin = hitPos + normal * 0.01;
     vec3 L = normalize(scene.lightDir.xyz);
     shadowed = 0.0;
     traceRayEXT(
@@ -65,7 +66,7 @@ void main() {
         0,    // sbtRecordOffset
         1,    // sbtRecordStride
         1,    // missIndex → shadow.rmiss
-        hitPos,
+        shadowOrigin,
         0.001,
         L,
         10000.0,

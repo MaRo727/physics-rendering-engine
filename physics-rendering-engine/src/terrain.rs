@@ -86,7 +86,7 @@ impl TerrainGrid {
                         let v2 = Vec3::new(x + step, h11, z + step);
                         let v3 = Vec3::new(x, h01, z + step);
 
-                        let normal = (v1 - v0).cross(v3 - v0).normalize();
+                        let normal = (v3 - v0).cross(v1 - v0).normalize();
                         let avg_h = (h00 + h10 + h01 + h11) * 0.25;
                         let color = height_color(avg_h);
 
