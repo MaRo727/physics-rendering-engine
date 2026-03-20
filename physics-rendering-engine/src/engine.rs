@@ -13,7 +13,7 @@ use crate::input::InputState;
 use crate::interaction::Interaction;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
-use crate::player::GhostCamera;
+use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo};
@@ -408,10 +408,25 @@ impl Engine {
         let mut transforms = Vec::new();
         let mut instance_ids = Vec::new();
 
+        // In ghost mode, frustum-cull to the frozen camera so only visible
+        // geometry appears.  In normal mode, skip culling so off-screen
+        // entities can still cast shadows.
+        let ghost_frustum = if self.ghost.active {
+            Some(extract_frustum_planes(cull_proj * cull_view))
+        } else {
+            None
+        };
+
         // World entities (skip the player entity — we render the model instead).
-        // No frustum culling here: off-screen entities must still cast shadows.
         for entity in &self.world.entities {
             if entity.kind == EntityKind::Player { continue; }
+
+            let pos = self.physics.body_position(entity.body.rigid_body);
+            if let Some(ref planes) = ghost_frustum {
+                if !is_sphere_in_frustum(planes, pos, entity.bounding_radius) {
+                    continue;
+                }
+            }
 
             let t = self.physics.body_transform(entity.body.rigid_body)
                 * Mat4::from_scale(entity.render_scale);
@@ -429,8 +444,13 @@ impl Engine {
             instance_ids.push(pack_instance_id(MESH_CAPSULE, PLAYER_MODEL_OBJECT_ID + i as u32));
         }
 
-        // Terrain chunks — always include all so off-screen chunks cast shadows.
+        // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
         for chunk in &self.terrain_chunks {
+            if let Some(ref planes) = ghost_frustum {
+                if !is_sphere_in_frustum(planes, chunk.center, chunk.radius) {
+                    continue;
+                }
+            }
             transforms.push(Mat4::IDENTITY);
             instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
