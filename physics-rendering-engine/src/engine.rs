@@ -5,7 +5,7 @@ use glam::{Mat4, Vec3, Vec4};
 use winit::window::Window;
 
 use crate::building::{self, BuildingGrid};
-use crate::game::camera::{ThirdPersonCamera, extract_frustum_planes, is_sphere_in_frustum};
+use crate::game::camera::ThirdPersonCamera;
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
 use crate::game::world::World;
@@ -156,6 +156,7 @@ impl Engine {
 
             let cam_eye = self.camera.eye;
             let look_dir = self.camera.look_dir();
+            let player_eye = player_pos + Vec3::new(0.0, 1.5, 0.0);
 
             // Determine if crosshair is aimed at a building cell (for pry logic).
             let building_cell_aimed_at = self.physics
@@ -173,7 +174,7 @@ impl Engine {
             let interaction_result = self.interaction.update(
                 &mut self.physics,
                 &self.world.entities,
-                cam_eye,
+                player_eye,
                 look_dir,
                 input.interact,
                 input.throw,
@@ -219,7 +220,7 @@ impl Engine {
 
             // --- Handle axe split ---
             if let Some(target_body) = interaction_result.axe_hit {
-                self.split_cube(target_body, cam_eye, look_dir);
+                self.split_cube(target_body, player_eye, look_dir);
             }
 
             // --- RMB: place held cube into building grid ---
@@ -247,7 +248,7 @@ impl Engine {
             self.spawn_prev = input.spawn;
 
             if spawn_pressed && self.interaction.held_body.is_none() {
-                let spawn_pos = cam_eye + look_dir * 3.0;
+                let spawn_pos = player_pos + Vec3::new(0.0, 1.5, 0.0) + look_dir * 3.0;
                 let obj_id = self.world.alloc_id();
 
                 let body = PhysicsBody::new_dynamic_box(
@@ -404,19 +405,14 @@ impl Engine {
             (cull_view, cull_proj)
         };
 
-        let frustum = extract_frustum_planes(cull_proj * cull_view);
-
         let mut transforms = Vec::new();
         let mut instance_ids = Vec::new();
 
         // World entities (skip the player entity — we render the model instead).
+        // No frustum culling here: off-screen entities must still cast shadows.
         for entity in &self.world.entities {
             if entity.kind == EntityKind::Player { continue; }
 
-            let pos = self.physics.body_position(entity.body.rigid_body);
-            if !is_sphere_in_frustum(&frustum, pos, entity.bounding_radius) {
-                continue;
-            }
             let t = self.physics.body_transform(entity.body.rigid_body)
                 * Mat4::from_scale(entity.render_scale);
             transforms.push(t);
@@ -433,12 +429,10 @@ impl Engine {
             instance_ids.push(pack_instance_id(MESH_CAPSULE, PLAYER_MODEL_OBJECT_ID + i as u32));
         }
 
-        // Terrain chunks.
+        // Terrain chunks — always include all so off-screen chunks cast shadows.
         for chunk in &self.terrain_chunks {
-            if is_sphere_in_frustum(&frustum, chunk.center, chunk.radius) {
-                transforms.push(Mat4::IDENTITY);
-                instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
-            }
+            transforms.push(Mat4::IDENTITY);
+            instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
 
         // Building mesh.
