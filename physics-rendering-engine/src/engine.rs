@@ -61,6 +61,7 @@ pub struct Engine {
     debug_stats_prev: bool,
     fast_prev: bool,
     fast_mode: bool,
+    water_time: f32,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
@@ -126,6 +127,7 @@ impl Engine {
             debug_stats_prev: false,
             fast_prev: false,
             fast_mode: false,
+            water_time: 0.0,
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
@@ -133,6 +135,8 @@ impl Engine {
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
+        self.water_time += dt;
+
         // --- Fast mode toggle (F2) ---
         if input.toggle_fast && !self.fast_prev {
             self.fast_mode = !self.fast_mode;
@@ -509,8 +513,11 @@ impl Engine {
             instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
 
-        // Water plane at WATER_LEVEL.
-        transforms.push(Mat4::from_translation(Vec3::new(0.0, WATER_LEVEL, 0.0)));
+        // Water plane at WATER_LEVEL, drifting slowly for animation.
+        // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.
+        let wave_period = std::f32::consts::TAU / 0.12;
+        let water_offset = (self.water_time * 2.0) % wave_period;
+        transforms.push(Mat4::from_translation(Vec3::new(water_offset, WATER_LEVEL, water_offset * 0.6)));
         instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
 
         // Building mesh.

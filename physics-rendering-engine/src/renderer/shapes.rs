@@ -165,20 +165,49 @@ pub fn capsule(radius: f32, height: f32, stacks: u32, slices: u32) -> (Vec<Verte
 // Water plane mesh data
 // ---------------------------------------------------------------------------
 
-/// Large flat quad centered at origin on the XZ plane (y=0).
-/// Sized to cover the full terrain (900x900).
+/// Water plane with sine-wave bumps and per-vertex normals.
+/// Slightly oversized (960x960) so translating for animation doesn't expose edges.
 pub fn water_plane() -> (Vec<Vertex>, Vec<u32>) {
     let color = Vec3::new(0.1, 0.3, 0.6);
-    let half = 450.0;
+    let half = 480.0;
+    let res = 80; // 80x80 grid = 6400 quads
+    let step = (half * 2.0) / res as f32;
 
-    let vertices = vec![
-        Vertex { position: Vec3::new(-half, 0.0, -half), normal: Vec3::Y, color },
-        Vertex { position: Vec3::new( half, 0.0, -half), normal: Vec3::Y, color },
-        Vertex { position: Vec3::new( half, 0.0,  half), normal: Vec3::Y, color },
-        Vertex { position: Vec3::new(-half, 0.0,  half), normal: Vec3::Y, color },
-    ];
+    let mut vertices = Vec::with_capacity((res + 1) * (res + 1));
+    let mut indices = Vec::with_capacity(res * res * 6);
 
-    let indices = vec![0, 1, 2, 0, 2, 3];
+    // Wave height at a point — sum of two sine waves at different scales.
+    let wave = |x: f32, z: f32| -> f32 {
+        0.15 * (x * 0.12).sin() * (z * 0.08).cos()
+            + 0.08 * (x * 0.25 + z * 0.18).sin()
+    };
+
+    // Compute normal from partial derivatives of the wave function.
+    let wave_normal = |x: f32, z: f32| -> Vec3 {
+        let dydx = 0.15 * 0.12 * (x * 0.12).cos() * (z * 0.08).cos()
+            + 0.08 * 0.25 * (x * 0.25 + z * 0.18).cos();
+        let dydz = 0.15 * -0.08 * (x * 0.12).sin() * (z * 0.08).sin()
+            + 0.08 * 0.18 * (x * 0.25 + z * 0.18).cos();
+        Vec3::new(-dydx, 1.0, -dydz).normalize()
+    };
+
+    for gz in 0..=res {
+        for gx in 0..=res {
+            let x = -half + gx as f32 * step;
+            let z = -half + gz as f32 * step;
+            let y = wave(x, z);
+            let normal = wave_normal(x, z);
+            vertices.push(Vertex { position: Vec3::new(x, y, z), normal, color });
+        }
+    }
+
+    for gz in 0..res {
+        for gx in 0..res {
+            let i = (gz * (res + 1) + gx) as u32;
+            let w = (res + 1) as u32;
+            indices.extend_from_slice(&[i, i + w, i + 1, i + 1, i + w, i + w + 1]);
+        }
+    }
 
     (vertices, indices)
 }
