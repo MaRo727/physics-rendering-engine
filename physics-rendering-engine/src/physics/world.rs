@@ -116,6 +116,29 @@ impl PhysicsWorld {
         false
     }
 
+    /// Collect wall contact normals (horizontal-ish surfaces the player is pressed against).
+    /// Returns outward-pointing normals for contacts with normal Y ≤ 0.7 (i.e. not ground).
+    pub fn wall_normals(&self, collider: ColliderHandle) -> Vec<Vec3> {
+        let mut normals = Vec::new();
+        for pair in self.narrow_phase.contact_pairs_with(collider) {
+            for manifold in &pair.manifolds {
+                if !manifold.points.iter().any(|pt| pt.dist <= 0.02) {
+                    continue;
+                }
+                let (nx, ny, nz) = if pair.collider1 == collider {
+                    (-manifold.local_n1.x, -manifold.local_n1.y, -manifold.local_n1.z)
+                } else {
+                    (-manifold.local_n2.x, -manifold.local_n2.y, -manifold.local_n2.z)
+                };
+                // Skip ground contacts (those are fine).
+                if ny <= 0.7 {
+                    normals.push(Vec3::new(nx, 0.0, nz).normalize_or_zero());
+                }
+            }
+        }
+        normals
+    }
+
     /// Cast a ray and return the RigidBodyHandle of the first hit (excluding `exclude`).
     pub fn cast_ray(
         &self,
