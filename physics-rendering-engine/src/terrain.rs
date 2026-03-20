@@ -142,11 +142,11 @@ impl TerrainGrid {
 }
 
 fn height_color(y: f32) -> Vec3 {
-    if y <= -8.0 {
-        Vec3::new(0.4, 0.25, 0.1)     // deep pit (brown)
-    } else if y <= -2.0 {
+    if y <= 2.0 {
+        Vec3::new(0.4, 0.25, 0.1)     // underwater bed (brown)
+    } else if y <= 6.0 {
         Vec3::new(0.76, 0.70, 0.50)    // shore (sand)
-    } else if y <= 12.0 {
+    } else if y <= 15.0 {
         Vec3::new(0.3, 0.55, 0.2)      // grass (green)
     } else if y <= 25.0 {
         Vec3::new(0.35, 0.42, 0.28)    // highland (dark green)

@@ -14,15 +14,20 @@ use crate::interaction::Interaction;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
 const PLAYER_MODEL_OBJECT_ID: u32 = 0xFFE0;
+const WATER_OBJECT_ID: u32 = 0xFFD0;
 const PLAYER_SPEED: f32 = 5.0;
+const FAST_SPEED: f32 = 40.0;
 const JUMP_VELOCITY: f32 = 6.0;
+const WATER_LEVEL: f32 = 5.0;
+const BUOYANCY_FORCE: f32 = 25.0;
+const WATER_DRAG: f32 = 12.0;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -54,6 +59,8 @@ pub struct Engine {
     place_prev: bool,
     spawn_prev: bool,
     debug_stats_prev: bool,
+    fast_prev: bool,
+    fast_mode: bool,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
@@ -117,6 +124,8 @@ impl Engine {
             place_prev: false,
             spawn_prev: false,
             debug_stats_prev: false,
+            fast_prev: false,
+            fast_mode: false,
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
@@ -124,6 +133,12 @@ impl Engine {
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
+        // --- Fast mode toggle (F2) ---
+        if input.toggle_fast && !self.fast_prev {
+            self.fast_mode = !self.fast_mode;
+        }
+        self.fast_prev = input.toggle_fast;
+
         // --- Debug stats (F1) ---
         let debug_edge = input.debug_stats && !self.debug_stats_prev;
         self.debug_stats_prev = input.debug_stats;
@@ -147,6 +162,7 @@ impl Engine {
         if self.ghost.active {
             self.ghost.update(dt, input);
             self.physics.set_body_linvel(self.player_rb, Vec3::ZERO);
+            self.apply_buoyancy(dt);
             self.physics.step(dt);
         } else {
             // --- Third-person camera ---
@@ -272,6 +288,9 @@ impl Engine {
             // --- Camera-relative player movement ---
             self.apply_player_movement(input);
 
+            // --- Water buoyancy ---
+            self.apply_buoyancy(dt);
+
             self.physics.step(dt);
 
             // --- Update player model animation ---
@@ -294,8 +313,9 @@ impl Engine {
         if input.backward { move_vel -= forward; }
         if input.right    { move_vel += right; }
         if input.left     { move_vel -= right; }
+        let speed = if self.fast_mode { FAST_SPEED } else { PLAYER_SPEED };
         if move_vel.length_squared() > 0.0 {
-            move_vel = move_vel.normalize() * PLAYER_SPEED;
+            move_vel = move_vel.normalize() * speed;
         }
 
         let mut vy = self.physics.body_linvel_y(self.player_rb);
@@ -306,6 +326,40 @@ impl Engine {
             self.player_rb,
             Vec3::new(move_vel.x, vy, move_vel.z),
         );
+    }
+
+    /// Apply buoyancy and drag to a single rigid body using impulses (not forces,
+    /// which accumulate across frames in Rapier 0.22).
+    fn apply_body_buoyancy(&mut self, rb: rapier3d::prelude::RigidBodyHandle, size: f32, dt: f32) {
+        let pos = self.physics.body_position(rb);
+        let depth = WATER_LEVEL - pos.y;
+        if depth > 0.0 {
+            let mass = self.physics.body_mass(rb);
+            let submerged = (depth / size).min(1.0);
+
+            // Impulse = mass * acceleration * dt.
+            let buoyancy = Vec3::new(0.0, mass * BUOYANCY_FORCE * submerged * dt, 0.0);
+            self.physics.apply_impulse(rb, buoyancy);
+
+            // Drag on all axes.
+            let vel = self.physics.body_linvel_xz(rb);
+            let drag = vel * (-mass * WATER_DRAG * submerged * dt);
+            self.physics.apply_impulse(rb, drag);
+        }
+    }
+
+    /// Apply buoyancy and drag to all dynamic bodies submerged below the water level.
+    fn apply_buoyancy(&mut self, dt: f32) {
+        self.apply_body_buoyancy(self.player_rb, 1.8, dt);
+
+        let bodies: Vec<_> = self.world.entities.iter()
+            .filter(|e| e.kind != EntityKind::Player && self.physics.is_dynamic(e.body.rigid_body))
+            .map(|e| (e.body.rigid_body, e.render_scale.max_element()))
+            .collect();
+
+        for (rb, size) in bodies {
+            self.apply_body_buoyancy(rb, size, dt);
+        }
     }
 
     /// Split a cube object into two halves along the axis most aligned with the hit.
@@ -454,6 +508,10 @@ impl Engine {
             transforms.push(Mat4::IDENTITY);
             instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
+
+        // Water plane at WATER_LEVEL.
+        transforms.push(Mat4::from_translation(Vec3::new(0.0, WATER_LEVEL, 0.0)));
+        instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
 
         // Building mesh.
         if !self.building.is_empty() && self.renderer.has_building_blas() {

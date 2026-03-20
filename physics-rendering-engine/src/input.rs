@@ -16,6 +16,7 @@ pub struct InputState {
     pub spawn: bool,        // F — spawn a new block
     pub cycle_tool: bool,    // Tab — cycle equipped tool
     pub debug_stats: bool,   // F1 — print player stats to console
+    pub toggle_fast: bool,   // F2 — toggle fast move speed
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -36,6 +37,7 @@ impl Default for InputState {
             spawn: false,
             cycle_tool: false,
             debug_stats: false,
+            toggle_fast: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }
