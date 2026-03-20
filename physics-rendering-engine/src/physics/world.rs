@@ -163,6 +163,18 @@ impl PhysicsWorld {
         }
     }
 
+    /// Apply a force (accumulated over the next timestep, not divided by mass) to a body.
+    pub fn apply_force(&mut self, handle: RigidBodyHandle, force: Vec3) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            body.add_force(vector![force.x, force.y, force.z], true);
+        }
+    }
+
+    /// Get the mass of a rigid body.
+    pub fn body_mass(&self, handle: RigidBodyHandle) -> f32 {
+        self.rigid_body_set[handle].mass()
+    }
+
     /// Add a fixed (static) rigid body with a box collider. Returns handles.
     pub fn add_static_box(
         &mut self,

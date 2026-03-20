@@ -29,8 +29,9 @@ pub const MESH_PYRAMID: u32 = 2;
 pub const MESH_TRIANGLE: u32 = 3;
 pub const MESH_SLOPE: u32 = 4;
 pub const MESH_CAPSULE: u32 = 5;
-pub const MESH_TERRAIN_BASE: u32 = 6;
-const SHAPE_MESH_COUNT: usize = 6; // cube, ball, pyramid, triangle, slope, capsule
+pub const MESH_WATER: u32 = 6;
+pub const MESH_TERRAIN_BASE: u32 = 7;
+const SHAPE_MESH_COUNT: usize = 7; // cube, ball, pyramid, triangle, slope, capsule, water
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -225,6 +226,7 @@ impl Renderer {
             shapes::triangle_prism(),     // MESH_TRIANGLE = 3
             shapes::slope(),              // MESH_SLOPE = 4
             shapes::capsule(0.5, 1.0, 12, 16), // MESH_CAPSULE = 5
+            shapes::water_plane(),               // MESH_WATER = 6
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

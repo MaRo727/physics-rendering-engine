@@ -79,6 +79,25 @@ void main() {
     float diffuse = max(0.0, NdotL) * shadowed;
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 
+    // Water surface shading.
+    uint WATER_MESH_TYPE = 6u;
+    if (mesh_type == WATER_MESH_TYPE) {
+        vec3 waterDeep = vec3(0.02, 0.12, 0.22);
+        vec3 waterShallow = vec3(0.1, 0.35, 0.5);
+
+        // Fresnel-like effect: steeper viewing angle = more transparent (see bottom).
+        vec3 viewDir = normalize(gl_WorldRayDirectionEXT);
+        float fresnel = pow(1.0 - max(0.0, dot(normal, -viewDir)), 3.0);
+        vec3 waterColor = mix(waterDeep, waterShallow, fresnel);
+
+        // Specular highlight from sun.
+        vec3 halfVec = normalize(L - viewDir);
+        float spec = pow(max(0.0, dot(normal, halfVec)), 64.0) * shadowed;
+
+        lit = waterColor * scene.lightColor.xyz * (ambient + fill + diffuse)
+            + vec3(1.0, 0.95, 0.9) * spec * 0.6;
+    }
+
     // Ghost mode: green highlight for surfaces inside the player's frozen frustum.
     if (scene.ghostMode.x > 0.0) {
         vec4 clip = scene.playerVP * vec4(hitPos, 1.0);

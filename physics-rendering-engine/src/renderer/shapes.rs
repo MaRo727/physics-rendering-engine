@@ -162,6 +162,28 @@ pub fn capsule(radius: f32, height: f32, stacks: u32, slices: u32) -> (Vec<Verte
 }
 
 // ---------------------------------------------------------------------------
+// Water plane mesh data
+// ---------------------------------------------------------------------------
+
+/// Large flat quad centered at origin on the XZ plane (y=0).
+/// Sized to cover the full terrain (900x900).
+pub fn water_plane() -> (Vec<Vertex>, Vec<u32>) {
+    let color = Vec3::new(0.1, 0.3, 0.6);
+    let half = 450.0;
+
+    let vertices = vec![
+        Vertex { position: Vec3::new(-half, 0.0, -half), normal: Vec3::Y, color },
+        Vertex { position: Vec3::new( half, 0.0, -half), normal: Vec3::Y, color },
+        Vertex { position: Vec3::new( half, 0.0,  half), normal: Vec3::Y, color },
+        Vertex { position: Vec3::new(-half, 0.0,  half), normal: Vec3::Y, color },
+    ];
+
+    let indices = vec![0, 1, 2, 0, 2, 3];
+
+    (vertices, indices)
+}
+
+// ---------------------------------------------------------------------------
 // Pyramid mesh data
 // ---------------------------------------------------------------------------
 
