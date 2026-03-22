@@ -18,6 +18,7 @@ pub struct InputState {
     pub debug_stats: bool,   // F1 — print player stats to console
     pub toggle_fast: bool,   // F2 — toggle fast move speed
     pub toggle_debug_ui: bool, // F3 — toggle debug overlay
+    pub toggle_mute: bool,     // M — toggle music mute
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -40,6 +41,7 @@ impl Default for InputState {
             debug_stats: false,
             toggle_fast: false,
             toggle_debug_ui: false,
+            toggle_mute: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

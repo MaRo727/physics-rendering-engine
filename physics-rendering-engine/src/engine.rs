@@ -4,6 +4,7 @@ use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
 use winit::window::Window;
 
+use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::ThirdPersonCamera;
 use crate::game::entity::{Entity, EntityKind};
@@ -78,10 +79,12 @@ pub struct Engine {
     fast_mode: bool,
     show_debug_ui: bool,
     debug_ui_prev: bool,
+    mute_prev: bool,
     water_time: f32,
     surface_width: u32,
     surface_height: u32,
     light_dir: Vec3,
+    audio: Option<AudioManager>,
 }
 
 impl Engine {
@@ -173,10 +176,12 @@ impl Engine {
             fast_mode: false,
             show_debug_ui: false,
             debug_ui_prev: false,
+            mute_prev: false,
             water_time: 0.0,
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
+            audio: AudioManager::new(std::path::Path::new("../assets")),
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -232,6 +237,14 @@ impl Engine {
             self.show_debug_ui = !self.show_debug_ui;
         }
         self.debug_ui_prev = input.toggle_debug_ui;
+
+        // --- Mute toggle (M) ---
+        if input.toggle_mute && !self.mute_prev {
+            if let Some(audio) = &mut self.audio {
+                audio.toggle_mute();
+            }
+        }
+        self.mute_prev = input.toggle_mute;
 
         // --- Debug stats (F1) ---
         let debug_edge = input.debug_stats && !self.debug_stats_prev;
@@ -429,6 +442,13 @@ impl Engine {
 
         // --- Game tick: regen, etc. ---
         self.world.game_tick(dt);
+
+        // --- Audio: update music based on player biome ---
+        if let Some(audio) = &mut self.audio {
+            let player_pos = self.physics.body_position(self.player_rb);
+            let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
+            audio.update(dt, biome, None);
+        }
     }
 
     /// Rebuild terrain chunk meshes, BLASes, and physics heightfield for dirty chunks.
