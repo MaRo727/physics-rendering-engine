@@ -315,6 +315,24 @@ impl PhysicsWorld {
             })
     }
 
+    /// Replace a collider's shape on an existing rigid body. Returns the new collider handle.
+    pub fn replace_collider(
+        &mut self,
+        rb: RigidBodyHandle,
+        old_col: ColliderHandle,
+        shape: SharedShape,
+    ) -> ColliderHandle {
+        self.collider_set.remove(
+            old_col,
+            &mut self.island_manager,
+            &mut self.rigid_body_set,
+            true,
+        );
+        let col = ColliderBuilder::new(shape).build();
+        self.collider_set
+            .insert_with_parent(col, rb, &mut self.rigid_body_set)
+    }
+
     /// Remove a rigid body and its collider from the world.
     pub fn remove_body(&mut self, rb: RigidBodyHandle, col: ColliderHandle) {
         self.collider_set.remove(

@@ -9,7 +9,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 lightDir;
     vec4 lightColor;
     mat4 playerVP;
-    vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1), .z = tool type (0=hands, 1=axe)
+    vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1), .z = tool type (0=hands, 1=axe, 2=pickaxe, 3=hammer)
 } scene;
 
 layout(location = 0) rayPayloadEXT vec3 payload;
@@ -70,23 +70,42 @@ void main() {
         }
     }
 
-    // Tool indicator — draw axe icon below crosshair when equipped.
+    // Tool indicator — draw icon below crosshair when a tool is equipped.
     float toolType = scene.ghostMode.z;
-    if (toolType > 0.5) {
-        // Axe equipped — tint crosshair orange-red.
-        if (onCross) {
-            payload = vec3(1.0, 0.4, 0.2);
-        }
 
-        // Draw a small axe shape below the crosshair.
-        vec2 aOff = vec2(pixel - center) - vec2(0.0, 22.0); // offset below center
-        // Handle (vertical line).
+    if (toolType > 0.5 && toolType < 1.5) {
+        // Axe — orange crosshair + axe icon.
+        if (onCross) { payload = vec3(1.0, 0.4, 0.2); }
+        vec2 aOff = vec2(pixel - center) - vec2(0.0, 22.0);
         bool axeHandle = (abs(aOff.x) <= 1.0 && aOff.y >= -6.0 && aOff.y <= 6.0);
-        // Blade (wedge on right side).
         bool axeBlade = (aOff.x >= 1.0 && aOff.x <= 6.0 && aOff.y >= -4.0 && aOff.y <= 2.0
                         && aOff.x - 1.0 <= 5.0 * (1.0 - abs(aOff.y - (-1.0)) / 4.0));
         if (axeHandle || axeBlade) {
             payload = mix(payload, vec3(0.9, 0.9, 0.9), 0.85);
+        }
+    } else if (toolType > 1.5 && toolType < 2.5) {
+        // Pickaxe — brown crosshair + pick icon.
+        if (onCross) { payload = vec3(0.7, 0.5, 0.2); }
+        vec2 pOff = vec2(pixel - center) - vec2(0.0, 22.0);
+        // Shaft (diagonal line).
+        bool shaft = (abs(pOff.x - pOff.y) <= 1.5 && pOff.x >= -5.0 && pOff.x <= 5.0);
+        // Head (horizontal bar at top-right).
+        bool head = (pOff.y >= -6.0 && pOff.y <= -4.0 && pOff.x >= 1.0 && pOff.x <= 7.0);
+        // Point (angled tip).
+        bool point = (pOff.x >= 5.0 && pOff.x <= 7.0 && pOff.y >= -4.0 && pOff.y <= -2.0);
+        if (shaft || head || point) {
+            payload = mix(payload, vec3(0.8, 0.65, 0.4), 0.85);
+        }
+    } else if (toolType > 2.5) {
+        // Hammer — blue crosshair + hammer icon.
+        if (onCross) { payload = vec3(0.3, 0.6, 1.0); }
+        vec2 hOff = vec2(pixel - center) - vec2(0.0, 22.0);
+        // Handle (vertical line).
+        bool handle = (abs(hOff.x) <= 1.0 && hOff.y >= -2.0 && hOff.y <= 6.0);
+        // Head (thick rectangle at top).
+        bool hammerHead = (abs(hOff.x) <= 5.0 && hOff.y >= -6.0 && hOff.y <= -2.0);
+        if (handle || hammerHead) {
+            payload = mix(payload, vec3(0.7, 0.8, 1.0), 0.85);
         }
     }
 

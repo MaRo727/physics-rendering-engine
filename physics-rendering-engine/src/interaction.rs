@@ -15,6 +15,7 @@ const PRY_DURATION: f32 = 1.0;
 const AXE_RANGE: f32 = 4.0;
 const ITEM_PICKUP_RANGE: f32 = 3.0;
 const PICKAXE_RANGE: f32 = 5.0;
+const HAMMER_RANGE: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Tool types
@@ -25,6 +26,7 @@ pub enum ToolType {
     Hands,
     Axe,
     Pickaxe,
+    Hammer,
 }
 
 impl ToolType {
@@ -32,7 +34,8 @@ impl ToolType {
         match self {
             ToolType::Hands => ToolType::Axe,
             ToolType::Axe => ToolType::Pickaxe,
-            ToolType::Pickaxe => ToolType::Hands,
+            ToolType::Pickaxe => ToolType::Hammer,
+            ToolType::Hammer => ToolType::Hands,
         }
     }
 
@@ -42,6 +45,7 @@ impl ToolType {
             ToolType::Hands => "Hands",
             ToolType::Axe => "Axe",
             ToolType::Pickaxe => "Pickaxe",
+            ToolType::Hammer => "Hammer",
         }
     }
 }
@@ -50,12 +54,18 @@ impl ToolType {
 // Interaction result
 // ---------------------------------------------------------------------------
 
-/// What the pickaxe hit.
-pub enum MineHit {
+/// What the pickaxe hit (terrain only).
+pub enum PickaxeHit {
     /// Hit the terrain at this world position.
-    Terrain(glam::Vec3),
+    Terrain(Vec3),
+}
+
+/// What the hammer hit (structures only).
+pub enum HammerHit {
     /// Hit a dynamic body (mining node chunk).
     Body(RigidBodyHandle),
+    /// Hit a static structure (building cell, mining chunk).
+    Static(RigidBodyHandle, Vec3),
 }
 
 pub struct InteractionResult {
@@ -64,8 +74,10 @@ pub struct InteractionResult {
     pub axe_hit: Option<RigidBodyHandle>,
     /// Entity id of an item drop the player picked up.
     pub picked_up_item: Option<u32>,
-    /// What the pickaxe hit this frame (if anything).
-    pub mine_hit: Option<MineHit>,
+    /// What the pickaxe hit this frame (terrain only).
+    pub pickaxe_hit: Option<PickaxeHit>,
+    /// What the hammer hit this frame (structures only).
+    pub hammer_hit: Option<HammerHit>,
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +152,8 @@ impl Interaction {
             pried_cell: None,
             axe_hit: None,
             picked_up_item: None,
-            mine_hit: None,
+            pickaxe_hit: None,
+            hammer_hit: None,
         };
 
         // --- E press (edge): drop held OR pick up dynamic object OR pick up item drop OR start prying ---
@@ -230,14 +243,26 @@ impl Interaction {
                         }
                     }
                     ToolType::Pickaxe => {
-                        // Pickaxe swing — mine terrain or hit a dynamic body.
+                        // Pickaxe — terrain deformation only.
                         if let Some((body, hit_pos, _normal)) =
                             physics.cast_ray_full(eye, look_dir, PICKAXE_RANGE, player_collider)
                         {
                             if terrain_rb == Some(body) {
-                                result.mine_hit = Some(MineHit::Terrain(hit_pos));
+                                result.pickaxe_hit = Some(PickaxeHit::Terrain(hit_pos));
+                            }
+                        }
+                    }
+                    ToolType::Hammer => {
+                        // Hammer — mine structures (building walls, mining chunks).
+                        if let Some((body, hit_pos, _normal)) =
+                            physics.cast_ray_full(eye, look_dir, HAMMER_RANGE, player_collider)
+                        {
+                            if terrain_rb == Some(body) {
+                                // Ignore terrain hits with hammer.
                             } else if physics.is_dynamic(body) {
-                                result.mine_hit = Some(MineHit::Body(body));
+                                result.hammer_hit = Some(HammerHit::Body(body));
+                            } else {
+                                result.hammer_hit = Some(HammerHit::Static(body, hit_pos));
                             }
                         }
                     }

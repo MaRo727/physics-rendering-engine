@@ -10,7 +10,7 @@ use crate::game::entity::{Entity, EntityKind};
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
 use crate::game::world::World;
 use crate::input::InputState;
-use crate::interaction::{Interaction, MineHit};
+use crate::interaction::{Interaction, PickaxeHit, HammerHit};
 use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
@@ -305,28 +305,26 @@ impl Engine {
                 self.split_cube(target_body, player_eye, look_dir);
             }
 
-            // --- Handle pickaxe mine hit ---
-            if let Some(mine_hit) = interaction_result.mine_hit {
-                match mine_hit {
-                    MineHit::Terrain(hit_pos) => {
+            // --- Handle pickaxe hit (terrain only) ---
+            if let Some(pickaxe_hit) = interaction_result.pickaxe_hit {
+                match pickaxe_hit {
+                    PickaxeHit::Terrain(hit_pos) => {
                         self.terrain.deform_ground(hit_pos, DEFORM_RADIUS, DEFORM_AMOUNT);
                     }
-                    MineHit::Body(rb) => {
-                        if let Some(destroyed_id) = self.mining.damage_chunk(rb, 1) {
-                            // Remove destroyed chunk entity.
-                            if let Some(idx) = self.world.entities.iter().position(|e| e.id == destroyed_id) {
-                                let entity = self.world.entities.swap_remove(idx);
-                                self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
-                            }
-                            // Check stability of nearby chunks.
-                            let impact_pos = self.physics.body_position(rb);
-                            let collapsed = self.mining.check_stability(&self.physics, impact_pos);
-                            for eid in collapsed {
-                                if let Some(idx) = self.world.entities.iter().position(|e| e.id == eid) {
-                                    let entity = self.world.entities.swap_remove(idx);
-                                    self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
-                                }
-                            }
+                }
+            }
+
+            // --- Handle hammer hit (structures only) ---
+            if let Some(hammer_hit) = interaction_result.hammer_hit {
+                match hammer_hit {
+                    HammerHit::Body(rb) => {
+                        self.damage_mining_chunk(rb);
+                    }
+                    HammerHit::Static(rb, hit_pos) => {
+                        if self.building.has_body(rb) {
+                            self.building.mine_at(&mut self.physics, hit_pos);
+                        } else if self.mining.is_mining_chunk(rb) {
+                            self.damage_mining_chunk(rb);
                         }
                     }
                 }
@@ -502,6 +500,24 @@ impl Engine {
         }
     }
 
+    /// Damage a mining chunk and handle destruction + stability collapse.
+    fn damage_mining_chunk(&mut self, rb: rapier3d::prelude::RigidBodyHandle) {
+        if let Some(destroyed_id) = self.mining.damage_chunk(rb, 1) {
+            if let Some(idx) = self.world.entities.iter().position(|e| e.id == destroyed_id) {
+                let entity = self.world.entities.swap_remove(idx);
+                self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+            }
+            let impact_pos = self.physics.body_position(rb);
+            let collapsed = self.mining.check_stability(&self.physics, impact_pos);
+            for eid in collapsed {
+                if let Some(idx) = self.world.entities.iter().position(|e| e.id == eid) {
+                    let entity = self.world.entities.swap_remove(idx);
+                    self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                }
+            }
+        }
+    }
+
     /// Split a cube object into two halves along the axis most aligned with the hit.
     fn split_cube(&mut self, target_body: rapier3d::prelude::RigidBodyHandle, _eye: Vec3, look_dir: Vec3) {
         let obj_idx = match self.world.entities.iter().position(|o| o.body.rigid_body == target_body) {
@@ -669,6 +685,7 @@ impl Engine {
             crate::interaction::ToolType::Hands => 0.0,
             crate::interaction::ToolType::Axe => 1.0,
             crate::interaction::ToolType::Pickaxe => 2.0,
+            crate::interaction::ToolType::Hammer => 3.0,
         };
 
         self.renderer.draw_frame(
