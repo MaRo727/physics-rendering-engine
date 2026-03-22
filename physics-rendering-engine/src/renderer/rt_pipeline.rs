@@ -17,6 +17,8 @@ pub struct SceneUBO {
     pub light_color: glam::Vec4,
     pub player_vp: Mat4,       // frozen player view-projection (for ghost mode highlight)
     pub ghost_mode: glam::Vec4, // .x > 0 when ghost mode is active
+    pub debug_info: glam::Vec4, // .x = show debug UI, .y = biome (0=forest,1=desert,2=mountain,3=dungeon), .z = hp fraction, .w = mana fraction
+    pub debug_info2: glam::Vec4, // .x = level, .y = stamina fraction, .z = player x, .w = player z
 }
 
 // ---------------------------------------------------------------------------

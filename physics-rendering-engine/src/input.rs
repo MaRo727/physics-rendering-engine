@@ -17,6 +17,7 @@ pub struct InputState {
     pub cycle_tool: bool,    // Tab — cycle equipped tool
     pub debug_stats: bool,   // F1 — print player stats to console
     pub toggle_fast: bool,   // F2 — toggle fast move speed
+    pub toggle_debug_ui: bool, // F3 — toggle debug overlay
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -38,6 +39,7 @@ impl Default for InputState {
             cycle_tool: false,
             debug_stats: false,
             toggle_fast: false,
+            toggle_debug_ui: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

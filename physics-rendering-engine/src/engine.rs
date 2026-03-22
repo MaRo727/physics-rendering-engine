@@ -75,6 +75,8 @@ pub struct Engine {
     debug_stats_prev: bool,
     fast_prev: bool,
     fast_mode: bool,
+    show_debug_ui: bool,
+    debug_ui_prev: bool,
     water_time: f32,
     surface_width: u32,
     surface_height: u32,
@@ -163,6 +165,8 @@ impl Engine {
             debug_stats_prev: false,
             fast_prev: false,
             fast_mode: false,
+            show_debug_ui: false,
+            debug_ui_prev: false,
             water_time: 0.0,
             surface_width,
             surface_height,
@@ -216,6 +220,12 @@ impl Engine {
             self.fast_mode = !self.fast_mode;
         }
         self.fast_prev = input.toggle_fast;
+
+        // --- Debug UI toggle (F3) ---
+        if input.toggle_debug_ui && !self.debug_ui_prev {
+            self.show_debug_ui = !self.show_debug_ui;
+        }
+        self.debug_ui_prev = input.toggle_debug_ui;
 
         // --- Debug stats (F1) ---
         let debug_edge = input.debug_stats && !self.debug_stats_prev;
@@ -706,6 +716,37 @@ impl Engine {
             crate::interaction::ToolType::Hammer => 3.0,
         };
 
+        // Debug overlay data.
+        let biome_id = match self.terrain.biome_at_world(player_pos.x, player_pos.z) {
+            crate::terrain::Biome::Forest => 0.0,
+            crate::terrain::Biome::Desert => 1.0,
+            crate::terrain::Biome::Mountains => 2.0,
+            crate::terrain::Biome::Dungeon => 3.0,
+        };
+        let (hp_frac, mana_frac, stam_frac, level) = if let Some(stats) = &self.world.player().stats {
+            let derived = stats.compute_derived(&crate::game::stats::StatBonuses::default());
+            (
+                stats.health / derived.max_health,
+                stats.mana / derived.max_mana,
+                stats.stamina / derived.max_stamina,
+                stats.level as f32,
+            )
+        } else {
+            (1.0, 1.0, 1.0, 1.0)
+        };
+        let debug_info = Vec4::new(
+            if self.show_debug_ui { 1.0 } else { 0.0 },
+            biome_id,
+            hp_frac,
+            mana_frac,
+        );
+        let debug_info2 = Vec4::new(
+            level,
+            stam_frac,
+            player_pos.x,
+            player_pos.z,
+        );
+
         self.renderer.draw_frame(
             &transforms,
             &instance_ids,
@@ -717,6 +758,8 @@ impl Engine {
             self.ghost.active,
             pry_progress,
             tool_type,
+            debug_info,
+            debug_info2,
         )
     }
 

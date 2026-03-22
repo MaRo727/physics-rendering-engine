@@ -93,6 +93,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Tab) => self.input.cycle_tool = pressed,
                     PhysicalKey::Code(KeyCode::F1) => self.input.debug_stats = pressed,
                     PhysicalKey::Code(KeyCode::F2) => self.input.toggle_fast = pressed,
+                    PhysicalKey::Code(KeyCode::F3) => self.input.toggle_debug_ui = pressed,
                     _ => {}
                 }
             }

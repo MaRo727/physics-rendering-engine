@@ -13,6 +13,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 lightColor;
     mat4 playerVP;
     vec4 ghostMode;   // .x > 0 when ghost mode active
+    vec4 debugInfo;
+    vec4 debugInfo2;
 } scene;
 
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
