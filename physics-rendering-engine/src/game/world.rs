@@ -16,7 +16,7 @@ pub struct World {
     pub player_id: EntityId,
     pub state: GameState,
     pub game_time: f32,
-    next_entity_id: EntityId,
+    pub next_entity_id: EntityId,
 }
 
 impl World {

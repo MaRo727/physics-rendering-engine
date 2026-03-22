@@ -320,6 +320,59 @@ pub fn triangle_prism() -> (Vec<Vertex>, Vec<u32>) {
 // ---------------------------------------------------------------------------
 
 /// Right-angle slope/ramp centered at origin.
+/// Small rock chunk — unit cube with gray rock coloring.
+pub fn rock_chunk() -> (Vec<Vertex>, Vec<u32>) {
+    let g = Vec3::new(0.55, 0.52, 0.48); // gray rock
+
+    #[rustfmt::skip]
+    let vertices = vec![
+        // Front (+Z)
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::Z,     color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal:  Vec3::Z,     color: g },
+        // Back (-Z)
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal: Vec3::NEG_Z,  color: g },
+        // Left (-X)
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal: Vec3::NEG_X,  color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal: Vec3::NEG_X,  color: g },
+        // Right (+X)
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal:  Vec3::X,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::X,     color: g },
+        // Top (+Y)
+        Vertex { position: Vec3::new(-0.5,  0.5,  0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5,  0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new( 0.5,  0.5, -0.5), normal:  Vec3::Y,     color: g },
+        Vertex { position: Vec3::new(-0.5,  0.5, -0.5), normal:  Vec3::Y,     color: g },
+        // Bottom (-Y)
+        Vertex { position: Vec3::new(-0.5, -0.5, -0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5, -0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new( 0.5, -0.5,  0.5), normal: Vec3::NEG_Y,  color: g },
+        Vertex { position: Vec3::new(-0.5, -0.5,  0.5), normal: Vec3::NEG_Y,  color: g },
+    ];
+
+    let indices: Vec<u32> = (0..6u32)
+        .flat_map(|f| {
+            let b = f * 4;
+            [b, b + 1, b + 2, b, b + 2, b + 3]
+        })
+        .collect();
+
+    (vertices, indices)
+}
+
+// ---------------------------------------------------------------------------
+// Slope (ramp) mesh data
+// ---------------------------------------------------------------------------
+
+/// Right-angle slope/ramp centered at origin.
 pub fn slope() -> (Vec<Vertex>, Vec<u32>) {
     let c = Vec3::new(0.7, 0.4, 0.6);
     let bl_f = Vec3::new(-0.5, -0.5, 0.5);
