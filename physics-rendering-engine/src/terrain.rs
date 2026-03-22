@@ -3,14 +3,119 @@ use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use crate::renderer::mesh::Vertex;
 
-pub const TERRAIN_HALF: i32 = 450;
+pub const TERRAIN_HALF: i32 = 1800;
 pub const CELL_SIZE: i32 = 3;
-const MIN_HEIGHT: f64 = -15.0;
-const MAX_HEIGHT: f64 = 40.0;
-pub const CHUNKS_PER_SIDE: i32 = 6;
-const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 150
-const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 301
-const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 50
+pub const CHUNKS_PER_SIDE: i32 = 12;
+const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 600
+const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1201
+const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 100
+
+// ---------------------------------------------------------------------------
+// Biomes
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Biome {
+    Forest,
+    Desert,
+    Mountains,
+    Dungeon,
+}
+
+struct BiomeParams {
+    min_height: f32,
+    max_height: f32,
+    frequency: f64,
+    power: f64,
+}
+
+impl Biome {
+    fn params(self) -> BiomeParams {
+        match self {
+            Biome::Forest => BiomeParams {
+                min_height: -10.0,
+                max_height: 30.0,
+                frequency: 0.006,
+                power: 1.5,
+            },
+            Biome::Desert => BiomeParams {
+                min_height: -5.0,
+                max_height: 18.0,
+                frequency: 0.003,
+                power: 1.2,
+            },
+            Biome::Mountains => BiomeParams {
+                min_height: -15.0,
+                max_height: 80.0,
+                frequency: 0.01,
+                power: 2.5,
+            },
+            Biome::Dungeon => BiomeParams {
+                min_height: -20.0,
+                max_height: 15.0,
+                frequency: 0.012,
+                power: 1.0,
+            },
+        }
+    }
+
+    fn color(self, y: f32) -> Vec3 {
+        match self {
+            Biome::Forest => {
+                if y <= 2.0 {
+                    Vec3::new(0.4, 0.25, 0.1) // underwater bed
+                } else if y <= 6.0 {
+                    Vec3::new(0.76, 0.70, 0.50) // shore sand
+                } else if y <= 15.0 {
+                    Vec3::new(0.25, 0.55, 0.15) // lush grass
+                } else if y <= 22.0 {
+                    Vec3::new(0.2, 0.45, 0.18) // deep forest green
+                } else {
+                    Vec3::new(0.35, 0.42, 0.28) // highland
+                }
+            }
+            Biome::Desert => {
+                if y <= 2.0 {
+                    Vec3::new(0.5, 0.35, 0.15) // dry bed
+                } else if y <= 6.0 {
+                    Vec3::new(0.85, 0.75, 0.50) // light sand
+                } else if y <= 12.0 {
+                    Vec3::new(0.78, 0.65, 0.38) // dune sand
+                } else {
+                    Vec3::new(0.72, 0.55, 0.30) // hardpan
+                }
+            }
+            Biome::Mountains => {
+                if y <= 2.0 {
+                    Vec3::new(0.35, 0.25, 0.15) // dark bed
+                } else if y <= 10.0 {
+                    Vec3::new(0.3, 0.5, 0.2) // low grass
+                } else if y <= 30.0 {
+                    Vec3::new(0.45, 0.42, 0.35) // rock
+                } else if y <= 55.0 {
+                    Vec3::new(0.6, 0.58, 0.55) // bare stone
+                } else {
+                    Vec3::new(0.9, 0.9, 0.92) // snow
+                }
+            }
+            Biome::Dungeon => {
+                if y <= 0.0 {
+                    Vec3::new(0.15, 0.12, 0.18) // dark pit
+                } else if y <= 5.0 {
+                    Vec3::new(0.25, 0.22, 0.28) // dark stone
+                } else if y <= 10.0 {
+                    Vec3::new(0.35, 0.30, 0.35) // mossy rock
+                } else {
+                    Vec3::new(0.4, 0.38, 0.42) // weathered stone
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terrain
+// ---------------------------------------------------------------------------
 
 pub struct TerrainChunkInfo {
     pub mesh_type: u32,
@@ -19,39 +124,55 @@ pub struct TerrainChunkInfo {
 }
 
 pub struct TerrainGrid {
-    #[allow(dead_code)]
-    fbm: Fbm<Perlin>,
     heights: Vec<f32>,
     original_heights: Vec<f32>,
+    biomes: Vec<Biome>,
     dirty_chunks: Vec<bool>,
 }
 
-fn sample_noise(fbm: &Fbm<Perlin>, x: f32, z: f32) -> f32 {
-    let val = fbm.get([x as f64, z as f64]);
-    let sign = val.signum();
-    let shaped = sign * val.abs().powf(2.0);
-    let range = MAX_HEIGHT - MIN_HEIGHT;
-    let h = MIN_HEIGHT + (shaped + 1.0) * 0.5 * range;
-    h.clamp(MIN_HEIGHT, MAX_HEIGHT) as f32
-}
-
-fn height_color(y: f32) -> Vec3 {
-    if y <= 2.0 {
-        Vec3::new(0.4, 0.25, 0.1) // underwater bed (brown)
-    } else if y <= 6.0 {
-        Vec3::new(0.76, 0.70, 0.50) // shore (sand)
-    } else if y <= 15.0 {
-        Vec3::new(0.3, 0.55, 0.2) // grass (green)
-    } else if y <= 25.0 {
-        Vec3::new(0.35, 0.42, 0.28) // highland (dark green)
+/// Determine biome from temperature/moisture noise values.
+fn pick_biome(temperature: f64, moisture: f64) -> Biome {
+    if temperature > 0.3 && moisture < -0.1 {
+        Biome::Desert
+    } else if temperature < -0.2 && moisture > 0.0 {
+        Biome::Mountains
+    } else if temperature < -0.1 && moisture < -0.2 {
+        Biome::Dungeon
     } else {
-        Vec3::new(0.65, 0.65, 0.62) // mountain (gray)
+        Biome::Forest
     }
 }
 
+/// Sample terrain height for a given world position and biome.
+fn sample_height(fbm: &Fbm<Perlin>, wx: f32, wz: f32, biome: Biome) -> f32 {
+    let p = biome.params();
+    // Use the FBM at the biome's frequency (scale world coords).
+    let scale = p.frequency / 0.008; // relative to base FBM frequency
+    let val = fbm.get([wx as f64 * scale, wz as f64 * scale]);
+    let sign = val.signum();
+    let shaped = sign * val.abs().powf(p.power);
+    let range = (p.max_height - p.min_height) as f64;
+    let h = p.min_height as f64 + (shaped + 1.0) * 0.5 * range;
+    h.clamp(p.min_height as f64, p.max_height as f64) as f32
+}
+
+/// Blend two biome heights at a transition zone.
+fn blend_biome_height(
+    fbm: &Fbm<Perlin>,
+    wx: f32,
+    wz: f32,
+    biome_a: Biome,
+    biome_b: Biome,
+    t: f32,
+) -> f32 {
+    let ha = sample_height(fbm, wx, wz, biome_a);
+    let hb = sample_height(fbm, wx, wz, biome_b);
+    ha * (1.0 - t) + hb * t
+}
+
 /// Color a terrain vertex, blending toward dirt brown if it has been dug.
-fn terrain_color(y: f32, original_y: f32) -> Vec3 {
-    let base = height_color(y);
+fn terrain_color(y: f32, original_y: f32, biome: Biome) -> Vec3 {
+    let base = biome.color(y);
     let dig_depth = original_y - y;
     if dig_depth > 0.1 {
         let t = (dig_depth / 5.0).min(1.0);
@@ -69,22 +190,57 @@ impl TerrainGrid {
             .set_frequency(0.008)
             .set_persistence(0.5);
 
-        let mut heights = vec![0.0f32; GRID_SIZE * GRID_SIZE];
+        // Separate noise layers for biome selection (temperature & moisture).
+        let temp_noise = Fbm::<Perlin>::new(seed.wrapping_add(100))
+            .set_octaves(3)
+            .set_frequency(0.0015)
+            .set_persistence(0.5);
+        let moist_noise = Fbm::<Perlin>::new(seed.wrapping_add(200))
+            .set_octaves(3)
+            .set_frequency(0.002)
+            .set_persistence(0.5);
+
+        let total = GRID_SIZE * GRID_SIZE;
+        let mut heights = vec![0.0f32; total];
+        let mut biomes = vec![Biome::Forest; total];
+
         for gz in 0..GRID_SIZE {
             for gx in 0..GRID_SIZE {
                 let wx = (gx as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
                 let wz = (gz as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
-                heights[gz * GRID_SIZE + gx] = sample_noise(&fbm, wx, wz);
+
+                let temperature = temp_noise.get([wx as f64, wz as f64]);
+                let moisture = moist_noise.get([wx as f64, wz as f64]);
+                let biome = pick_biome(temperature, moisture);
+
+                let idx = gz * GRID_SIZE + gx;
+                biomes[idx] = biome;
+
+                // Check neighboring biome for smooth transitions.
+                // Use a slightly offset sample to detect transitions.
+                let temp2 = temp_noise.get([wx as f64 + 30.0, wz as f64 + 30.0]);
+                let moist2 = moist_noise.get([wx as f64 + 30.0, wz as f64 + 30.0]);
+                let neighbor_biome = pick_biome(temp2, moist2);
+
+                if neighbor_biome != biome {
+                    // Blend zone — compute a soft transition factor.
+                    let edge_dist = (temperature.abs().min(0.15) + moisture.abs().min(0.15)) as f32;
+                    let t = (1.0 - edge_dist / 0.3).clamp(0.0, 0.5);
+                    heights[idx] = blend_biome_height(&fbm, wx, wz, biome, neighbor_biome, t);
+                } else {
+                    heights[idx] = sample_height(&fbm, wx, wz, biome);
+                }
             }
         }
+
         let original_heights = heights.clone();
         let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
         let dirty_chunks = vec![false; num_chunks];
 
         Self {
-            fbm,
             heights,
             original_heights,
+            biomes,
             dirty_chunks,
         }
     }
@@ -104,6 +260,12 @@ impl TerrainGrid {
         let col = (gx + GRID_HALF) as usize;
         let row = (gz + GRID_HALF) as usize;
         self.original_heights[row * GRID_SIZE + col]
+    }
+
+    fn biome_at_grid(&self, gx: i32, gz: i32) -> Biome {
+        let col = (gx + GRID_HALF) as usize;
+        let row = (gz + GRID_HALF) as usize;
+        self.biomes[row * GRID_SIZE + col]
     }
 
     /// Bilinear-interpolated height at an arbitrary world-space (x, z).
@@ -133,6 +295,16 @@ impl TerrainGrid {
         self.height_at_world(x as f32, z as f32)
     }
 
+    /// Get the biome at a world-space position.
+    pub fn biome_at_world(&self, x: f32, z: f32) -> Biome {
+        let step = CELL_SIZE as f32;
+        let gx = ((x / step) + GRID_HALF as f32).round() as usize;
+        let gz = ((z / step) + GRID_HALF as f32).round() as usize;
+        let gx = gx.min(GRID_SIZE - 1);
+        let gz = gz.min(GRID_SIZE - 1);
+        self.biomes[gz * GRID_SIZE + gx]
+    }
+
     // -----------------------------------------------------------------------
     // Deformation
     // -----------------------------------------------------------------------
@@ -154,7 +326,7 @@ impl TerrainGrid {
                     let falloff = 1.0 - dist / radius;
                     let idx = (gz + GRID_HALF) as usize * GRID_SIZE + (gx + GRID_HALF) as usize;
                     self.heights[idx] = (self.heights[idx] - amount * falloff)
-                        .clamp(MIN_HEIGHT as f32, MAX_HEIGHT as f32);
+                        .clamp(-20.0, 80.0);
                     self.mark_dirty_for_vertex(gx, gz);
                 }
             }
@@ -317,7 +489,8 @@ impl TerrainGrid {
                     + self.original_at_grid(gx, gz + 1)
                     + self.original_at_grid(gx + 1, gz + 1))
                     * 0.25;
-                let color = terrain_color(avg_h, orig_avg);
+                let biome = self.biome_at_grid(gx, gz);
+                let color = terrain_color(avg_h, orig_avg, biome);
 
                 let base = vertices.len() as u32;
                 vertices.push(Vertex {

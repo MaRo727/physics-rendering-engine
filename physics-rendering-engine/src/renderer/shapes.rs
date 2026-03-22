@@ -166,11 +166,11 @@ pub fn capsule(radius: f32, height: f32, stacks: u32, slices: u32) -> (Vec<Verte
 // ---------------------------------------------------------------------------
 
 /// Water plane with sine-wave bumps and per-vertex normals.
-/// Slightly oversized (960x960) so translating for animation doesn't expose edges.
+/// Slightly oversized so translating for animation doesn't expose edges.
 pub fn water_plane() -> (Vec<Vertex>, Vec<u32>) {
     let color = Vec3::new(0.1, 0.3, 0.6);
-    let half = 480.0;
-    let res = 80; // 80x80 grid = 6400 quads
+    let half = 1920.0; // covers 3840x3840 for the 3600x3600 world
+    let res = 160; // 160x160 grid
     let step = (half * 2.0) / res as f32;
 
     let mut vertices = Vec::with_capacity((res + 1) * (res + 1));
