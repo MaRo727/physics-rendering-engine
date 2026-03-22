@@ -17,6 +17,7 @@ use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
+use crate::structures::StructureGrid;
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF};
 
 const PLACE_RANGE: f32 = 8.0;
@@ -68,6 +69,7 @@ pub struct Engine {
     mesh_building_id: u32,
     building: BuildingGrid,
     mining: MiningSystem,
+    structures: StructureGrid,
     place_prev: bool,
     spawn_prev: bool,
     debug_stats_prev: bool,
@@ -118,8 +120,18 @@ impl Engine {
 
         let terrain_object_id = 0xFFF1;
 
-        // Extra headroom: base entities + terrain + building + player model parts + mining + dynamic.
-        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 512) as u32;
+        // Generate structures (trees, ruins) on terrain.
+        let structures = StructureGrid::generate(42, &terrain);
+
+        // Add tree trunk colliders (compound collider per chunk).
+        for (_, trunks) in structures.trunk_colliders() {
+            if !trunks.is_empty() {
+                physics.add_compound_static(&trunks);
+            }
+        }
+
+        // Extra headroom: base entities + terrain + building + player model parts + trees + dynamic.
+        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 32768 + 512) as u32;
         let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
         let mesh_building_id = renderer.mesh_building_id();
 
@@ -145,6 +157,7 @@ impl Engine {
             mesh_building_id,
             building: BuildingGrid::new(),
             mining,
+            structures,
             place_prev: false,
             spawn_prev: false,
             debug_stats_prev: false,
@@ -664,6 +677,11 @@ impl Engine {
             transforms.push(Mat4::IDENTITY);
             instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
+
+        // Trees near the player, frustum-culled to the player camera
+        // (in ghost mode, use the frozen player frustum like terrain chunks).
+        let tree_frustum = extract_frustum_planes(cull_proj * cull_view);
+        self.structures.render_nearby(player_pos, &tree_frustum, &mut transforms, &mut instance_ids);
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
         // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.

@@ -9,6 +9,7 @@ mod physics;
 mod player;
 mod renderer;
 mod scene;
+mod structures;
 mod terrain;
 
 use app::App;

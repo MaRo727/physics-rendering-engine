@@ -31,8 +31,14 @@ pub const MESH_SLOPE: u32 = 4;
 pub const MESH_CAPSULE: u32 = 5;
 pub const MESH_WATER: u32 = 6;
 pub const MESH_ROCK: u32 = 7;
-pub const MESH_TERRAIN_BASE: u32 = 8;
-const SHAPE_MESH_COUNT: usize = 8; // cube, ball, pyramid, triangle, slope, capsule, water, rock
+pub const MESH_TREE_OAK: u32 = 8;
+pub const MESH_TREE_PINE: u32 = 9;
+pub const MESH_TREE_DEAD: u32 = 10;
+pub const MESH_TREE_OAK_LOD: u32 = 11;
+pub const MESH_TREE_PINE_LOD: u32 = 12;
+pub const MESH_TREE_DEAD_LOD: u32 = 13;
+pub const MESH_TERRAIN_BASE: u32 = 14;
+const SHAPE_MESH_COUNT: usize = 14;
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -230,6 +236,12 @@ impl Renderer {
             shapes::capsule(0.5, 1.0, 12, 16), // MESH_CAPSULE = 5
             shapes::water_plane(),               // MESH_WATER = 6
             shapes::rock_chunk(),                // MESH_ROCK = 7
+            shapes::tree_oak(),                  // MESH_TREE_OAK = 8
+            shapes::tree_pine(),                 // MESH_TREE_PINE = 9
+            shapes::tree_dead(),                 // MESH_TREE_DEAD = 10
+            shapes::tree_oak_lod(),              // MESH_TREE_OAK_LOD = 11
+            shapes::tree_pine_lod(),             // MESH_TREE_PINE_LOD = 12
+            shapes::tree_dead_lod(),             // MESH_TREE_DEAD_LOD = 13
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

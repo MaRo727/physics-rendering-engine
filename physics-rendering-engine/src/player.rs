@@ -75,7 +75,7 @@ impl Player {
         let eye = self.eye(physics);
         let dir = self.look_dir();
         let view = Mat4::look_at_rh(eye, eye + dir, Vec3::Y);
-        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 200.0);
+        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 5000.0);
         (view, proj)
     }
 }
@@ -168,7 +168,7 @@ impl GhostCamera {
         let (sp, cp) = self.pitch.sin_cos();
         let dir = Vec3::new(-sy * cp, sp, -cy * cp);
         let view = Mat4::look_at_rh(self.eye, self.eye + dir, Vec3::Y);
-        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 200.0);
+        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 5000.0);
         (view, proj)
     }
 }

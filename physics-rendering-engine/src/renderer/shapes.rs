@@ -316,10 +316,287 @@ pub fn triangle_prism() -> (Vec<Vertex>, Vec<u32>) {
 }
 
 // ---------------------------------------------------------------------------
-// Slope (ramp) mesh data
+// Tree mesh data
 // ---------------------------------------------------------------------------
 
-/// Right-angle slope/ramp centered at origin.
+/// Oak tree: brown rectangular trunk + green sphere foliage, baked into one mesh.
+/// Base at y=0, total height ~6 units.
+pub fn tree_oak() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.4, 0.25, 0.12);
+    let leaf = Vec3::new(0.2, 0.5, 0.15);
+    let leaf_dark = Vec3::new(0.15, 0.4, 0.1);
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Trunk: box from y=0 to y=3, half-extents 0.3 x 1.5 x 0.3
+    let tw = 0.3;
+    let th = 3.0;
+    add_box(&mut vertices, &mut indices, Vec3::new(0.0, th * 0.5, 0.0), Vec3::new(tw, th * 0.5, tw), bark);
+
+    // Foliage: UV sphere at y=4.2, radius ~2.0
+    add_sphere(&mut vertices, &mut indices, Vec3::new(0.0, 4.2, 0.0), 2.0, 8, 12, leaf, leaf_dark);
+
+    (vertices, indices)
+}
+
+/// Pine tree: thin trunk + layered cone foliage.
+/// Base at y=0, total height ~8 units.
+pub fn tree_pine() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.35, 0.2, 0.1);
+    let needle = Vec3::new(0.1, 0.35, 0.12);
+    let needle_dark = Vec3::new(0.08, 0.28, 0.08);
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Trunk: thin box from y=0 to y=5
+    add_box(&mut vertices, &mut indices, Vec3::new(0.0, 2.5, 0.0), Vec3::new(0.2, 2.5, 0.2), bark);
+
+    // Three stacked cones for foliage
+    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 3.0, 0.0), 2.0, 2.5, 8, needle, needle_dark);
+    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 4.5, 0.0), 1.5, 2.5, 8, needle, needle_dark);
+    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 6.0, 0.0), 1.0, 2.0, 8, needle, needle_dark);
+
+    (vertices, indices)
+}
+
+/// Dead tree: bare trunk with a few branches, no foliage.
+/// Base at y=0, height ~4 units.
+pub fn tree_dead() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.3, 0.22, 0.15);
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Main trunk
+    add_box(&mut vertices, &mut indices, Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.25, 2.0, 0.25), bark);
+
+    // Branch stubs
+    add_box(&mut vertices, &mut indices, Vec3::new(0.6, 3.0, 0.0), Vec3::new(0.6, 0.12, 0.12), bark);
+    add_box(&mut vertices, &mut indices, Vec3::new(-0.4, 2.3, 0.2), Vec3::new(0.5, 0.1, 0.1), bark);
+    add_box(&mut vertices, &mut indices, Vec3::new(0.1, 3.5, -0.3), Vec3::new(0.1, 0.1, 0.4), bark);
+
+    (vertices, indices)
+}
+
+// ---------------------------------------------------------------------------
+// Tree LOD meshes (low-poly imposters for distant rendering)
+// ---------------------------------------------------------------------------
+
+/// LOD oak: simple diamond trunk + 4-triangle sphere approximation.
+pub fn tree_oak_lod() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.4, 0.25, 0.12);
+    let leaf = Vec3::new(0.2, 0.5, 0.15);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Trunk: 2 crossed quads
+    add_cross_quad(&mut v, &mut i, Vec3::new(0.0, 1.5, 0.0), 0.3, 3.0, bark);
+
+    // Foliage: octahedron (diamond) at y=4.2, radius ~2.0
+    add_diamond(&mut v, &mut i, Vec3::new(0.0, 4.2, 0.0), 2.0, 2.2, leaf);
+
+    (v, i)
+}
+
+/// LOD pine: crossed quads for trunk + diamond cone for foliage.
+pub fn tree_pine_lod() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.35, 0.2, 0.1);
+    let needle = Vec3::new(0.1, 0.35, 0.12);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Trunk
+    add_cross_quad(&mut v, &mut i, Vec3::new(0.0, 2.5, 0.0), 0.2, 5.0, bark);
+
+    // Single tall diamond for foliage
+    add_diamond(&mut v, &mut i, Vec3::new(0.0, 5.0, 0.0), 1.5, 4.5, needle);
+
+    (v, i)
+}
+
+/// LOD dead tree: just crossed quads for the trunk.
+pub fn tree_dead_lod() -> (Vec<Vertex>, Vec<u32>) {
+    let bark = Vec3::new(0.3, 0.22, 0.15);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    add_cross_quad(&mut v, &mut i, Vec3::new(0.0, 2.0, 0.0), 0.35, 4.0, bark);
+
+    (v, i)
+}
+
+/// Two intersecting quads (cross billboard) — 8 vertices, 4 triangles.
+fn add_cross_quad(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, half_w: f32, height: f32, color: Vec3,
+) {
+    let half_h = height * 0.5;
+    let bottom = center.y - half_h;
+    let top = center.y + half_h;
+
+    // Quad along X axis
+    let base = vertices.len() as u32;
+    vertices.push(Vertex { position: Vec3::new(center.x - half_w, bottom, center.z), normal: Vec3::Z, color });
+    vertices.push(Vertex { position: Vec3::new(center.x + half_w, bottom, center.z), normal: Vec3::Z, color });
+    vertices.push(Vertex { position: Vec3::new(center.x + half_w, top, center.z), normal: Vec3::Z, color });
+    vertices.push(Vertex { position: Vec3::new(center.x - half_w, top, center.z), normal: Vec3::Z, color });
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+    // Quad along Z axis
+    let base = vertices.len() as u32;
+    vertices.push(Vertex { position: Vec3::new(center.x, bottom, center.z - half_w), normal: Vec3::X, color });
+    vertices.push(Vertex { position: Vec3::new(center.x, bottom, center.z + half_w), normal: Vec3::X, color });
+    vertices.push(Vertex { position: Vec3::new(center.x, top, center.z + half_w), normal: Vec3::X, color });
+    vertices.push(Vertex { position: Vec3::new(center.x, top, center.z - half_w), normal: Vec3::X, color });
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Diamond (octahedron) shape — 8 triangles, good distant tree canopy approximation.
+fn add_diamond(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, radius: f32, height: f32, color: Vec3,
+) {
+    let half_h = height * 0.5;
+    let top = center + Vec3::new(0.0, half_h, 0.0);
+    let bot = center - Vec3::new(0.0, half_h, 0.0);
+
+    // 4 equatorial points
+    let pts = [
+        center + Vec3::new(radius, 0.0, 0.0),
+        center + Vec3::new(0.0, 0.0, radius),
+        center + Vec3::new(-radius, 0.0, 0.0),
+        center + Vec3::new(0.0, 0.0, -radius),
+    ];
+
+    // Upper 4 triangles
+    for j in 0..4 {
+        let a = pts[j];
+        let b = pts[(j + 1) % 4];
+        let normal = (b - top).cross(a - top).normalize();
+        let base = vertices.len() as u32;
+        vertices.push(Vertex { position: top, normal, color });
+        vertices.push(Vertex { position: a, normal, color });
+        vertices.push(Vertex { position: b, normal, color });
+        indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
+    // Lower 4 triangles
+    for j in 0..4 {
+        let a = pts[j];
+        let b = pts[(j + 1) % 4];
+        let normal = (a - bot).cross(b - bot).normalize();
+        let base = vertices.len() as u32;
+        vertices.push(Vertex { position: bot, normal, color });
+        vertices.push(Vertex { position: b, normal, color });
+        vertices.push(Vertex { position: a, normal, color });
+        indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+}
+
+/// Helper: add an axis-aligned box to the mesh.
+fn add_box(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: Vec3, half: Vec3, color: Vec3) {
+    let faces: [(Vec3, Vec3, Vec3, Vec3, Vec3); 6] = [
+        // (a, b, c, d, normal) — quad vertices in CCW order
+        (Vec3::new(-1.0, -1.0,  1.0), Vec3::new( 1.0, -1.0,  1.0), Vec3::new( 1.0,  1.0,  1.0), Vec3::new(-1.0,  1.0,  1.0), Vec3::Z),
+        (Vec3::new( 1.0, -1.0, -1.0), Vec3::new(-1.0, -1.0, -1.0), Vec3::new(-1.0,  1.0, -1.0), Vec3::new( 1.0,  1.0, -1.0), Vec3::NEG_Z),
+        (Vec3::new(-1.0, -1.0, -1.0), Vec3::new(-1.0, -1.0,  1.0), Vec3::new(-1.0,  1.0,  1.0), Vec3::new(-1.0,  1.0, -1.0), Vec3::NEG_X),
+        (Vec3::new( 1.0, -1.0,  1.0), Vec3::new( 1.0, -1.0, -1.0), Vec3::new( 1.0,  1.0, -1.0), Vec3::new( 1.0,  1.0,  1.0), Vec3::X),
+        (Vec3::new(-1.0,  1.0,  1.0), Vec3::new( 1.0,  1.0,  1.0), Vec3::new( 1.0,  1.0, -1.0), Vec3::new(-1.0,  1.0, -1.0), Vec3::Y),
+        (Vec3::new(-1.0, -1.0, -1.0), Vec3::new( 1.0, -1.0, -1.0), Vec3::new( 1.0, -1.0,  1.0), Vec3::new(-1.0, -1.0,  1.0), Vec3::NEG_Y),
+    ];
+    for (a, b, c, d, normal) in faces {
+        let base = vertices.len() as u32;
+        vertices.push(Vertex { position: center + a * half, normal, color });
+        vertices.push(Vertex { position: center + b * half, normal, color });
+        vertices.push(Vertex { position: center + c * half, normal, color });
+        vertices.push(Vertex { position: center + d * half, normal, color });
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+/// Helper: add a UV sphere to the mesh.
+fn add_sphere(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, radius: f32, stacks: u32, slices: u32,
+    color_top: Vec3, color_bottom: Vec3,
+) {
+    let base_idx = vertices.len() as u32;
+    for i in 0..=stacks {
+        let phi = PI * i as f32 / stacks as f32;
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        let t = i as f32 / stacks as f32;
+        let color = color_top * (1.0 - t) + color_bottom * t;
+        for j in 0..=slices {
+            let theta = 2.0 * PI * j as f32 / slices as f32;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            let normal = Vec3::new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta);
+            vertices.push(Vertex {
+                position: center + normal * radius,
+                normal,
+                color,
+            });
+        }
+    }
+    for i in 0..stacks {
+        for j in 0..slices {
+            let row0 = base_idx + i * (slices + 1) + j;
+            let row1 = base_idx + (i + 1) * (slices + 1) + j;
+            indices.extend_from_slice(&[row0, row1, row0 + 1, row0 + 1, row1, row1 + 1]);
+        }
+    }
+}
+
+/// Helper: add a cone to the mesh.
+fn add_cone(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    base_center: Vec3, radius: f32, height: f32, slices: u32,
+    color_base: Vec3, color_tip: Vec3,
+) {
+    let base_idx = vertices.len() as u32;
+    let apex = base_center + Vec3::new(0.0, height, 0.0);
+
+    // Base ring vertices
+    for j in 0..=slices {
+        let theta = 2.0 * PI * j as f32 / slices as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let pos = base_center + Vec3::new(radius * cos_t, 0.0, radius * sin_t);
+        let slope = (radius / height).atan().cos();
+        let normal = Vec3::new(cos_t * slope, (height / radius).atan().cos(), sin_t * slope).normalize();
+        vertices.push(Vertex { position: pos, normal, color: color_base });
+    }
+
+    // Apex vertex (duplicated per slice for proper normals)
+    let apex_base = vertices.len() as u32;
+    for j in 0..=slices {
+        let theta = 2.0 * PI * j as f32 / slices as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let slope = (radius / height).atan().cos();
+        let normal = Vec3::new(cos_t * slope, (height / radius).atan().cos(), sin_t * slope).normalize();
+        vertices.push(Vertex { position: apex, normal, color: color_tip });
+    }
+
+    // Side triangles
+    for j in 0..slices {
+        indices.extend_from_slice(&[base_idx + j, apex_base + j, base_idx + j + 1]);
+    }
+
+    // Bottom cap
+    let center_idx = vertices.len() as u32;
+    vertices.push(Vertex { position: base_center, normal: Vec3::NEG_Y, color: color_base });
+    for j in 0..slices {
+        indices.extend_from_slice(&[center_idx, base_idx + j + 1, base_idx + j]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rock chunk mesh data
+// ---------------------------------------------------------------------------
+
 /// Small rock chunk — unit cube with gray rock coloring.
 pub fn rock_chunk() -> (Vec<Vertex>, Vec<u32>) {
     let g = Vec3::new(0.55, 0.52, 0.48); // gray rock

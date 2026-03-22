@@ -218,6 +218,21 @@ impl PhysicsWorld {
         (rb_handle, col_handle)
     }
 
+    /// Add a compound static collider made of multiple cuboids on a single fixed body.
+    pub fn add_compound_static(&mut self, boxes: &[(Vec3, Vec3)]) {
+        let rb = RigidBodyBuilder::fixed().build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+
+        let shapes: Vec<_> = boxes.iter().map(|(pos, half)| {
+            let iso = rapier3d::na::Isometry3::translation(pos.x, pos.y, pos.z);
+            (iso, SharedShape::cuboid(half.x, half.y, half.z))
+        }).collect();
+
+        let col = ColliderBuilder::compound(shapes).build();
+        self.collider_set
+            .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+    }
+
     /// Add a trimesh collider on a fixed body.
     pub fn add_trimesh(
         &mut self,
