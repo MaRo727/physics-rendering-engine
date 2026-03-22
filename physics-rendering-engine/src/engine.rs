@@ -18,7 +18,7 @@ use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::StructureGrid;
-use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF};
+use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -63,8 +63,8 @@ pub struct Engine {
     terrain: TerrainGrid,
     terrain_chunks: Vec<TerrainChunkInfo>,
     terrain_object_id: u32,
-    terrain_rb: rapier3d::prelude::RigidBodyHandle,
-    terrain_col: rapier3d::prelude::ColliderHandle,
+    terrain_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
+    terrain_chunk_cols: Vec<rapier3d::prelude::ColliderHandle>,
     terrain_rebuild_timer: f32,
     mesh_building_id: u32,
     building: BuildingGrid,
@@ -97,14 +97,17 @@ impl Engine {
             terrain.generate_chunks(MESH_TERRAIN_BASE);
         let num_terrain_chunks = chunk_meshes.len();
 
-        // Add heightfield collider for terrain.
-        let (heights, nrows, ncols) = terrain.heightfield_data();
-        let scale = Vec3::new(
-            (TERRAIN_HALF * 2) as f32,
-            1.0,
-            (TERRAIN_HALF * 2) as f32,
-        );
-        let (terrain_rb, terrain_col) = physics.add_heightfield(heights, nrows, ncols, scale);
+        // Add per-chunk heightfield colliders for terrain.
+        let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
+        let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
+        let mut terrain_rbs = std::collections::HashSet::new();
+        let mut terrain_chunk_cols = Vec::with_capacity(terrain.chunk_count());
+        for i in 0..terrain.chunk_count() {
+            let (heights, nrows, ncols, cx, cz) = terrain.chunk_heightfield_data(i);
+            let (rb, col) = physics.add_heightfield_chunk(&heights, nrows, ncols, chunk_scale, cx, cz);
+            terrain_rbs.insert(rb);
+            terrain_chunk_cols.push(col);
+        }
 
         // Build game world.
         let world = World::new(entities, player_id, next_id);
@@ -153,8 +156,8 @@ impl Engine {
             terrain,
             terrain_chunks,
             terrain_object_id,
-            terrain_rb,
-            terrain_col,
+            terrain_rbs,
+            terrain_chunk_cols,
             terrain_rebuild_timer: 0.0,
             mesh_building_id,
             building: BuildingGrid::new(),
@@ -285,7 +288,7 @@ impl Engine {
                 self.player_col,
                 dt,
                 building_cell_aimed_at,
-                Some(self.terrain_rb),
+                &self.terrain_rbs,
             );
 
             // --- Handle item pickup ---
@@ -446,14 +449,19 @@ impl Engine {
             log::error!("Failed to update terrain chunks: {}", e);
         }
 
-        // Update physics heightfield.
-        let (heights, nrows, ncols) = self.terrain.heightfield_data();
-        let scale = Vec3::new(
-            (TERRAIN_HALF * 2) as f32,
-            1.0,
-            (TERRAIN_HALF * 2) as f32,
-        );
-        self.physics.update_heightfield(self.terrain_col, heights, nrows, ncols, scale);
+        // Update only the dirty chunks' physics heightfields.
+        let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
+        let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
+        for &idx in &dirty {
+            let (heights, nrows, ncols, _cx, _cz) = self.terrain.chunk_heightfield_data(idx);
+            self.physics.update_heightfield_chunk(
+                self.terrain_chunk_cols[idx],
+                &heights,
+                nrows,
+                ncols,
+                chunk_scale,
+            );
+        }
     }
 
     /// Apply camera-relative movement to the player rigid body.

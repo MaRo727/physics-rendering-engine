@@ -530,6 +530,40 @@ impl TerrainGrid {
         (&self.heights, GRID_SIZE, GRID_SIZE)
     }
 
+    /// Return per-chunk heightfield data: (heights_vec, nrows, ncols, center_x, center_z, scale).
+    /// Heights for one chunk: (CELLS_PER_CHUNK+1) × (CELLS_PER_CHUNK+1) grid points.
+    pub fn chunk_heightfield_data(&self, chunk_idx: usize) -> (Vec<f32>, usize, usize, f32, f32) {
+        let chunk_x = chunk_idx as i32 / CHUNKS_PER_SIDE;
+        let chunk_z = chunk_idx as i32 % CHUNKS_PER_SIDE;
+        let gx_start = chunk_x * CELLS_PER_CHUNK; // relative to -GRID_HALF
+        let gz_start = chunk_z * CELLS_PER_CHUNK;
+        let npts = CELLS_PER_CHUNK + 1; // grid points per side (101)
+        let npts_u = npts as usize;
+
+        let mut heights = Vec::with_capacity(npts_u * npts_u);
+        for dz in 0..npts {
+            for dx in 0..npts {
+                let gx = (gx_start + dx) as usize;
+                let gz = (gz_start + dz) as usize;
+                heights.push(self.heights[gz * GRID_SIZE + gx]);
+            }
+        }
+
+        let step = CELL_SIZE as f32;
+        let world_x_start = (-GRID_HALF + gx_start) as f32 * step;
+        let world_z_start = (-GRID_HALF + gz_start) as f32 * step;
+        let chunk_world_size = CELLS_PER_CHUNK as f32 * step;
+        let center_x = world_x_start + chunk_world_size * 0.5;
+        let center_z = world_z_start + chunk_world_size * 0.5;
+
+        (heights, npts_u, npts_u, center_x, center_z)
+    }
+
+    /// Number of terrain chunks.
+    pub fn chunk_count(&self) -> usize {
+        (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize
+    }
+
     /// Legacy helper — convert a full mesh to trimesh format.
     #[allow(dead_code)]
     pub fn physics_trimesh(mesh: &(Vec<Vertex>, Vec<u32>)) -> (Vec<Vec3>, Vec<[u32; 3]>) {

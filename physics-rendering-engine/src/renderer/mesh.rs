@@ -62,7 +62,8 @@ impl Mesh {
     pub fn new(context: &VulkanContext, vertices: &[Vertex], indices: &[u32]) -> Result<Self> {
         let rt_flags = vk::BufferUsageFlags::STORAGE_BUFFER
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+            | vk::BufferUsageFlags::TRANSFER_DST;
 
         let (vertex_buffer, vertex_memory) = upload_via_staging(
             context,
@@ -86,6 +87,132 @@ impl Mesh {
         })
     }
 
+    /// Update a sub-region of the vertex and index buffers via staging copy.
+    /// Only touches the bytes for the given sub-mesh — the rest of the GPU buffer is untouched.
+    pub fn update_region(
+        &self,
+        context: &VulkanContext,
+        info: &SubMeshInfo,
+        vertices: &[Vertex],
+        indices: &[u32],
+    ) -> Result<()> {
+        let vert_byte_offset =
+            info.vertex_offset as vk::DeviceSize * std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        let idx_byte_offset =
+            info.index_offset as vk::DeviceSize * std::mem::size_of::<u32>() as vk::DeviceSize;
+
+        copy_to_device_region(context, vertices, self.vertex_buffer, vert_byte_offset)?;
+        copy_to_device_region(context, indices, self.index_buffer, idx_byte_offset)?;
+        Ok(())
+    }
+
+    /// Batch-update multiple sub-regions in a single command buffer submission.
+    pub fn update_regions_batched(
+        &self,
+        context: &VulkanContext,
+        updates: &[(&SubMeshInfo, &[Vertex], &[u32])],
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let vert_size = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        let idx_size = std::mem::size_of::<u32>() as vk::DeviceSize;
+
+        // Compute total staging size needed.
+        let total_vert_bytes: vk::DeviceSize = updates
+            .iter()
+            .map(|(_, v, _)| v.len() as vk::DeviceSize * vert_size)
+            .sum();
+        let total_idx_bytes: vk::DeviceSize = updates
+            .iter()
+            .map(|(_, _, i)| i.len() as vk::DeviceSize * idx_size)
+            .sum();
+        let total_staging = total_vert_bytes + total_idx_bytes;
+        if total_staging == 0 {
+            return Ok(());
+        }
+
+        // Create one big staging buffer.
+        let (staging, staging_mem) = create_buffer(
+            &context.device,
+            &context.memory_properties,
+            total_staging,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            false,
+        )?;
+
+        // Map and fill staging buffer, recording copy regions.
+        let mut vert_copies = Vec::with_capacity(updates.len());
+        let mut idx_copies = Vec::with_capacity(updates.len());
+        let mut staging_offset: vk::DeviceSize = 0;
+
+        unsafe {
+            let ptr = context
+                .device
+                .map_memory(staging_mem, 0, total_staging, vk::MemoryMapFlags::empty())
+                .context("Failed to map staging memory")? as *mut u8;
+
+            for (info, vertices, indices) in updates {
+                // Vertices.
+                let vb = vertices.len() as vk::DeviceSize * vert_size;
+                if vb > 0 {
+                    std::ptr::copy_nonoverlapping(
+                        vertices.as_ptr() as *const u8,
+                        ptr.add(staging_offset as usize),
+                        vb as usize,
+                    );
+                    vert_copies.push(vk::BufferCopy {
+                        src_offset: staging_offset,
+                        dst_offset: info.vertex_offset as vk::DeviceSize * vert_size,
+                        size: vb,
+                    });
+                    staging_offset += vb;
+                }
+
+                // Indices.
+                let ib = indices.len() as vk::DeviceSize * idx_size;
+                if ib > 0 {
+                    std::ptr::copy_nonoverlapping(
+                        indices.as_ptr() as *const u8,
+                        ptr.add(staging_offset as usize),
+                        ib as usize,
+                    );
+                    idx_copies.push(vk::BufferCopy {
+                        src_offset: staging_offset,
+                        dst_offset: info.index_offset as vk::DeviceSize * idx_size,
+                        size: ib,
+                    });
+                    staging_offset += ib;
+                }
+            }
+
+            context.device.unmap_memory(staging_mem);
+        }
+
+        // Single command buffer for all copies.
+        super::acceleration_structure::one_shot(context, |cb| unsafe {
+            if !vert_copies.is_empty() {
+                context
+                    .device
+                    .cmd_copy_buffer(cb, staging, self.vertex_buffer, &vert_copies);
+            }
+            if !idx_copies.is_empty() {
+                context
+                    .device
+                    .cmd_copy_buffer(cb, staging, self.index_buffer, &idx_copies);
+            }
+        })?;
+
+        unsafe {
+            context.device.destroy_buffer(staging, None);
+            context.device.free_memory(staging_mem, None);
+        }
+
+        Ok(())
+    }
+
     pub fn destroy(&self, device: &ash::Device) {
         unsafe {
             device.destroy_buffer(self.vertex_buffer, None);
@@ -94,6 +221,57 @@ impl Mesh {
             device.free_memory(self.index_memory, None);
         }
     }
+}
+
+/// Copy `data` into an existing device-local buffer at `dst_offset` bytes via a staging buffer.
+fn copy_to_device_region<T: Copy>(
+    context: &VulkanContext,
+    data: &[T],
+    dst_buffer: vk::Buffer,
+    dst_offset: vk::DeviceSize,
+) -> Result<()> {
+    let size = std::mem::size_of_val(data) as vk::DeviceSize;
+    if size == 0 {
+        return Ok(());
+    }
+
+    let (staging, staging_mem) = create_buffer(
+        &context.device,
+        &context.memory_properties,
+        size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
+    )?;
+
+    unsafe {
+        let ptr = context
+            .device
+            .map_memory(staging_mem, 0, size, vk::MemoryMapFlags::empty())
+            .context("Failed to map staging memory")? as *mut T;
+        ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
+        context.device.unmap_memory(staging_mem);
+    }
+
+    super::acceleration_structure::one_shot(context, |cb| unsafe {
+        context.device.cmd_copy_buffer(
+            cb,
+            staging,
+            dst_buffer,
+            &[vk::BufferCopy {
+                src_offset: 0,
+                dst_offset,
+                size,
+            }],
+        );
+    })?;
+
+    unsafe {
+        context.device.destroy_buffer(staging, None);
+        context.device.free_memory(staging_mem, None);
+    }
+
+    Ok(())
 }
 
 pub fn get_device_address(device: &ash::Device, buffer: vk::Buffer) -> vk::DeviceAddress {

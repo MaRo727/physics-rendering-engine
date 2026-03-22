@@ -40,6 +40,10 @@ pub const MESH_TREE_DEAD_LOD: u32 = 13;
 pub const MESH_TERRAIN_BASE: u32 = 14;
 const SHAPE_MESH_COUNT: usize = 14;
 
+/// Pre-allocated capacity for the building mesh slot in the combined buffer.
+const BUILDING_INITIAL_VERTS: u32 = 65536;
+const BUILDING_INITIAL_INDICES: u32 = 98304;
+
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
     (mesh_type << 16) | (object_id & 0xFFFF)
@@ -193,7 +197,10 @@ pub struct Renderer {
     mesh: Mesh,
     base_mesh_data: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
     base_mesh_count: usize,
+    sub_mesh_infos: Vec<mesh::SubMeshInfo>,
     building_data: Option<(Vec<mesh::Vertex>, Vec<u32>)>,
+    /// Allocated capacity (verts, indices) for the building slot in the combined buffer.
+    building_capacity: Option<(u32, u32)>,
     blas_list: Vec<Blas>,
     tlas: Tlas,
     rt_pipeline: RtPipeline,
@@ -247,14 +254,34 @@ impl Renderer {
         base_mesh_data.extend(terrain_chunks);
         let base_mesh_count = base_mesh_data.len();
 
-        let (combined_verts, combined_indices, sub_mesh_infos) =
+        let (mut combined_verts, mut combined_indices, mut sub_mesh_infos) =
             mesh::combine_meshes(&base_mesh_data);
+
+        // Pre-allocate a building slot at the end of the combined buffer.
+        // This avoids a full rebuild when the first block is placed.
+        let building_vert_offset = combined_verts.len() as u32;
+        let building_idx_offset = combined_indices.len() as u32;
+        sub_mesh_infos.push(mesh::SubMeshInfo {
+            vertex_offset: building_vert_offset,
+            index_offset: building_idx_offset,
+            vertex_count: 0,
+            index_count: 0,
+        });
+        // Extend the buffer with zeroed placeholder data for the building slot.
+        combined_verts.resize(
+            combined_verts.len() + BUILDING_INITIAL_VERTS as usize,
+            mesh::Vertex { position: glam::Vec3::ZERO, normal: glam::Vec3::ZERO, color: glam::Vec3::ZERO },
+        );
+        combined_indices.resize(
+            combined_indices.len() + BUILDING_INITIAL_INDICES as usize,
+            0,
+        );
 
         let combined_mesh = Mesh::new(&context, &combined_verts, &combined_indices)?;
 
-        // Build one BLAS per mesh type from sub-ranges of the combined buffer.
+        // Build one BLAS per base mesh type (not the empty building slot).
         let mut blas_list = Vec::with_capacity(base_mesh_count);
-        for info in &sub_mesh_infos {
+        for info in &sub_mesh_infos[..base_mesh_count] {
             blas_list.push(Blas::from_range(&context, &combined_mesh, info)?);
         }
 
@@ -328,7 +355,9 @@ impl Renderer {
             mesh: combined_mesh,
             base_mesh_data,
             base_mesh_count,
+            sub_mesh_infos,
             building_data: None,
+            building_capacity: Some((BUILDING_INITIAL_VERTS, BUILDING_INITIAL_INDICES)),
             blas_list,
             tlas,
             rt_pipeline,
@@ -462,50 +491,93 @@ impl Renderer {
         Ok(())
     }
 
-    /// Rebuild the combined mesh buffer to include building mesh data.
-    /// Also rebuilds the building BLAS and updates descriptors.
+    /// Update the building mesh on the GPU.
+    /// Fast path: if the new mesh fits in the existing allocation, only the
+    /// building region is copied and its BLAS rebuilt — no full buffer recreate.
+    /// Slow path (new buildings or growth): full combined mesh rebuild.
     pub fn update_building_mesh(
         &mut self,
         building_verts: &[mesh::Vertex],
         building_indices: &[u32],
     ) -> Result<()> {
-        // Remove old building BLAS if it exists.
-        if self.blas_list.len() > self.base_mesh_count {
-            // Need device idle before destroying BLAS.
-            unsafe { self.context.device.device_wait_idle()? };
-            self.blas_list.pop().unwrap().destroy(&self.context);
-        }
-
-        // Store building data.
         if building_verts.is_empty() {
-            self.building_data = None;
-        } else {
-            self.building_data = Some((building_verts.to_vec(), building_indices.to_vec()));
+            if self.building_data.is_some() {
+                // All buildings removed — remove building BLAS but keep the
+                // pre-allocated slot so future placements still use the fast path.
+                unsafe { self.context.device.device_wait_idle()? };
+                if self.blas_list.len() > self.base_mesh_count {
+                    self.blas_list.pop().unwrap().destroy(&self.context);
+                }
+                self.sub_mesh_infos[self.base_mesh_count].vertex_count = 0;
+                self.sub_mesh_infos[self.base_mesh_count].index_count = 0;
+                self.building_data = None;
+            }
+            return Ok(());
         }
 
+        let new_vert_count = building_verts.len() as u32;
+        let new_idx_count = building_indices.len() as u32;
+
+        // Fast path: fits within existing allocation.
+        if let Some((vert_cap, idx_cap)) = self.building_capacity {
+            if new_vert_count <= vert_cap && new_idx_count <= idx_cap {
+                unsafe { self.context.device.device_wait_idle()? };
+
+                let info = &self.sub_mesh_infos[self.base_mesh_count];
+                self.mesh.update_region(&self.context, info, building_verts, building_indices)?;
+
+                // Update the sub_mesh_info counts (offsets stay the same).
+                self.sub_mesh_infos[self.base_mesh_count].vertex_count = new_vert_count;
+                self.sub_mesh_infos[self.base_mesh_count].index_count = new_idx_count;
+
+                // Rebuild only the building BLAS.
+                if self.blas_list.len() > self.base_mesh_count {
+                    self.blas_list.pop().unwrap().destroy(&self.context);
+                }
+                let building_info = &self.sub_mesh_infos[self.base_mesh_count];
+                let building_blas =
+                    Blas::from_range(&self.context, &self.mesh, building_info)?;
+                self.blas_list.push(building_blas);
+
+                self.building_data =
+                    Some((building_verts.to_vec(), building_indices.to_vec()));
+                return Ok(());
+            }
+        }
+
+        // Slow path: first building or mesh grew — full rebuild.
+        self.building_data = Some((building_verts.to_vec(), building_indices.to_vec()));
         self.rebuild_combined_mesh(&[])
     }
 
-    /// Update terrain chunk mesh data and rebuild affected BLASes.
+    /// Update terrain chunk mesh data with partial GPU buffer writes.
+    /// Batches all chunk copies into a single command buffer, then rebuilds only dirty BLASes.
     pub fn update_terrain_chunks(
         &mut self,
         updates: &[(usize, Vec<mesh::Vertex>, Vec<u32>)],
     ) -> Result<()> {
-        // Remove old building BLAS temporarily (will be re-added by rebuild).
-        if self.blas_list.len() > self.base_mesh_count {
-            unsafe { self.context.device.device_wait_idle()? };
-            self.blas_list.pop().unwrap().destroy(&self.context);
-        }
+        unsafe { self.context.device.device_wait_idle()? };
 
-        // Update base_mesh_data entries for the dirty terrain chunks.
-        let mut dirty_blas: Vec<usize> = Vec::new();
+        // Batch all chunk copies into one command submission.
+        let batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> = updates
+            .iter()
+            .map(|(chunk_idx, verts, indices)| {
+                let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
+                (&self.sub_mesh_infos[mesh_idx], verts.as_slice(), indices.as_slice())
+            })
+            .collect();
+        self.mesh.update_regions_batched(&self.context, &batch)?;
+
+        // Rebuild only dirty BLASes and keep CPU data in sync.
         for (chunk_idx, verts, indices) in updates {
             let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
+            self.blas_list[mesh_idx].destroy(&self.context);
+            self.blas_list[mesh_idx] =
+                Blas::from_range(&self.context, &self.mesh, &self.sub_mesh_infos[mesh_idx])?;
             self.base_mesh_data[mesh_idx] = (verts.clone(), indices.clone());
-            dirty_blas.push(mesh_idx);
         }
 
-        self.rebuild_combined_mesh(&dirty_blas)
+        Ok(())
     }
 
     /// Rebuild the combined vertex/index buffer from base_mesh_data + building_data.
@@ -514,30 +586,79 @@ impl Renderer {
     fn rebuild_combined_mesh(&mut self, rebuild_blas_indices: &[usize]) -> Result<()> {
         unsafe { self.context.device.device_wait_idle()? };
 
-        let mut all_meshes: Vec<(Vec<mesh::Vertex>, Vec<u32>)> = self.base_mesh_data.clone();
-        if let Some(ref bd) = self.building_data {
-            all_meshes.push(bd.clone());
+        // Remove old building BLAS if it exists.
+        if self.blas_list.len() > self.base_mesh_count {
+            self.blas_list.pop().unwrap().destroy(&self.context);
         }
 
-        let (combined_verts, combined_indices, sub_mesh_infos) =
-            mesh::combine_meshes(&all_meshes);
+        // Build combined mesh directly from references — no cloning base_mesh_data.
+        let total_verts: usize = self.base_mesh_data.iter().map(|(v, _)| v.len()).sum();
+        let total_indices: usize = self.base_mesh_data.iter().map(|(_, i)| i.len()).sum();
+        let extra_verts = self.building_data.as_ref().map_or(0, |bd| bd.0.len());
+        let extra_indices = self.building_data.as_ref().map_or(0, |bd| bd.1.len());
+        // Allocate 2x headroom for building so future growth uses the fast path.
+        let building_vert_cap = (extra_verts * 2).max(BUILDING_INITIAL_VERTS as usize);
+        let building_idx_cap = (extra_indices * 2).max(BUILDING_INITIAL_INDICES as usize);
+
+        let mut combined_verts = Vec::with_capacity(total_verts + building_vert_cap);
+        let mut combined_indices = Vec::with_capacity(total_indices + building_idx_cap);
+        // Always include the building slot entry.
+        let mut sub_mesh_infos = Vec::with_capacity(self.base_mesh_data.len() + 1);
+
+        for (verts, idxs) in self.base_mesh_data.iter() {
+            sub_mesh_infos.push(mesh::SubMeshInfo {
+                vertex_offset: combined_verts.len() as u32,
+                index_offset: combined_indices.len() as u32,
+                vertex_count: verts.len() as u32,
+                index_count: idxs.len() as u32,
+            });
+            combined_verts.extend_from_slice(verts);
+            combined_indices.extend_from_slice(idxs);
+        }
+
+        // Building slot — always present, with pre-allocated capacity.
+        let building_vert_offset = combined_verts.len() as u32;
+        let building_idx_offset = combined_indices.len() as u32;
+        if let Some(ref bd) = self.building_data {
+            sub_mesh_infos.push(mesh::SubMeshInfo {
+                vertex_offset: building_vert_offset,
+                index_offset: building_idx_offset,
+                vertex_count: bd.0.len() as u32,
+                index_count: bd.1.len() as u32,
+            });
+            combined_verts.extend_from_slice(&bd.0);
+            combined_indices.extend_from_slice(&bd.1);
+        } else {
+            sub_mesh_infos.push(mesh::SubMeshInfo {
+                vertex_offset: building_vert_offset,
+                index_offset: building_idx_offset,
+                vertex_count: 0,
+                index_count: 0,
+            });
+        }
+        // Pad to full capacity.
+        let zero_vert = mesh::Vertex { position: glam::Vec3::ZERO, normal: glam::Vec3::ZERO, color: glam::Vec3::ZERO };
+        combined_verts.resize(total_verts + building_vert_cap, zero_vert);
+        combined_indices.resize(total_indices + building_idx_cap, 0);
 
         // Destroy old mesh and create new one.
         self.mesh.destroy(&self.context.device);
         self.mesh = Mesh::new(&self.context, &combined_verts, &combined_indices)?;
+        self.sub_mesh_infos = sub_mesh_infos;
+        self.building_capacity = Some((building_vert_cap as u32, building_idx_cap as u32));
 
         // Rebuild specified BLASes (terrain chunks that changed).
         for &idx in rebuild_blas_indices {
             if idx < self.blas_list.len() {
                 self.blas_list[idx].destroy(&self.context);
                 self.blas_list[idx] =
-                    Blas::from_range(&self.context, &self.mesh, &sub_mesh_infos[idx])?;
+                    Blas::from_range(&self.context, &self.mesh, &self.sub_mesh_infos[idx])?;
             }
         }
 
         // Add building BLAS if we have building data.
         if self.building_data.is_some() {
-            let building_info = &sub_mesh_infos[self.base_mesh_count];
+            let building_info = &self.sub_mesh_infos[self.base_mesh_count];
             let building_blas = Blas::from_range(&self.context, &self.mesh, building_info)?;
             self.blas_list.push(building_blas);
         }
@@ -547,7 +668,7 @@ impl Renderer {
             self.context.device.destroy_buffer(self.mesh_offsets_buf.buffer, None);
             self.context.device.free_memory(self.mesh_offsets_buf.memory, None);
         }
-        self.mesh_offsets_buf = create_mesh_offsets_buffer(&self.context, &sub_mesh_infos)?;
+        self.mesh_offsets_buf = create_mesh_offsets_buffer(&self.context, &self.sub_mesh_infos)?;
 
         // Update descriptor sets (new vertex/index/offsets buffers).
         for i in 0..MAX_FRAMES_IN_FLIGHT {

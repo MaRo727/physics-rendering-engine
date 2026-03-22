@@ -296,6 +296,48 @@ impl PhysicsWorld {
         }
     }
 
+    /// Add a small heightfield chunk collider on a fixed body at (center_x, 0, center_z).
+    pub fn add_heightfield_chunk(
+        &mut self,
+        heights: &[f32],
+        nrows: usize,
+        ncols: usize,
+        scale: Vec3,
+        center_x: f32,
+        center_z: f32,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let mat = rapier3d::na::DMatrix::from_fn(nrows, ncols, |i, j| {
+            heights[i * ncols + j]
+        });
+        let rb = RigidBodyBuilder::fixed()
+            .translation(vector![center_x, 0.0, center_z])
+            .build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+        let col = ColliderBuilder::heightfield(mat, vector![scale.x, scale.y, scale.z])
+            .build();
+        let col_handle = self.collider_set
+            .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+        (rb_handle, col_handle)
+    }
+
+    /// Update a single heightfield chunk collider's shape.
+    pub fn update_heightfield_chunk(
+        &mut self,
+        col: ColliderHandle,
+        heights: &[f32],
+        nrows: usize,
+        ncols: usize,
+        scale: Vec3,
+    ) {
+        if let Some(collider) = self.collider_set.get_mut(col) {
+            let mat = rapier3d::na::DMatrix::from_fn(nrows, ncols, |i, j| {
+                heights[i * ncols + j]
+            });
+            let shape = SharedShape::heightfield(mat, vector![scale.x, scale.y, scale.z]);
+            collider.set_shape(shape);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Raycasting
     // -----------------------------------------------------------------------

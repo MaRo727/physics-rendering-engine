@@ -18,11 +18,22 @@ pub struct Blas {
 
 impl Blas {
     /// Build a BLAS from a sub-range of a combined mesh buffer.
+    ///
+    /// # Panics
+    /// Panics if the sub-mesh has zero vertices or indices. Creating a BLAS with
+    /// zero triangles leaks Vulkan buffers on shutdown and violates the spec.
     pub fn from_range(
         context: &VulkanContext,
         mesh: &Mesh,
         info: &super::mesh::SubMeshInfo,
     ) -> Result<Self> {
+        assert!(
+            info.vertex_count > 0 && info.index_count > 0,
+            "Cannot create BLAS from empty sub-mesh (vertex_count={}, index_count={})",
+            info.vertex_count,
+            info.index_count,
+        );
+
         let vertex_address = mesh::get_device_address(&context.device, mesh.vertex_buffer)
             + (info.vertex_offset as vk::DeviceSize)
                 * std::mem::size_of::<super::mesh::Vertex>() as vk::DeviceSize;

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use glam::Vec3;
 use rapier3d::prelude::RigidBodyHandle;
 
@@ -143,7 +145,7 @@ impl Interaction {
         player_collider: rapier3d::prelude::ColliderHandle,
         dt: f32,
         building_cell_aimed_at: Option<(i32, i32, i32)>,
-        terrain_rb: Option<RigidBodyHandle>,
+        terrain_rbs: &HashSet<RigidBodyHandle>,
     ) -> InteractionResult {
         let interact_edge = interact_pressed && !self.interact_prev;
         self.interact_prev = interact_pressed;
@@ -247,7 +249,7 @@ impl Interaction {
                         if let Some((body, hit_pos, _normal)) =
                             physics.cast_ray_full(eye, look_dir, PICKAXE_RANGE, player_collider)
                         {
-                            if terrain_rb == Some(body) {
+                            if terrain_rbs.contains(&body) {
                                 result.pickaxe_hit = Some(PickaxeHit::Terrain(hit_pos));
                             }
                         }
@@ -257,7 +259,7 @@ impl Interaction {
                         if let Some((body, hit_pos, _normal)) =
                             physics.cast_ray_full(eye, look_dir, HAMMER_RANGE, player_collider)
                         {
-                            if terrain_rb == Some(body) {
+                            if terrain_rbs.contains(&body) {
                                 // Ignore terrain hits with hammer.
                             } else if physics.is_dynamic(body) {
                                 result.hammer_hit = Some(HammerHit::Body(body));
