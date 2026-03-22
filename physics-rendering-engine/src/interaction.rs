@@ -5,6 +5,7 @@ use crate::physics::body::WeightClass;
 use crate::physics::world::PhysicsWorld;
 use crate::game::entity::{Entity, EntityKind};
 
+
 const PICKUP_RANGE: f32 = 5.0;
 const HOLD_DISTANCE: f32 = 3.0;
 const HOLD_STIFFNESS: f32 = 20.0;
@@ -13,6 +14,7 @@ const BARE_PUNCH_FORCE: f32 = 8.0;
 const PRY_DURATION: f32 = 1.0;
 const AXE_RANGE: f32 = 4.0;
 const ITEM_PICKUP_RANGE: f32 = 3.0;
+const PICKAXE_RANGE: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Tool types
@@ -22,13 +24,15 @@ const ITEM_PICKUP_RANGE: f32 = 3.0;
 pub enum ToolType {
     Hands,
     Axe,
+    Pickaxe,
 }
 
 impl ToolType {
     pub fn next(self) -> Self {
         match self {
             ToolType::Hands => ToolType::Axe,
-            ToolType::Axe => ToolType::Hands,
+            ToolType::Axe => ToolType::Pickaxe,
+            ToolType::Pickaxe => ToolType::Hands,
         }
     }
 
@@ -37,6 +41,7 @@ impl ToolType {
         match self {
             ToolType::Hands => "Hands",
             ToolType::Axe => "Axe",
+            ToolType::Pickaxe => "Pickaxe",
         }
     }
 }
@@ -45,12 +50,22 @@ impl ToolType {
 // Interaction result
 // ---------------------------------------------------------------------------
 
+/// What the pickaxe hit.
+pub enum MineHit {
+    /// Hit the terrain at this world position.
+    Terrain(glam::Vec3),
+    /// Hit a dynamic body (mining node chunk).
+    Body(RigidBodyHandle),
+}
+
 pub struct InteractionResult {
     pub pried_cell: Option<(i32, i32, i32)>,
     /// Body handle of an object hit by the axe swing.
     pub axe_hit: Option<RigidBodyHandle>,
     /// Entity id of an item drop the player picked up.
     pub picked_up_item: Option<u32>,
+    /// What the pickaxe hit this frame (if anything).
+    pub mine_hit: Option<MineHit>,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +131,7 @@ impl Interaction {
         player_collider: rapier3d::prelude::ColliderHandle,
         dt: f32,
         building_cell_aimed_at: Option<(i32, i32, i32)>,
+        terrain_rb: Option<RigidBodyHandle>,
     ) -> InteractionResult {
         let interact_edge = interact_pressed && !self.interact_prev;
         self.interact_prev = interact_pressed;
@@ -124,6 +140,7 @@ impl Interaction {
             pried_cell: None,
             axe_hit: None,
             picked_up_item: None,
+            mine_hit: None,
         };
 
         // --- E press (edge): drop held OR pick up dynamic object OR pick up item drop OR start prying ---
@@ -209,6 +226,18 @@ impl Interaction {
                         if let Some(target_body) = hit {
                             if physics.is_dynamic(target_body) {
                                 result.axe_hit = Some(target_body);
+                            }
+                        }
+                    }
+                    ToolType::Pickaxe => {
+                        // Pickaxe swing — mine terrain or hit a dynamic body.
+                        if let Some((body, hit_pos, _normal)) =
+                            physics.cast_ray_full(eye, look_dir, PICKAXE_RANGE, player_collider)
+                        {
+                            if terrain_rb == Some(body) {
+                                result.mine_hit = Some(MineHit::Terrain(hit_pos));
+                            } else if physics.is_dynamic(body) {
+                                result.mine_hit = Some(MineHit::Body(body));
                             }
                         }
                     }

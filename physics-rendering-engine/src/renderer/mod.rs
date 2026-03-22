@@ -30,8 +30,9 @@ pub const MESH_TRIANGLE: u32 = 3;
 pub const MESH_SLOPE: u32 = 4;
 pub const MESH_CAPSULE: u32 = 5;
 pub const MESH_WATER: u32 = 6;
-pub const MESH_TERRAIN_BASE: u32 = 7;
-const SHAPE_MESH_COUNT: usize = 7; // cube, ball, pyramid, triangle, slope, capsule, water
+pub const MESH_ROCK: u32 = 7;
+pub const MESH_TERRAIN_BASE: u32 = 8;
+const SHAPE_MESH_COUNT: usize = 8; // cube, ball, pyramid, triangle, slope, capsule, water, rock
 
 /// Pack mesh_type (upper 8 bits) and object_id (lower 16 bits) into 24-bit custom index.
 pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
@@ -186,6 +187,7 @@ pub struct Renderer {
     mesh: Mesh,
     base_mesh_data: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
     base_mesh_count: usize,
+    building_data: Option<(Vec<mesh::Vertex>, Vec<u32>)>,
     blas_list: Vec<Blas>,
     tlas: Tlas,
     rt_pipeline: RtPipeline,
@@ -227,6 +229,7 @@ impl Renderer {
             shapes::slope(),              // MESH_SLOPE = 4
             shapes::capsule(0.5, 1.0, 12, 16), // MESH_CAPSULE = 5
             shapes::water_plane(),               // MESH_WATER = 6
+            shapes::rock_chunk(),                // MESH_ROCK = 7
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);
@@ -313,6 +316,7 @@ impl Renderer {
             mesh: combined_mesh,
             base_mesh_data,
             base_mesh_count,
+            building_data: None,
             blas_list,
             tlas,
             rt_pipeline,
@@ -453,17 +457,54 @@ impl Renderer {
         building_verts: &[mesh::Vertex],
         building_indices: &[u32],
     ) -> Result<()> {
-        unsafe { self.context.device.device_wait_idle()? };
-
         // Remove old building BLAS if it exists.
         if self.blas_list.len() > self.base_mesh_count {
+            // Need device idle before destroying BLAS.
+            unsafe { self.context.device.device_wait_idle()? };
             self.blas_list.pop().unwrap().destroy(&self.context);
         }
 
-        // Build combined mesh data: base meshes + building.
+        // Store building data.
+        if building_verts.is_empty() {
+            self.building_data = None;
+        } else {
+            self.building_data = Some((building_verts.to_vec(), building_indices.to_vec()));
+        }
+
+        self.rebuild_combined_mesh(&[])
+    }
+
+    /// Update terrain chunk mesh data and rebuild affected BLASes.
+    pub fn update_terrain_chunks(
+        &mut self,
+        updates: &[(usize, Vec<mesh::Vertex>, Vec<u32>)],
+    ) -> Result<()> {
+        // Remove old building BLAS temporarily (will be re-added by rebuild).
+        if self.blas_list.len() > self.base_mesh_count {
+            unsafe { self.context.device.device_wait_idle()? };
+            self.blas_list.pop().unwrap().destroy(&self.context);
+        }
+
+        // Update base_mesh_data entries for the dirty terrain chunks.
+        let mut dirty_blas: Vec<usize> = Vec::new();
+        for (chunk_idx, verts, indices) in updates {
+            let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
+            self.base_mesh_data[mesh_idx] = (verts.clone(), indices.clone());
+            dirty_blas.push(mesh_idx);
+        }
+
+        self.rebuild_combined_mesh(&dirty_blas)
+    }
+
+    /// Rebuild the combined vertex/index buffer from base_mesh_data + building_data.
+    /// Rebuilds BLASes listed in `rebuild_blas_indices`, plus always rebuilds the
+    /// building BLAS if building data exists.
+    fn rebuild_combined_mesh(&mut self, rebuild_blas_indices: &[usize]) -> Result<()> {
+        unsafe { self.context.device.device_wait_idle()? };
+
         let mut all_meshes: Vec<(Vec<mesh::Vertex>, Vec<u32>)> = self.base_mesh_data.clone();
-        if !building_verts.is_empty() {
-            all_meshes.push((building_verts.to_vec(), building_indices.to_vec()));
+        if let Some(ref bd) = self.building_data {
+            all_meshes.push(bd.clone());
         }
 
         let (combined_verts, combined_indices, sub_mesh_infos) =
@@ -473,10 +514,17 @@ impl Renderer {
         self.mesh.destroy(&self.context.device);
         self.mesh = Mesh::new(&self.context, &combined_verts, &combined_indices)?;
 
-        // Build building BLAS from the new buffer if there's building data.
-        if building_verts.is_empty() {
-            // No building — blas_list stays at BASE_MESH_COUNT.
-        } else {
+        // Rebuild specified BLASes (terrain chunks that changed).
+        for &idx in rebuild_blas_indices {
+            if idx < self.blas_list.len() {
+                self.blas_list[idx].destroy(&self.context);
+                self.blas_list[idx] =
+                    Blas::from_range(&self.context, &self.mesh, &sub_mesh_infos[idx])?;
+            }
+        }
+
+        // Add building BLAS if we have building data.
+        if self.building_data.is_some() {
             let building_info = &sub_mesh_infos[self.base_mesh_count];
             let building_blas = Blas::from_range(&self.context, &self.mesh, building_info)?;
             self.blas_list.push(building_blas);

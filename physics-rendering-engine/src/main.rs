@@ -4,6 +4,7 @@ mod engine;
 mod game;
 mod input;
 mod interaction;
+mod mining;
 mod physics;
 mod player;
 mod renderer;

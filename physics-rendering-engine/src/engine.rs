@@ -10,13 +10,14 @@ use crate::game::entity::{Entity, EntityKind};
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
 use crate::game::world::World;
 use crate::input::InputState;
-use crate::interaction::Interaction;
+use crate::interaction::{Interaction, MineHit};
+use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
-use crate::terrain::{TerrainGrid, TerrainChunkInfo};
+use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -28,6 +29,13 @@ const JUMP_VELOCITY: f32 = 6.0;
 const WATER_LEVEL: f32 = 5.0;
 const BUOYANCY_FORCE: f32 = 25.0;
 const WATER_DRAG: f32 = 12.0;
+
+/// Minimum interval between terrain GPU/physics rebuilds (seconds).
+const TERRAIN_REBUILD_INTERVAL: f32 = 0.1;
+/// Radius of terrain deformation per pickaxe hit (world units).
+const DEFORM_RADIUS: f32 = 3.0;
+/// Height lowered at the center of a pickaxe hit.
+const DEFORM_AMOUNT: f32 = 0.5;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -54,8 +62,12 @@ pub struct Engine {
     terrain: TerrainGrid,
     terrain_chunks: Vec<TerrainChunkInfo>,
     terrain_object_id: u32,
+    terrain_rb: rapier3d::prelude::RigidBodyHandle,
+    terrain_col: rapier3d::prelude::ColliderHandle,
+    terrain_rebuild_timer: f32,
     mesh_building_id: u32,
     building: BuildingGrid,
+    mining: MiningSystem,
     place_prev: bool,
     spawn_prev: bool,
     debug_stats_prev: bool,
@@ -77,13 +89,18 @@ impl Engine {
 
         // Generate terrain chunks.
         let terrain = TerrainGrid::generate(42);
-        let (chunk_meshes, terrain_chunks, full_mesh) =
+        let (chunk_meshes, terrain_chunks, _full_mesh) =
             terrain.generate_chunks(MESH_TERRAIN_BASE);
         let num_terrain_chunks = chunk_meshes.len();
 
-        // Add trimesh collider for terrain (exact match with visual mesh).
-        let (phys_verts, phys_tris) = TerrainGrid::physics_trimesh(&full_mesh);
-        physics.add_trimesh(phys_verts, phys_tris);
+        // Add heightfield collider for terrain.
+        let (heights, nrows, ncols) = terrain.heightfield_data();
+        let scale = Vec3::new(
+            (TERRAIN_HALF * 2) as f32,
+            1.0,
+            (TERRAIN_HALF * 2) as f32,
+        );
+        let (terrain_rb, terrain_col) = physics.add_heightfield(heights, nrows, ncols, scale);
 
         // Build game world.
         let world = World::new(entities, player_id, next_id);
@@ -101,12 +118,14 @@ impl Engine {
 
         let terrain_object_id = 0xFFF1;
 
-        // Extra headroom: base entities + terrain + building + player model parts + dynamic spawns.
-        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 256) as u32;
+        // Extra headroom: base entities + terrain + building + player model parts + mining + dynamic.
+        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 512) as u32;
         let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
         let mesh_building_id = renderer.mesh_building_id();
 
-        Ok(Self {
+        // Spawn initial mining nodes on terrain.
+        let mining = MiningSystem::new();
+        let mut engine = Self {
             config,
             physics,
             world,
@@ -120,8 +139,12 @@ impl Engine {
             terrain,
             terrain_chunks,
             terrain_object_id,
+            terrain_rb,
+            terrain_col,
+            terrain_rebuild_timer: 0.0,
             mesh_building_id,
             building: BuildingGrid::new(),
+            mining,
             place_prev: false,
             spawn_prev: false,
             debug_stats_prev: false,
@@ -131,11 +154,49 @@ impl Engine {
             surface_width,
             surface_height,
             light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
-        })
+        };
+
+        // Spawn a few mining nodes scattered on the terrain.
+        engine.spawn_mining_nodes();
+
+        Ok(engine)
+    }
+
+    fn spawn_mining_nodes(&mut self) {
+        let positions = [
+            Vec3::new(15.0, 0.0, 10.0),
+            Vec3::new(-20.0, 0.0, 25.0),
+            Vec3::new(30.0, 0.0, -15.0),
+            Vec3::new(-10.0, 0.0, -30.0),
+            Vec3::new(40.0, 0.0, 5.0),
+        ];
+        let sizes = [
+            (3, 2, 3),
+            (4, 3, 4),
+            (2, 2, 2),
+            (3, 3, 3),
+            (4, 2, 3),
+        ];
+        for (&pos, &size) in positions.iter().zip(sizes.iter()) {
+            let next_id = &mut self.world.next_entity_id;
+            let new_entities = self.mining.spawn_node(
+                &mut self.physics,
+                &self.terrain,
+                pos,
+                size,
+                &mut || {
+                    let id = *next_id;
+                    *next_id += 1;
+                    id
+                },
+            );
+            self.world.entities.extend(new_entities);
+        }
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
         self.water_time += dt;
+        self.terrain_rebuild_timer += dt;
 
         // --- Fast mode toggle (F2) ---
         if input.toggle_fast && !self.fast_prev {
@@ -201,6 +262,7 @@ impl Engine {
                 self.player_col,
                 dt,
                 building_cell_aimed_at,
+                Some(self.terrain_rb),
             );
 
             // --- Handle item pickup ---
@@ -241,6 +303,33 @@ impl Engine {
             // --- Handle axe split ---
             if let Some(target_body) = interaction_result.axe_hit {
                 self.split_cube(target_body, player_eye, look_dir);
+            }
+
+            // --- Handle pickaxe mine hit ---
+            if let Some(mine_hit) = interaction_result.mine_hit {
+                match mine_hit {
+                    MineHit::Terrain(hit_pos) => {
+                        self.terrain.deform_ground(hit_pos, DEFORM_RADIUS, DEFORM_AMOUNT);
+                    }
+                    MineHit::Body(rb) => {
+                        if let Some(destroyed_id) = self.mining.damage_chunk(rb, 1) {
+                            // Remove destroyed chunk entity.
+                            if let Some(idx) = self.world.entities.iter().position(|e| e.id == destroyed_id) {
+                                let entity = self.world.entities.swap_remove(idx);
+                                self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                            }
+                            // Check stability of nearby chunks.
+                            let impact_pos = self.physics.body_position(rb);
+                            let collapsed = self.mining.check_stability(&self.physics, impact_pos);
+                            for eid in collapsed {
+                                if let Some(idx) = self.world.entities.iter().position(|e| e.id == eid) {
+                                    let entity = self.world.entities.swap_remove(idx);
+                                    self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // --- RMB: place held cube into building grid ---
@@ -303,8 +392,47 @@ impl Engine {
             self.player_model.update(dt, horiz_speed);
         }
 
+        // --- Batched terrain rebuild (mesh + physics) ---
+        if self.terrain.has_dirty_chunks()
+            && self.terrain_rebuild_timer >= TERRAIN_REBUILD_INTERVAL
+        {
+            self.terrain_rebuild_timer = 0.0;
+            self.rebuild_dirty_terrain();
+        }
+
         // --- Game tick: regen, etc. ---
         self.world.game_tick(dt);
+    }
+
+    /// Rebuild terrain chunk meshes, BLASes, and physics heightfield for dirty chunks.
+    fn rebuild_dirty_terrain(&mut self) {
+        let dirty = self.terrain.take_dirty_chunks();
+        if dirty.is_empty() {
+            return;
+        }
+
+        // Regenerate chunk meshes.
+        let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> = dirty
+            .iter()
+            .map(|&idx| {
+                let (verts, indices) = self.terrain.regenerate_chunk(idx);
+                (idx, verts, indices)
+            })
+            .collect();
+
+        // Update renderer (GPU mesh + BLASes).
+        if let Err(e) = self.renderer.update_terrain_chunks(&updates) {
+            log::error!("Failed to update terrain chunks: {}", e);
+        }
+
+        // Update physics heightfield.
+        let (heights, nrows, ncols) = self.terrain.heightfield_data();
+        let scale = Vec3::new(
+            (TERRAIN_HALF * 2) as f32,
+            1.0,
+            (TERRAIN_HALF * 2) as f32,
+        );
+        self.physics.update_heightfield(self.terrain_col, heights, nrows, ncols, scale);
     }
 
     /// Apply camera-relative movement to the player rigid body.
@@ -540,6 +668,7 @@ impl Engine {
         let tool_type = match self.interaction.equipped_tool {
             crate::interaction::ToolType::Hands => 0.0,
             crate::interaction::ToolType::Axe => 1.0,
+            crate::interaction::ToolType::Pickaxe => 2.0,
         };
 
         self.renderer.draw_frame(

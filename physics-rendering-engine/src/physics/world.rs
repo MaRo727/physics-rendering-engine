@@ -237,6 +237,84 @@ impl PhysicsWorld {
             .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
     }
 
+    // -----------------------------------------------------------------------
+    // Heightfield collider (for deformable terrain)
+    // -----------------------------------------------------------------------
+
+    /// Add a heightfield collider on a fixed body centered at origin.
+    /// `heights` layout: heights\[row * ncols + col\], row = Z, col = X.
+    /// `scale` is the total world-space extent (e.g. (900, 1, 900)).
+    pub fn add_heightfield(
+        &mut self,
+        heights: &[f32],
+        nrows: usize,
+        ncols: usize,
+        scale: Vec3,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let mat = rapier3d::na::DMatrix::from_fn(nrows, ncols, |i, j| {
+            heights[i * ncols + j]
+        });
+        let rb = RigidBodyBuilder::fixed().build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+        let col = ColliderBuilder::heightfield(mat, vector![scale.x, scale.y, scale.z])
+            .build();
+        let col_handle = self.collider_set
+            .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+        (rb_handle, col_handle)
+    }
+
+    /// Replace the shape of an existing heightfield collider with updated heights.
+    pub fn update_heightfield(
+        &mut self,
+        col: ColliderHandle,
+        heights: &[f32],
+        nrows: usize,
+        ncols: usize,
+        scale: Vec3,
+    ) {
+        if let Some(collider) = self.collider_set.get_mut(col) {
+            let mat = rapier3d::na::DMatrix::from_fn(nrows, ncols, |i, j| {
+                heights[i * ncols + j]
+            });
+            let shape = SharedShape::heightfield(mat, vector![scale.x, scale.y, scale.z]);
+            collider.set_shape(shape);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Raycasting
+    // -----------------------------------------------------------------------
+
+    /// Cast a ray and return (RigidBodyHandle, hit_position, surface_normal).
+    pub fn cast_ray_full(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_toi: f32,
+        exclude: ColliderHandle,
+    ) -> Option<(RigidBodyHandle, Vec3, Vec3)> {
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = QueryFilter::default().exclude_collider(exclude);
+        self.query_pipeline
+            .cast_ray_and_get_normal(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_toi,
+                true,
+                filter,
+            )
+            .and_then(|(collider_handle, intersection)| {
+                let body = self.collider_set[collider_handle].parent()?;
+                let hit_pos = origin + direction * intersection.time_of_impact;
+                let n = intersection.normal;
+                Some((body, hit_pos, Vec3::new(n.x, n.y, n.z)))
+            })
+    }
+
     /// Remove a rigid body and its collider from the world.
     pub fn remove_body(&mut self, rb: RigidBodyHandle, col: ColliderHandle) {
         self.collider_set.remove(
