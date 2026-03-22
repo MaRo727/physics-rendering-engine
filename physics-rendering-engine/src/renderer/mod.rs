@@ -8,7 +8,7 @@ pub mod swapchain;
 
 use anyhow::{Context, Result};
 use ash::vk;
-use glam::{Mat4, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -37,8 +37,16 @@ pub const MESH_TREE_DEAD: u32 = 10;
 pub const MESH_TREE_OAK_LOD: u32 = 11;
 pub const MESH_TREE_PINE_LOD: u32 = 12;
 pub const MESH_TREE_DEAD_LOD: u32 = 13;
-pub const MESH_TERRAIN_BASE: u32 = 14;
-const SHAPE_MESH_COUNT: usize = 14;
+pub const MESH_GRASS_A: u32 = 14;
+pub const MESH_GRASS_B: u32 = 15;
+pub const MESH_GRASS_C: u32 = 16;
+pub const MESH_FLOWER_RED: u32 = 17;
+pub const MESH_FLOWER_YELLOW: u32 = 18;
+pub const MESH_FLOWER_BLUE: u32 = 19;
+pub const MESH_FLOWER_WHITE: u32 = 20;
+pub const MESH_FLOWER_PURPLE: u32 = 21;
+pub const MESH_TERRAIN_BASE: u32 = 22;
+const SHAPE_MESH_COUNT: usize = 22;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -249,6 +257,14 @@ impl Renderer {
             shapes::tree_oak_lod(),              // MESH_TREE_OAK_LOD = 11
             shapes::tree_pine_lod(),             // MESH_TREE_PINE_LOD = 12
             shapes::tree_dead_lod(),             // MESH_TREE_DEAD_LOD = 13
+            shapes::grass_patch_a(),             // MESH_GRASS_A = 14
+            shapes::grass_patch_b(),             // MESH_GRASS_B = 15
+            shapes::grass_patch_c(),             // MESH_GRASS_C = 16
+            shapes::flower(Vec3::new(0.85, 0.15, 0.12)),  // MESH_FLOWER_RED = 17
+            shapes::flower(Vec3::new(0.90, 0.80, 0.15)),  // MESH_FLOWER_YELLOW = 18
+            shapes::flower(Vec3::new(0.20, 0.30, 0.85)),  // MESH_FLOWER_BLUE = 19
+            shapes::flower(Vec3::new(0.90, 0.90, 0.88)),  // MESH_FLOWER_WHITE = 20
+            shapes::flower(Vec3::new(0.60, 0.20, 0.70)),  // MESH_FLOWER_PURPLE = 21
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

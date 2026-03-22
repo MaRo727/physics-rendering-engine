@@ -594,6 +594,193 @@ fn add_cone(
 }
 
 // ---------------------------------------------------------------------------
+// Grass patch mesh data
+// ---------------------------------------------------------------------------
+
+/// Grass patch A: tight clump of 5 thin blades, short and bushy.
+pub fn grass_patch_a() -> (Vec<Vertex>, Vec<u32>) {
+    let green = Vec3::new(0.22, 0.55, 0.15);
+    let green_tip = Vec3::new(0.30, 0.65, 0.20);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Several thin blades as narrow boxes, slightly rotated/offset
+    let offsets = [
+        (0.0f32, 0.0f32, 0.0),
+        (0.15, 0.08, 0.12),
+        (-0.12, 0.06, -0.1),
+        (0.08, -0.1, 0.14),
+        (-0.1, 0.12, -0.06),
+    ];
+    for &(ox, oz, lean) in &offsets {
+        add_grass_blade(&mut v, &mut i, Vec3::new(ox, 0.0, oz), 0.04, 0.5, lean as f32, green, green_tip);
+    }
+
+    (v, i)
+}
+
+/// Grass patch B: taller wispy grass with 4 blades spread wider.
+pub fn grass_patch_b() -> (Vec<Vertex>, Vec<u32>) {
+    let green = Vec3::new(0.18, 0.50, 0.12);
+    let green_tip = Vec3::new(0.35, 0.60, 0.18);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    let offsets = [
+        (0.0f32, 0.0f32, 0.08),
+        (0.2, -0.15, -0.1),
+        (-0.18, 0.1, 0.06),
+        (0.05, 0.2, -0.12),
+    ];
+    for &(ox, oz, lean) in &offsets {
+        add_grass_blade(&mut v, &mut i, Vec3::new(ox, 0.0, oz), 0.05, 0.75, lean, green, green_tip);
+    }
+
+    (v, i)
+}
+
+/// Grass patch C: low spread tuft with 7 short blades fanning outward.
+pub fn grass_patch_c() -> (Vec<Vertex>, Vec<u32>) {
+    let green = Vec3::new(0.25, 0.52, 0.18);
+    let green_tip = Vec3::new(0.32, 0.58, 0.22);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    let offsets = [
+        (0.0f32, 0.0f32, 0.0),
+        (0.12, 0.0, 0.15),
+        (-0.14, 0.05, -0.12),
+        (0.06, -0.12, -0.08),
+        (-0.08, 0.14, 0.1),
+        (0.18, -0.06, -0.05),
+        (-0.05, -0.16, 0.07),
+    ];
+    for &(ox, oz, lean) in &offsets {
+        add_grass_blade(&mut v, &mut i, Vec3::new(ox, 0.0, oz), 0.035, 0.35, lean, green, green_tip);
+    }
+
+    (v, i)
+}
+
+/// Single grass blade: a tapered quad (two triangles) leaning slightly.
+fn add_grass_blade(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    base_pos: Vec3, half_width: f32, height: f32, lean: f32,
+    color_base: Vec3, color_tip: Vec3,
+) {
+    let base = vertices.len() as u32;
+    let normal = Vec3::new(-lean, 0.0, 1.0).normalize();
+
+    // Bottom-left, bottom-right
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(-half_width, 0.0, 0.0),
+        normal,
+        color: color_base,
+    });
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(half_width, 0.0, 0.0),
+        normal,
+        color: color_base,
+    });
+    // Top-right, top-left (narrower, leaning)
+    let tip_hw = half_width * 0.3;
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(lean + tip_hw, height, 0.0),
+        normal,
+        color: color_tip,
+    });
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(lean - tip_hw, height, 0.0),
+        normal,
+        color: color_tip,
+    });
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+    // Second face rotated 90 degrees for cross-billboard effect
+    let base2 = vertices.len() as u32;
+    let normal2 = Vec3::new(1.0, 0.0, -lean).normalize();
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(0.0, 0.0, -half_width),
+        normal: normal2,
+        color: color_base,
+    });
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(0.0, 0.0, half_width),
+        normal: normal2,
+        color: color_base,
+    });
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(lean, height, tip_hw),
+        normal: normal2,
+        color: color_tip,
+    });
+    vertices.push(Vertex {
+        position: base_pos + Vec3::new(lean, height, -tip_hw),
+        normal: normal2,
+        color: color_tip,
+    });
+    indices.extend_from_slice(&[base2, base2 + 1, base2 + 2, base2, base2 + 2, base2 + 3]);
+}
+
+// ---------------------------------------------------------------------------
+// Flower mesh data
+// ---------------------------------------------------------------------------
+
+/// A small flower: thin green stem with a colored bloom (4 crossed petals) on top.
+pub fn flower(petal_color: Vec3) -> (Vec<Vertex>, Vec<u32>) {
+    let stem_color = Vec3::new(0.18, 0.45, 0.12);
+    let center_color = Vec3::new(0.85, 0.75, 0.20); // yellow center
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Stem: thin tapered blade, y=0 to y=0.35
+    add_grass_blade(&mut v, &mut i, Vec3::ZERO, 0.02, 0.35, 0.0, stem_color, stem_color);
+
+    // Petals: 4 small quads arranged as a cross at the top of the stem
+    let bloom_y = 0.35;
+    let petal_len = 0.1;
+    let petal_half_w = 0.03;
+
+    // Petal along +X
+    add_petal(&mut v, &mut i, Vec3::new(petal_len * 0.5, bloom_y, 0.0),
+              petal_half_w, petal_len, Vec3::Z, Vec3::X, petal_color);
+    // Petal along -X
+    add_petal(&mut v, &mut i, Vec3::new(-petal_len * 0.5, bloom_y, 0.0),
+              petal_half_w, petal_len, Vec3::Z, Vec3::NEG_X, petal_color);
+    // Petal along +Z
+    add_petal(&mut v, &mut i, Vec3::new(0.0, bloom_y, petal_len * 0.5),
+              petal_half_w, petal_len, Vec3::X, Vec3::Z, petal_color);
+    // Petal along -Z
+    add_petal(&mut v, &mut i, Vec3::new(0.0, bloom_y, -petal_len * 0.5),
+              petal_half_w, petal_len, Vec3::X, Vec3::NEG_Z, petal_color);
+
+    // Center dot: tiny diamond
+    add_diamond(&mut v, &mut i, Vec3::new(0.0, bloom_y, 0.0), 0.035, 0.04, center_color);
+
+    (v, i)
+}
+
+/// A single flower petal as a small quad.
+fn add_petal(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, half_w: f32, length: f32,
+    normal: Vec3, dir: Vec3, color: Vec3,
+) {
+    let half_len = length * 0.5;
+    let base = vertices.len() as u32;
+    let up = Vec3::Y * half_w * 0.5;
+    vertices.push(Vertex { position: center - dir * half_len - up, normal, color });
+    vertices.push(Vertex { position: center + dir * half_len - up, normal, color });
+    vertices.push(Vertex { position: center + dir * half_len + up, normal, color });
+    vertices.push(Vertex { position: center - dir * half_len + up, normal, color });
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+// ---------------------------------------------------------------------------
 // Rock chunk mesh data
 // ---------------------------------------------------------------------------
 
