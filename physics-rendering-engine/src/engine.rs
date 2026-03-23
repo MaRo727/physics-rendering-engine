@@ -15,7 +15,7 @@ use crate::game::items::ITEM_IRON_SWORD;
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
 use crate::game::progression;
 use crate::game::spells::{SpellSystem, CastResult};
-use crate::game::stats::{StatBlock, StatBonuses};
+use crate::game::stats::{DerivedStats, StatBlock, StatBonuses};
 use crate::game::world::World;
 use crate::input::InputState;
 use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit};
@@ -107,6 +107,8 @@ pub struct Engine {
     snow_time: f32,
     tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     tree_punch_seed: u32,
+    // Cached per-frame player derived stats (computed once in update, reused in render).
+    player_derived: DerivedStats,
     // Reusable per-frame buffers (avoid heap allocs every frame).
     frame_transforms: Vec<Mat4>,
     frame_instance_ids: Vec<u32>,
@@ -223,6 +225,7 @@ impl Engine {
             snow_time: 0.0,
             tree_rbs,
             tree_punch_seed: 12345,
+            player_derived: StatBlock::new_player().compute_derived(&StatBonuses::default()),
             frame_transforms: Vec::new(),
             frame_instance_ids: Vec::new(),
         };
@@ -532,16 +535,17 @@ impl Engine {
                 ));
             }
 
-            // --- Compute player derived stats (used by combat + spells) ---
-            let player_melee_mult = {
+            // --- Compute player derived stats once per frame ---
+            {
                 let p = self.world.player();
                 let bonuses = p.equipment.as_ref()
                     .map(|eq| eq.total_bonuses())
                     .unwrap_or_default();
-                p.stats.as_ref()
-                    .map(|s| s.compute_derived(&bonuses).melee_damage_mult)
-                    .unwrap_or(1.0)
-            };
+                self.player_derived = p.stats.as_ref()
+                    .map(|s| s.compute_derived(&bonuses))
+                    .unwrap_or_else(|| StatBlock::new_player().compute_derived(&StatBonuses::default()));
+            }
+            let player_melee_mult = self.player_derived.melee_damage_mult;
 
             // --- Combat: melee attack ---
             if input.throw
@@ -581,22 +585,13 @@ impl Engine {
             let cast_edge = input.cast_spell && !self.cast_prev;
             self.cast_prev = input.cast_spell;
             if cast_edge {
-                // Read player stats immutably first.
-                let (current_mana, derived) = {
-                    let player = self.world.player();
-                    let bonuses = player.equipment.as_ref()
-                        .map(|eq| eq.total_bonuses())
-                        .unwrap_or_default();
-                    let mana = player.stats.as_ref().map_or(0.0, |s| s.mana);
-                    let derived = player.stats.as_ref()
-                        .map(|s| s.compute_derived(&bonuses))
-                        .unwrap_or_else(|| StatBlock::new_player().compute_derived(&StatBonuses::default()));
-                    (mana, derived)
-                };
+                // Read player mana; derived stats already cached for this frame.
+                let current_mana = self.world.player().stats.as_ref().map_or(0.0, |s| s.mana);
+                let derived = &self.player_derived;
 
                 if let Some((result, mana_cost)) = self.spells.try_cast(
                     current_mana,
-                    &derived,
+                    derived,
                     player_eye,
                     look_dir,
                     &self.physics,
@@ -1176,11 +1171,10 @@ impl Engine {
             crate::terrain::Biome::Dungeon => 4.0,
         };
         let (hp_frac, mana_frac, stam_frac, level) = if let Some(stats) = &self.world.player().stats {
-            let derived = stats.compute_derived(&crate::game::stats::StatBonuses::default());
             (
-                stats.health / derived.max_health,
-                stats.mana / derived.max_mana,
-                stats.stamina / derived.max_stamina,
+                stats.health / self.player_derived.max_health,
+                stats.mana / self.player_derived.max_mana,
+                stats.stamina / self.player_derived.max_stamina,
                 stats.level as f32,
             )
         } else {
