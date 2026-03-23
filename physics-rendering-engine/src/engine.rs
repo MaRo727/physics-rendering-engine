@@ -23,7 +23,7 @@ use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_WATER, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, pack_instance_id, SHADOW_ONLY_BIT, MESH_CUBE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -1094,6 +1094,20 @@ impl Engine {
             self.frame_transforms.push(*transform);
             self.frame_instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));
         }
+
+        // Player body capsule (shadow-only — invisible to camera, casts shadow).
+        let shadow_parts = self.player_model.compute_transforms(
+            player_pos,
+            self.player_visual_yaw,
+        );
+        // Index 0 is the body capsule; skip fists (indices 1,2) as FP fists already cast shadows.
+        let (body_transform, _) = shadow_parts[0];
+        let body_mesh = PlayerModel::mesh_types()[0];
+        self.frame_transforms.push(body_transform);
+        self.frame_instance_ids.push(
+            pack_instance_id(body_mesh, PLAYER_MODEL_OBJECT_ID + FP_PART_COUNT as u32)
+            | SHADOW_ONLY_BIT,
+        );
 
         // Spell projectiles.
         let projectile_object_base: u32 = 0xFFA0;

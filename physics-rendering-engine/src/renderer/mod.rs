@@ -65,6 +65,11 @@ pub fn pack_instance_id(mesh_type: u32, object_id: u32) -> u32 {
     (mesh_type << 16) | (object_id & 0xFFFF)
 }
 
+/// Flag bit (in upper byte of packed u32) marking an instance as shadow-only.
+/// Shadow-only instances use TLAS mask 0x02 so primary rays (mask 0xFD) skip them
+/// while shadow rays (mask 0xFF) still hit them.
+pub const SHADOW_ONLY_BIT: u32 = 0x8000_0000;
+
 // ---------------------------------------------------------------------------
 // Per-frame UBO buffer
 // ---------------------------------------------------------------------------
@@ -817,11 +822,14 @@ impl Renderer {
                 .iter()
                 .zip(instance_ids.iter())
                 .map(|(&t, &packed_id)| {
-                    let mesh_type = (packed_id >> 16) as usize;
+                    let shadow_only = packed_id & SHADOW_ONLY_BIT != 0;
+                    let clean_id = packed_id & !SHADOW_ONLY_BIT;
+                    let mesh_type = (clean_id >> 16) as usize;
                     let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
+                    let mask = if shadow_only { 0x02u8 } else { 0xFFu8 };
                     vk::AccelerationStructureInstanceKHR {
                         transform: mat4_to_transform(t),
-                        instance_custom_index_and_mask: vk::Packed24_8::new(packed_id, 0xFF),
+                        instance_custom_index_and_mask: vk::Packed24_8::new(clean_id, mask),
                         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                             0,
                             vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,

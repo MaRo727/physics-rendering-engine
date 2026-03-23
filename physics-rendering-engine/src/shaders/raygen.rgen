@@ -239,7 +239,7 @@ void main() {
     traceRayEXT(
         topLevelAS,
         gl_RayFlagsOpaqueEXT,
-        0xFF,
+        0xFD, // skip shadow-only instances (mask bit 1)
         0,    // sbtRecordOffset
         1,    // sbtRecordStride
         0,    // missIndex
