@@ -20,6 +20,8 @@ pub struct InputState {
     pub toggle_debug_ui: bool, // F3 — toggle debug overlay
     pub toggle_mute: bool,     // M — toggle music mute
     pub fast_time: bool,        // F4 — speed up day/night cycle (10x)
+    pub cycle_spell: bool,      // Q — cycle active spell
+    pub cast_spell: bool,       // R — cast active spell
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -44,6 +46,8 @@ impl Default for InputState {
             toggle_debug_ui: false,
             toggle_mute: false,
             fast_time: false,
+            cycle_spell: false,
+            cast_spell: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

@@ -96,6 +96,8 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F3) => self.input.toggle_debug_ui = pressed,
                     PhysicalKey::Code(KeyCode::KeyM) => self.input.toggle_mute = pressed,
                     PhysicalKey::Code(KeyCode::F4) => self.input.fast_time = pressed,
+                    PhysicalKey::Code(KeyCode::KeyQ) => self.input.cycle_spell = pressed,
+                    PhysicalKey::Code(KeyCode::KeyR) => self.input.cast_spell = pressed,
                     _ => {}
                 }
             }

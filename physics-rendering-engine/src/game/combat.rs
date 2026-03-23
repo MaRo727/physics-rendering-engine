@@ -4,19 +4,30 @@ use glam::Vec3;
 use rapier3d::prelude::ColliderHandle;
 
 use crate::game::entity::{Entity, EntityId, EntityKind};
+use crate::game::items::{WeaponData, WeaponType};
 use crate::physics::world::PhysicsWorld;
 
 const BARE_FIST_DAMAGE: f32 = 5.0;
-pub const PUNCH_KNOCKBACK: f32 = 3.0;
-const PUNCH_RANGE: f32 = 3.0;
-
-const WINDUP_DURATION: f32 = 0.1;
-const ACTIVE_DURATION: f32 = 0.15;
-const RECOVERY_DURATION: f32 = 0.2;
-const TOTAL_DURATION: f32 = WINDUP_DURATION + ACTIVE_DURATION + RECOVERY_DURATION;
-
-// Default attacks per second when bare-fisted.
 const BARE_FIST_SPEED: f32 = 2.0;
+const BARE_FIST_RANGE: f32 = 3.0;
+const BARE_FIST_KNOCKBACK: f32 = 3.0;
+
+// Base phase durations (scaled by weapon speed).
+const BASE_WINDUP: f32 = 0.1;
+const BASE_ACTIVE: f32 = 0.15;
+const BASE_RECOVERY: f32 = 0.2;
+
+fn knockback_for_weapon(weapon: Option<&WeaponData>) -> f32 {
+    match weapon {
+        None => BARE_FIST_KNOCKBACK,
+        Some(w) => match w.weapon_type {
+            WeaponType::Hammer => 5.0,
+            WeaponType::Sword => 3.0,
+            WeaponType::Axe => 3.5,
+            WeaponType::Staff => 2.0,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AttackPhase {
@@ -32,6 +43,11 @@ enum CombatState {
         phase: AttackPhase,
         timer: f32,
         has_hit: bool,
+        // Per-attack parameters from weapon.
+        base_damage: f32,
+        attack_speed: f32,
+        range: f32,
+        knockback: f32,
     },
 }
 
@@ -39,6 +55,7 @@ pub struct CombatHit {
     pub entity_id: EntityId,
     pub damage: f32,
     pub knockback_dir: Vec3,
+    pub knockback_force: f32,
 }
 
 pub struct CombatSystem {
@@ -54,8 +71,8 @@ impl CombatSystem {
         }
     }
 
-    /// Try to start an attack. Returns true if attack was initiated.
-    pub fn try_attack(&mut self) -> bool {
+    /// Try to start an attack. Accepts optional weapon data for damage/speed/range.
+    pub fn try_attack(&mut self, weapon: Option<&WeaponData>) -> bool {
         if self.attack_cooldown > 0.0 {
             return false;
         }
@@ -64,6 +81,10 @@ impl CombatSystem {
                 phase: AttackPhase::Windup,
                 timer: 0.0,
                 has_hit: false,
+                base_damage: weapon.map_or(BARE_FIST_DAMAGE, |w| w.base_damage),
+                attack_speed: weapon.map_or(BARE_FIST_SPEED, |w| w.attack_speed),
+                range: weapon.map_or(BARE_FIST_RANGE, |w| w.range),
+                knockback: knockback_for_weapon(weapon),
             };
             true
         } else {
@@ -72,6 +93,7 @@ impl CombatSystem {
     }
 
     /// Tick the combat state machine. Returns a hit if an enemy was struck this frame.
+    /// `melee_mult` is the player's melee damage multiplier from derived stats.
     pub fn update(
         &mut self,
         dt: f32,
@@ -80,6 +102,7 @@ impl CombatSystem {
         eye: Vec3,
         look_dir: Vec3,
         player_col: ColliderHandle,
+        melee_mult: f32,
     ) -> Option<CombatHit> {
         self.attack_cooldown = (self.attack_cooldown - dt).max(0.0);
 
@@ -87,32 +110,40 @@ impl CombatSystem {
 
         match &mut self.state {
             CombatState::Idle => {}
-            CombatState::Attacking { phase, timer, has_hit } => {
+            CombatState::Attacking {
+                phase, timer, has_hit,
+                base_damage, attack_speed, range, knockback,
+            } => {
+                // Scale phase durations by weapon speed (faster weapon = shorter phases).
+                let speed_scale = 1.0 / *attack_speed;
+                let windup = BASE_WINDUP * speed_scale;
+                let active = BASE_ACTIVE * speed_scale;
+                let recovery = BASE_RECOVERY * speed_scale;
+                let total = windup + active + recovery;
+
                 *timer += dt;
 
                 match *phase {
                     AttackPhase::Windup => {
-                        if *timer >= WINDUP_DURATION {
-                            *timer -= WINDUP_DURATION;
+                        if *timer >= windup {
+                            *timer -= windup;
                             *phase = AttackPhase::Active;
                         }
                     }
                     AttackPhase::Active => {
-                        // Raycast for enemy hit during active window.
                         if !*has_hit {
                             if let Some((body_handle, hit_pos, _normal)) =
-                                physics.cast_ray_full(eye, look_dir, PUNCH_RANGE, player_col)
+                                physics.cast_ray_full(eye, look_dir, *range, player_col)
                             {
-                                // Find which entity was hit.
                                 if let Some(entity) = entities.iter().find(|e| e.body.rigid_body == body_handle) {
                                     if entity.kind == EntityKind::Enemy {
-                                        let damage = BARE_FIST_DAMAGE;
-                                        // TODO: use equipped weapon damage + derived stats when available
+                                        let damage = *base_damage * melee_mult;
                                         let knockback_dir = (hit_pos - eye).normalize_or_zero();
                                         hit_result = Some(CombatHit {
                                             entity_id: entity.id,
                                             damage,
                                             knockback_dir,
+                                            knockback_force: *knockback,
                                         });
                                         *has_hit = true;
                                     }
@@ -120,15 +151,18 @@ impl CombatSystem {
                             }
                         }
 
-                        if *timer >= ACTIVE_DURATION {
-                            *timer -= ACTIVE_DURATION;
+                        if *timer >= active {
+                            *timer -= active;
                             *phase = AttackPhase::Recovery;
                         }
                     }
                     AttackPhase::Recovery => {
-                        if *timer >= RECOVERY_DURATION {
+                        if *timer >= recovery {
+                            let cooldown = 1.0 / *attack_speed;
                             self.state = CombatState::Idle;
-                            self.attack_cooldown = 1.0 / BARE_FIST_SPEED;
+                            self.attack_cooldown = cooldown;
+                            // Store total for animation_progress doesn't need it after idle.
+                            let _ = total;
                         }
                     }
                 }
@@ -142,13 +176,19 @@ impl CombatSystem {
     pub fn animation_progress(&self) -> f32 {
         match &self.state {
             CombatState::Idle => 0.0,
-            CombatState::Attacking { phase, timer, .. } => {
+            CombatState::Attacking { phase, timer, attack_speed, .. } => {
+                let speed_scale = 1.0 / *attack_speed;
+                let windup = BASE_WINDUP * speed_scale;
+                let active = BASE_ACTIVE * speed_scale;
+                let recovery = BASE_RECOVERY * speed_scale;
+                let total = windup + active + recovery;
+
                 let elapsed = match phase {
                     AttackPhase::Windup => *timer,
-                    AttackPhase::Active => WINDUP_DURATION + *timer,
-                    AttackPhase::Recovery => WINDUP_DURATION + ACTIVE_DURATION + *timer,
+                    AttackPhase::Active => windup + *timer,
+                    AttackPhase::Recovery => windup + active + *timer,
                 };
-                (elapsed / TOTAL_DURATION).clamp(0.0, 1.0)
+                (elapsed / total).clamp(0.0, 1.0)
             }
         }
     }

@@ -8,11 +8,13 @@ use winit::window::Window;
 use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::ThirdPersonCamera;
-use crate::game::combat::{CombatSystem, PUNCH_KNOCKBACK};
+use crate::game::combat::CombatSystem;
 use crate::game::enemy_ai::{self, SlimeAi};
 use crate::game::entity::{Entity, EntityKind};
+use crate::game::items::ITEM_IRON_SWORD;
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
-use crate::game::stats::StatBlock;
+use crate::game::spells::{SpellSystem, CastResult};
+use crate::game::stats::{StatBlock, StatBonuses};
 use crate::game::world::World;
 use crate::input::InputState;
 use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit};
@@ -92,6 +94,8 @@ pub struct Engine {
     surface_height: u32,
     audio: Option<AudioManager>,
     combat: CombatSystem,
+    spells: SpellSystem,
+    cast_prev: bool,
     enemy_ais: HashMap<u32, SlimeAi>,
 }
 
@@ -193,6 +197,8 @@ impl Engine {
             surface_height,
             audio: AudioManager::new(std::path::Path::new("../assets")),
             combat: CombatSystem::new(),
+            spells: SpellSystem::new(),
+            cast_prev: false,
             enemy_ais: HashMap::new(),
         };
 
@@ -201,6 +207,14 @@ impl Engine {
 
         // Spawn slime enemies on the terrain.
         engine.spawn_slimes();
+
+        // Equip player with starting weapon.
+        {
+            let player = engine.world.player_mut();
+            if let Some(ref mut eq) = player.equipment {
+                let _ = eq.equip(ITEM_IRON_SWORD);
+            }
+        }
 
         Ok(engine)
     }
@@ -475,12 +489,25 @@ impl Engine {
                 ));
             }
 
+            // --- Compute player derived stats (used by combat + spells) ---
+            let player_melee_mult = {
+                let p = self.world.player();
+                let bonuses = p.equipment.as_ref()
+                    .map(|eq| eq.total_bonuses())
+                    .unwrap_or_default();
+                p.stats.as_ref()
+                    .map(|s| s.compute_derived(&bonuses).melee_damage_mult)
+                    .unwrap_or(1.0)
+            };
+
             // --- Combat: melee attack ---
             if input.throw
                 && self.interaction.held_body.is_none()
                 && self.interaction.equipped_tool == ToolType::Hands
             {
-                self.combat.try_attack();
+                let weapon_data = self.world.player().equipment.as_ref()
+                    .and_then(|eq| eq.weapon_data());
+                self.combat.try_attack(weapon_data);
             }
             if let Some(hit) = self.combat.update(
                 dt,
@@ -489,6 +516,7 @@ impl Engine {
                 player_eye,
                 look_dir,
                 self.player_col,
+                player_melee_mult,
             ) {
                 // Apply damage to hit enemy.
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == hit.entity_id) {
@@ -496,10 +524,86 @@ impl Engine {
                         let dealt = stats.take_damage(hit.damage);
                         println!("Hit enemy {} for {:.0} damage! HP: {:.0}", hit.entity_id, dealt, stats.health);
                     }
-                    // Knockback.
                     self.physics.apply_impulse(
                         entity.body.rigid_body,
-                        hit.knockback_dir * PUNCH_KNOCKBACK * self.physics.body_mass(entity.body.rigid_body),
+                        hit.knockback_dir * hit.knockback_force * self.physics.body_mass(entity.body.rigid_body),
+                    );
+                }
+            }
+
+            // --- Spell cycling (Q) ---
+            self.spells.cycle_spell(input.cycle_spell);
+
+            // --- Spell casting (R) ---
+            let cast_edge = input.cast_spell && !self.cast_prev;
+            self.cast_prev = input.cast_spell;
+            if cast_edge {
+                // Read player stats immutably first.
+                let (current_mana, derived) = {
+                    let player = self.world.player();
+                    let bonuses = player.equipment.as_ref()
+                        .map(|eq| eq.total_bonuses())
+                        .unwrap_or_default();
+                    let mana = player.stats.as_ref().map_or(0.0, |s| s.mana);
+                    let derived = player.stats.as_ref()
+                        .map(|s| s.compute_derived(&bonuses))
+                        .unwrap_or_else(|| StatBlock::new_player().compute_derived(&StatBonuses::default()));
+                    (mana, derived)
+                };
+
+                if let Some((result, mana_cost)) = self.spells.try_cast(
+                    current_mana,
+                    &derived,
+                    player_eye,
+                    look_dir,
+                    &self.physics,
+                    &self.world.entities,
+                    self.player_col,
+                ) {
+                    // Deduct mana.
+                    if let Some(ref mut stats) = self.world.player_mut().stats {
+                        stats.mana -= mana_cost;
+                    }
+
+                    match result {
+                        CastResult::Hit(spell_hit) => {
+                            // Ice Shard direct hit.
+                            if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
+                                if let Some(ref mut stats) = entity.stats {
+                                    stats.take_damage(spell_hit.damage);
+                                }
+                                self.physics.apply_impulse(
+                                    entity.body.rigid_body,
+                                    spell_hit.knockback_dir * 4.0 * self.physics.body_mass(entity.body.rigid_body),
+                                );
+                            }
+                        }
+                        CastResult::Heal(amount) => {
+                            if let Some(ref mut stats) = self.world.player_mut().stats {
+                                stats.health = (stats.health + amount).min(derived.max_health);
+                            }
+                        }
+                        CastResult::Projectile | CastResult::Miss => {}
+                    }
+                }
+            }
+
+            // --- Update spell projectiles ---
+            let spell_hits = self.spells.update(
+                dt,
+                &self.physics,
+                &self.world.entities,
+                self.player_col,
+            );
+            for spell_hit in spell_hits {
+                if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
+                    if let Some(ref mut stats) = entity.stats {
+                        let dealt = stats.take_damage(spell_hit.damage);
+                        println!("Fireball hits enemy {} for {:.0}! HP: {:.0}", spell_hit.entity_id, dealt, stats.health);
+                    }
+                    self.physics.apply_impulse(
+                        entity.body.rigid_body,
+                        spell_hit.knockback_dir * 4.0 * self.physics.body_mass(entity.body.rigid_body),
                     );
                 }
             }
@@ -818,6 +922,14 @@ impl Engine {
         for (i, (transform, _scale)) in parts.iter().enumerate() {
             transforms.push(*transform);
             instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));
+        }
+
+        // Spell projectiles.
+        let projectile_object_base: u32 = 0xFFA0;
+        for (i, proj) in self.spells.projectiles.iter().enumerate() {
+            let t = Mat4::from_translation(proj.position) * Mat4::from_scale(Vec3::splat(proj.scale));
+            transforms.push(t);
+            instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
         }
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
