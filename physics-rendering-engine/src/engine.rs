@@ -7,12 +7,12 @@ use winit::window::Window;
 
 use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
-use crate::game::camera::ThirdPersonCamera;
+use crate::game::camera::FirstPersonCamera;
 use crate::game::combat::CombatSystem;
 use crate::game::enemy_ai::{self, EnemyAi, EnemyProjectile};
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::items::ITEM_IRON_SWORD;
-use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
+use crate::game::player_model::{PlayerModel, FP_PART_COUNT};
 use crate::game::progression;
 use crate::game::spells::{SpellSystem, CastResult};
 use crate::game::stats::{DerivedStats, StatBlock, StatBonuses};
@@ -64,7 +64,7 @@ pub struct Engine {
     world: World,
     player_rb: rapier3d::prelude::RigidBodyHandle,
     player_col: rapier3d::prelude::ColliderHandle,
-    camera: ThirdPersonCamera,
+    camera: FirstPersonCamera,
     player_model: PlayerModel,
     renderer: Renderer,
     interaction: Interaction,
@@ -154,7 +154,7 @@ impl Engine {
         let spawn_h = terrain.get_height(0, 4) + 1.0 + 0.9;
         physics.set_body_position(player_rb, Vec3::new(0.0, spawn_h, 4.0));
 
-        let camera = ThirdPersonCamera::new();
+        let camera = FirstPersonCamera::new();
         let player_model = PlayerModel::new();
 
         let terrain_object_id = 0xFFF1;
@@ -173,7 +173,7 @@ impl Engine {
         }
 
         // Extra headroom: base entities + terrain + building + player model parts + trees + grass + dynamic.
-        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + BODY_PART_COUNT + 32768 + 16384 + 512) as u32;
+        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + FP_PART_COUNT + 32768 + 16384 + 512) as u32;
         let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
         let mesh_building_id = renderer.mesh_building_id();
 
@@ -375,7 +375,7 @@ impl Engine {
         if just_entered_ghost {
             let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
             let (view, proj) = self.camera.camera_matrices(aspect);
-            self.ghost.activate_from_camera(&self.camera, view, proj);
+            self.ghost.activate_from_fp_camera(&self.camera, view, proj);
             self.interaction.drop_held(&mut self.physics);
         }
 
@@ -388,14 +388,14 @@ impl Engine {
             self.apply_buoyancy(dt);
             self.physics.step(dt);
         } else {
-            // --- Third-person camera ---
+            // --- First-person camera ---
             self.camera.look(input);
             let player_pos = self.physics.body_position(self.player_rb);
-            self.camera.update(player_pos, &self.physics, self.player_col);
+            self.camera.update(player_pos);
 
             let cam_eye = self.camera.eye;
             let look_dir = self.camera.look_dir();
-            let player_eye = player_pos + Vec3::new(0.0, 1.5, 0.0);
+            let player_eye = cam_eye;
 
             // Determine if crosshair is aimed at a building cell (for pry logic).
             let building_cell_aimed_at = self.physics
@@ -1081,11 +1081,15 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(entity.mesh_type, entity.id));
         }
 
-        // Player model body parts.
         let player_pos = self.physics.body_position(self.player_rb);
-        let player_yaw = self.player_visual_yaw;
-        let parts = self.player_model.compute_transforms(player_pos, player_yaw);
-        let part_meshes = PlayerModel::mesh_types();
+
+        // First-person fists (no body capsule).
+        let parts = self.player_model.compute_fp_transforms(
+            self.camera.eye,
+            self.camera.yaw,
+            self.camera.pitch,
+        );
+        let part_meshes = PlayerModel::fp_mesh_types();
         for (i, (transform, _scale)) in parts.iter().enumerate() {
             self.frame_transforms.push(*transform);
             self.frame_instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));

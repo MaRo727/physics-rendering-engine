@@ -140,6 +140,15 @@ impl GhostCamera {
         self.pitch = camera.pitch;
     }
 
+    /// Activate ghost mode from a first-person camera.
+    pub fn activate_from_fp_camera(&mut self, camera: &crate::game::camera::FirstPersonCamera, view: Mat4, proj: Mat4) {
+        self.frozen_view = view;
+        self.frozen_proj = proj;
+        self.eye = camera.eye;
+        self.yaw = camera.yaw;
+        self.pitch = camera.pitch;
+    }
+
     /// Update ghost camera movement.
     pub fn update(&mut self, dt: f32, input: &InputState) {
         self.yaw -= input.mouse_dx * MOUSE_SENSITIVITY;

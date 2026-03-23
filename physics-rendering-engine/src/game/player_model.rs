@@ -5,6 +5,8 @@ use glam::{Mat4, Vec3};
 use crate::renderer::{MESH_CAPSULE, MESH_FIST};
 
 pub const BODY_PART_COUNT: usize = 3;
+/// Number of parts rendered in first-person view (fists only, no body).
+pub const FP_PART_COUNT: usize = 2;
 
 /// Player scale: a tall pill roughly matching the physics collider.
 const PLAYER_SCALE: Vec3 = Vec3::new(0.8, 1.8, 0.8);
@@ -72,6 +74,50 @@ impl PlayerModel {
             (body_transform, PLAYER_SCALE),
             (left_transform, FIST_SCALE),
             (right_transform, FIST_SCALE),
+        ]
+    }
+
+    /// Mesh types for first-person view (fists only).
+    pub fn fp_mesh_types() -> [u32; FP_PART_COUNT] {
+        [MESH_FIST, MESH_FIST]
+    }
+
+    /// Compute fist transforms for first-person view.
+    /// Fists are positioned relative to the camera eye, oriented by camera yaw/pitch.
+    pub fn compute_fp_transforms(
+        &self,
+        camera_eye: Vec3,
+        yaw: f32,
+        pitch: f32,
+    ) -> [(Mat4, Vec3); FP_PART_COUNT] {
+        // Camera basis vectors.
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = pitch.sin_cos();
+        let forward = Vec3::new(sin_yaw * cos_pitch, -sin_pitch, cos_yaw * cos_pitch);
+        let right = Vec3::new(-cos_yaw, 0.0, sin_yaw);
+        let up = right.cross(forward);
+
+        // Base offset: lower center of screen, slightly forward.
+        let base = camera_eye + forward * 0.5 - up * 0.45;
+
+        let (left_offset_z, left_offset_x) = self.punch_offsets();
+
+        let left_pos = base - right * 0.35 + forward * left_offset_z - right * left_offset_x;
+        let right_pos = base + right * 0.35;
+
+        let fp_scale = Vec3::splat(0.20);
+
+        let left_transform = Mat4::from_translation(left_pos)
+            * Mat4::from_rotation_y(yaw)
+            * Mat4::from_scale(fp_scale);
+
+        let right_transform = Mat4::from_translation(right_pos)
+            * Mat4::from_rotation_y(yaw)
+            * Mat4::from_scale(fp_scale);
+
+        [
+            (left_transform, fp_scale),
+            (right_transform, fp_scale),
         ]
     }
 

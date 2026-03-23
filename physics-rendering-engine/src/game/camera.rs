@@ -1,4 +1,4 @@
-/// Third-person orbit camera with wall collision.
+/// Camera systems: first-person (active) and third-person (preserved for future use).
 
 use glam::{Mat4, Vec3, Vec4};
 
@@ -7,6 +7,70 @@ use crate::input::InputState;
 use crate::player::perspective_vk;
 
 const MOUSE_SENSITIVITY: f32 = 0.002;
+const EYE_HEIGHT: f32 = 1.6; // eye height above physics body base
+
+// ---------------------------------------------------------------------------
+// First-person camera
+// ---------------------------------------------------------------------------
+
+pub struct FirstPersonCamera {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub eye: Vec3,
+}
+
+impl FirstPersonCamera {
+    pub fn new() -> Self {
+        Self {
+            yaw: -std::f32::consts::FRAC_PI_2,
+            pitch: 0.0,
+            eye: Vec3::ZERO,
+        }
+    }
+
+    /// Update camera angles from mouse input.
+    pub fn look(&mut self, input: &InputState) {
+        self.yaw -= input.mouse_dx * MOUSE_SENSITIVITY;
+        self.pitch = (self.pitch + input.mouse_dy * MOUSE_SENSITIVITY)
+            .clamp(-89_f32.to_radians(), 89_f32.to_radians());
+    }
+
+    /// Update eye position from player physics body position.
+    pub fn update(&mut self, player_pos: Vec3) {
+        self.eye = player_pos + Vec3::new(0.0, EYE_HEIGHT, 0.0);
+    }
+
+    /// Look direction vector from yaw and pitch.
+    pub fn look_dir(&self) -> Vec3 {
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        Vec3::new(sin_yaw * cos_pitch, -sin_pitch, cos_yaw * cos_pitch)
+    }
+
+    /// Forward direction on XZ plane (for player movement).
+    pub fn forward_flat(&self) -> Vec3 {
+        let dir = self.look_dir();
+        Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero()
+    }
+
+    /// Right direction (perpendicular to forward, on XZ plane).
+    pub fn right_flat(&self) -> Vec3 {
+        let fwd = self.forward_flat();
+        Vec3::new(-fwd.z, 0.0, fwd.x)
+    }
+
+    /// Compute view and projection matrices.
+    pub fn camera_matrices(&self, aspect: f32) -> (Mat4, Mat4) {
+        let target = self.eye + self.look_dir();
+        let view = Mat4::look_at_rh(self.eye, target, Vec3::Y);
+        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 5000.0);
+        (view, proj)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Third-person orbit camera (preserved for future use)
+// ---------------------------------------------------------------------------
 const DEFAULT_DISTANCE: f32 = 6.0;
 const MIN_DISTANCE: f32 = 1.5;
 const MAX_DISTANCE: f32 = 12.0;
