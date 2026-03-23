@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 use crate::terrain::Biome;
@@ -16,6 +14,15 @@ use crate::terrain::Biome;
 pub enum MusicContext {
     Biome(Biome),
     Location(String),
+}
+
+// ---------------------------------------------------------------------------
+// Footstep sounds per biome (walk + optional run variants)
+// ---------------------------------------------------------------------------
+
+struct FootstepSet {
+    walk: Vec<PathBuf>,
+    run: Vec<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -35,6 +42,11 @@ pub struct AudioManager {
     fade_duration: f32,
     fade_state: FadeState,
     pending_context: Option<MusicContext>,
+    // Footstep SFX
+    sfx_volume: f32,
+    footstep_sounds: HashMap<Biome, FootstepSet>,
+    step_timer: f32,
+    step_index: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -58,6 +70,7 @@ impl AudioManager {
         sink.set_volume(0.05);
 
         let music_dir = assets_dir.join("music");
+        let footstep_dir = assets_dir.join("sfx").join("footsteps");
 
         let mut biome_tracks = HashMap::new();
 
@@ -78,6 +91,31 @@ impl AudioManager {
             }
         }
 
+        // Register footstep sounds per biome.
+        let mut footstep_sounds = HashMap::new();
+        let footstep_defs: &[(Biome, &[&str], &[&str])] = &[
+            (Biome::Plains,    &["grass_walk.wav"],                   &["grass_run.wav"]),
+            (Biome::Forest,    &["forest_walk1.wav", "forest_walk2.wav"], &["forest_walk1.wav", "forest_walk2.wav"]),
+            (Biome::Desert,    &["sand_walk.wav"],                    &["sand_walk.wav"]),
+            (Biome::Mountains, &["gravel_walk.wav"],                  &["gravel_run.wav"]),
+            (Biome::Dungeon,   &["concrete_walk1.wav", "concrete_walk2.wav"], &["concrete_walk1.wav", "concrete_walk2.wav"]),
+        ];
+
+        for &(biome, walk_files, run_files) in footstep_defs {
+            let collect = |files: &[&str]| -> Vec<PathBuf> {
+                files.iter()
+                    .map(|f| footstep_dir.join(f))
+                    .filter(|p| p.exists())
+                    .collect()
+            };
+            let walk = collect(walk_files);
+            let run = collect(run_files);
+            if !walk.is_empty() || !run.is_empty() {
+                log::info!("Registered footsteps for {biome:?}: {} walk, {} run", walk.len(), run.len());
+                footstep_sounds.insert(biome, FootstepSet { walk, run });
+            }
+        }
+
         Some(Self {
             _stream: stream,
             stream_handle,
@@ -91,6 +129,10 @@ impl AudioManager {
             fade_duration: 2.0,
             fade_state: FadeState::None,
             pending_context: None,
+            sfx_volume: 0.15,
+            footstep_sounds,
+            step_timer: 0.0,
+            step_index: 0,
         })
     }
 
@@ -189,6 +231,57 @@ impl AudioManager {
                 log::warn!("Failed to play {}: {e}", path.display());
             }
         }
+    }
+
+    /// Update footstep sounds based on player movement.
+    /// `horizontal_speed` is the XZ speed of the player.
+    /// `on_ground` indicates whether the player is touching the ground.
+    pub fn update_footsteps(&mut self, dt: f32, biome: Biome, horizontal_speed: f32, on_ground: bool) {
+        const WALK_THRESHOLD: f32 = 0.5;
+        const RUN_THRESHOLD: f32 = 8.0;
+        const WALK_INTERVAL: f32 = 0.5;
+        const RUN_INTERVAL: f32 = 0.3;
+
+        let moving = on_ground && horizontal_speed >= WALK_THRESHOLD && !self.muted;
+
+        if !moving {
+            // Don't reset timer — just stop advancing it so footsteps resume
+            // immediately when the player touches ground again.
+            return;
+        }
+
+        let is_running = horizontal_speed > RUN_THRESHOLD;
+        let interval = if is_running { RUN_INTERVAL } else { WALK_INTERVAL };
+
+        self.step_timer += dt;
+        if self.step_timer >= interval {
+            self.step_timer = 0.0;
+
+            if let Some(set) = self.footstep_sounds.get(&biome) {
+                let sounds = if is_running && !set.run.is_empty() {
+                    &set.run
+                } else {
+                    &set.walk
+                };
+
+                if !sounds.is_empty() {
+                    let idx = self.step_index % sounds.len();
+                    self.step_index = self.step_index.wrapping_add(1);
+                    if let Err(e) = self.play_sfx(&sounds[idx]) {
+                        log::warn!("Failed to play footstep: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn play_sfx(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
+        let source = Decoder::new(BufReader::new(file))?
+            .amplify(self.sfx_volume)
+            .convert_samples::<f32>();
+        self.stream_handle.play_raw(source)?;
+        Ok(())
     }
 
     fn play_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {

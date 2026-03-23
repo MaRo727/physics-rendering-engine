@@ -670,11 +670,16 @@ impl Engine {
         // --- Game tick: regen, etc. ---
         self.world.game_tick(dt);
 
-        // --- Audio: update music based on player biome ---
+        // --- Audio: update music and footsteps based on player biome ---
         if let Some(audio) = &mut self.audio {
             let player_pos = self.physics.body_position(self.player_rb);
             let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
             audio.update(dt, biome, None);
+
+            let vel = self.physics.body_linvel_xz(self.player_rb);
+            let horizontal_speed = (vel.x * vel.x + vel.z * vel.z).sqrt();
+            let on_ground = self.physics.is_on_ground(self.player_col);
+            audio.update_footsteps(dt, biome, horizontal_speed, on_ground);
         }
     }
 
