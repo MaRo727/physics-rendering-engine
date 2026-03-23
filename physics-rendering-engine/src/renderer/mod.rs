@@ -489,6 +489,17 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
+    /// Wait for all in-flight frames to finish on the GPU.
+    /// Much cheaper than device_wait_idle() — only waits on our frame fences
+    /// rather than flushing all driver-internal state.
+    fn wait_all_frames(&self) -> Result<()> {
+        let fences: Vec<_> = self.frames.iter().map(|f| f.in_flight).collect();
+        unsafe {
+            self.context.device.wait_for_fences(&fences, true, u64::MAX)?;
+        }
+        Ok(())
+    }
+
     fn recreate_swapchain_and_storage(&mut self) -> Result<()> {
         unsafe { self.context.device.device_wait_idle()? };
 
@@ -556,7 +567,7 @@ impl Renderer {
         // Fast path: fits within existing allocation.
         if let Some((vert_cap, idx_cap)) = self.building_capacity {
             if new_vert_count <= vert_cap && new_idx_count <= idx_cap {
-                unsafe { self.context.device.device_wait_idle()? };
+                self.wait_all_frames()?;
 
                 let info = &self.sub_mesh_infos[self.base_mesh_count];
                 self.mesh.update_region(&self.context, info, building_verts, building_indices)?;
@@ -591,7 +602,7 @@ impl Renderer {
         &mut self,
         updates: &[(usize, Vec<mesh::Vertex>, Vec<u32>)],
     ) -> Result<()> {
-        unsafe { self.context.device.device_wait_idle()? };
+        self.wait_all_frames()?;
 
         // Batch all chunk copies into one command submission.
         let batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> = updates

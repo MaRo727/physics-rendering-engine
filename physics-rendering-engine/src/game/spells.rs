@@ -232,20 +232,21 @@ impl SpellSystem {
         }
     }
 
-    /// Tick cooldowns and update projectiles. Returns hits from projectile collisions.
+    /// Tick cooldowns and update projectiles. Fills `hits` with projectile collisions.
     pub fn update(
         &mut self,
         dt: f32,
         physics: &PhysicsWorld,
         entities: &[Entity],
         player_col: ColliderHandle,
-    ) -> Vec<SpellHit> {
+        hits: &mut Vec<SpellHit>,
+    ) {
         // Tick cooldowns.
         for cd in &mut self.cooldowns {
             *cd = (*cd - dt).max(0.0);
         }
 
-        let mut hits = Vec::new();
+        hits.clear();
         let mut i = 0;
         while i < self.projectiles.len() {
             let proj = &mut self.projectiles[i];
@@ -299,8 +300,6 @@ impl SpellSystem {
                 i += 1;
             }
         }
-
-        hits
     }
 
     pub fn cooldown_remaining(&self, spell: SpellId) -> f32 {

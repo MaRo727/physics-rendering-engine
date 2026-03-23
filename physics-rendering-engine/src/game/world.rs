@@ -63,14 +63,10 @@ impl World {
     pub fn game_tick(&mut self, dt: f32) {
         self.game_time += dt;
 
-        // Regen for all entities with stats
+        // Regen for all entities with stats (using cached derived to avoid recomputation)
         for entity in &mut self.entities {
-            if let Some(ref mut stats) = entity.stats {
-                let bonuses = entity.equipment.as_ref()
-                    .map(|eq| eq.total_bonuses())
-                    .unwrap_or_default();
-                let derived = stats.compute_derived(&bonuses);
-                stats.regen_tick(&derived, dt);
+            if let (Some(stats), Some(derived)) = (&mut entity.stats, &entity.cached_derived) {
+                stats.regen_tick(derived, dt);
             }
         }
     }

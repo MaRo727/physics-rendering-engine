@@ -3,7 +3,7 @@
 use glam::Vec3;
 
 use crate::physics::body::PhysicsBody;
-use crate::game::stats::StatBlock;
+use crate::game::stats::{DerivedStats, StatBlock, StatBonuses};
 use crate::game::inventory::Inventory;
 use crate::game::equipment::EquipmentSlots;
 use crate::game::items::ItemId;
@@ -38,6 +38,10 @@ pub struct Entity {
     pub inventory: Option<Inventory>,
     pub equipment: Option<EquipmentSlots>,
 
+    // Cached derived stats — avoids recomputing every frame.
+    // Computed once at spawn for enemies; synced from Engine::player_derived for the player.
+    pub cached_derived: Option<DerivedStats>,
+
     // For ItemDrop entities
     pub drop_item: Option<(ItemId, u16)>,
 }
@@ -55,12 +59,15 @@ impl Entity {
             stats: None,
             inventory: None,
             equipment: None,
+            cached_derived: None,
             drop_item: None,
         }
     }
 
     /// Create the player entity with full RPG components.
     pub fn player(id: EntityId, body: PhysicsBody) -> Self {
+        let stats = StatBlock::new_player();
+        let derived = stats.compute_derived(&StatBonuses::default());
         Self {
             id,
             kind: EntityKind::Player,
@@ -68,9 +75,10 @@ impl Entity {
             mesh_type: 0, // Player isn't rendered as a mesh in first-person (yet)
             render_scale: Vec3::ONE,
             bounding_radius: 0.0,
-            stats: Some(StatBlock::new_player()),
+            stats: Some(stats),
             inventory: Some(Inventory::default()),
             equipment: Some(EquipmentSlots::default()),
+            cached_derived: Some(derived),
             drop_item: None,
         }
     }
@@ -87,12 +95,14 @@ impl Entity {
             stats: None,
             inventory: None,
             equipment: None,
+            cached_derived: None,
             drop_item: Some((item_id, count)),
         }
     }
 
     /// Create an enemy entity with stats.
     pub fn enemy(id: EntityId, body: PhysicsBody, mesh_type: u32, render_scale: Vec3, bounding_radius: f32, stats: StatBlock) -> Self {
+        let derived = stats.compute_derived(&StatBonuses::default());
         Self {
             id,
             kind: EntityKind::Enemy,
@@ -103,6 +113,7 @@ impl Entity {
             stats: Some(stats),
             inventory: None,
             equipment: None,
+            cached_derived: Some(derived),
             drop_item: None,
         }
     }

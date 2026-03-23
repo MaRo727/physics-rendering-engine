@@ -7,12 +7,12 @@ use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::FirstPersonCamera;
 use crate::game::combat::CombatSystem;
-use crate::game::enemy_ai::{self, EnemyAi, EnemyProjectile};
+use crate::game::enemy_ai::{self, EnemyAi, EnemyAttackHit, EnemyProjectile};
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::items::ITEM_IRON_SWORD;
 use crate::game::player_model::{PlayerModel, FP_PART_COUNT};
 use crate::game::progression;
-use crate::game::spells::{SpellSystem, CastResult};
+use crate::game::spells::{SpellSystem, SpellHit, CastResult};
 use crate::game::stats::{DerivedStats, StatBlock, StatBonuses};
 use crate::game::world::World;
 use crate::input::InputState;
@@ -115,6 +115,10 @@ pub struct Engine {
     buoyancy_bodies: Vec<(rapier3d::prelude::RigidBodyHandle, f32)>,
     dead_ids: Vec<(u32, u32)>,
     despawn_ids: Vec<u32>,
+    // Reusable hit-result buffers (avoid per-frame heap allocs).
+    enemy_hit_buf: Vec<EnemyAttackHit>,
+    arrow_hit_buf: Vec<EnemyAttackHit>,
+    spell_hit_buf: Vec<SpellHit>,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -294,6 +298,9 @@ impl Engine {
             buoyancy_bodies: Vec::new(),
             dead_ids: Vec::new(),
             despawn_ids: Vec::new(),
+            enemy_hit_buf: Vec::new(),
+            arrow_hit_buf: Vec::new(),
+            spell_hit_buf: Vec::new(),
         };
 
         engine.spawn_mining_nodes();
@@ -635,6 +642,8 @@ impl Engine {
                     .map(|s| s.compute_derived(&bonuses))
                     .unwrap_or_else(|| StatBlock::new_player().compute_derived(&StatBonuses::default()));
             }
+            // Sync cached_derived on the player entity so game_tick() can use it.
+            self.world.player_mut().cached_derived = Some(self.player_derived.clone());
             let player_melee_mult = self.player_derived.melee_damage_mult;
 
             // --- Combat: melee attack ---
@@ -717,13 +726,14 @@ impl Engine {
             }
 
             // --- Update spell projectiles ---
-            let spell_hits = self.spells.update(
+            self.spells.update(
                 dt,
                 &self.physics,
                 &self.world.entities,
                 self.player_col,
+                &mut self.spell_hit_buf,
             );
-            for spell_hit in spell_hits {
+            for spell_hit in self.spell_hit_buf.iter() {
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
                         let dealt = stats.take_damage(spell_hit.damage);
@@ -819,7 +829,7 @@ impl Engine {
 
             // --- Enemy AI ---
             let player_col_handle = self.world.player().body.collider;
-            let enemy_hits = enemy_ai::update_all(
+            enemy_ai::update_all(
                 &mut self.enemy_ais,
                 &mut self.enemy_projectiles,
                 &mut self.physics,
@@ -827,16 +837,18 @@ impl Engine {
                 player_pos,
                 player_col_handle,
                 dt,
+                &mut self.enemy_hit_buf,
             );
             // Tick enemy projectiles (arrows).
-            let arrow_hits = enemy_ai::update_projectiles(
+            enemy_ai::update_projectiles(
                 &mut self.enemy_projectiles,
                 &self.physics,
                 &self.world.entities,
                 dt,
+                &mut self.arrow_hit_buf,
             );
             // Apply enemy damage to player (melee + projectile).
-            for hit in enemy_hits.into_iter().chain(arrow_hits) {
+            for hit in self.enemy_hit_buf.iter().chain(self.arrow_hit_buf.iter()) {
                 if let Some(ref mut stats) = self.world.player_mut().stats {
                     let dealt = stats.take_damage(hit.damage);
                     println!("Enemy hit you for {:.0} damage! HP: {:.0}", dealt, stats.health);

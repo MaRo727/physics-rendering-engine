@@ -308,7 +308,7 @@ fn cheap_rand(seed: &mut u32) -> f32 {
     ((*seed >> 16) & 0x7FFF) as f32 / 32768.0
 }
 
-/// Update all enemy AIs. Returns hits that should be applied to the player.
+/// Update all enemy AIs. Fills `hits` with attacks that should be applied to the player.
 pub fn update_all(
     ais: &mut HashMap<EntityId, EnemyAi>,
     projectiles: &mut Vec<EnemyProjectile>,
@@ -317,8 +317,9 @@ pub fn update_all(
     player_pos: Vec3,
     player_collider: ColliderHandle,
     dt: f32,
-) -> Vec<EnemyAttackHit> {
-    let mut hits = Vec::new();
+    hits: &mut Vec<EnemyAttackHit>,
+) {
+    hits.clear();
 
     for entity in entities {
         if entity.kind != EntityKind::Enemy {
@@ -339,11 +340,11 @@ pub fn update_all(
             Vec3::ZERO
         };
 
-        // Health fraction for flee check.
-        let health_frac = entity.stats.as_ref().map_or(1.0, |s| {
-            let max = s.compute_derived(&Default::default()).max_health;
-            if max > 0.0 { s.health / max } else { 1.0 }
-        });
+        // Health fraction for flee check (using cached derived stats).
+        let health_frac = match (&entity.stats, &entity.cached_derived) {
+            (Some(s), Some(d)) if d.max_health > 0.0 => s.health / d.max_health,
+            _ => 1.0,
+        };
 
         ai.attack_cooldown = (ai.attack_cooldown - dt).max(0.0);
 
@@ -475,8 +476,6 @@ pub fn update_all(
             }
         }
     }
-
-    hits
 }
 
 /// Tick enemy projectiles: move, check collision with player, expire.
@@ -485,8 +484,9 @@ pub fn update_projectiles(
     physics: &PhysicsWorld,
     entities: &[Entity],
     dt: f32,
-) -> Vec<EnemyAttackHit> {
-    let mut hits = Vec::new();
+    hits: &mut Vec<EnemyAttackHit>,
+) {
+    hits.clear();
     let mut i = 0;
     while i < projectiles.len() {
         let proj = &mut projectiles[i];
@@ -527,7 +527,6 @@ pub fn update_projectiles(
         proj.velocity.y -= 4.0 * dt;
         i += 1;
     }
-    hits
 }
 
 /// Apply movement to an enemy: hop-based (Slime) or walk-based (others).
