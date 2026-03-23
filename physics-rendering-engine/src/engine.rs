@@ -1913,10 +1913,10 @@ impl Engine {
         self.ui.text(sw * 0.5 - sub_w * 0.5, sh * 0.25 + cell + 8.0, sub, sub_scale, [0.6, 0.6, 0.7, 1.0]);
 
         // Menu options.
-        let options: Vec<&str> = if self.has_save_file {
-            vec!["New Game", "Continue", "Quit"]
+        let options: &[&str] = if self.has_save_file {
+            &["New Game", "Continue", "Quit"]
         } else {
-            vec!["New Game", "Quit"]
+            &["New Game", "Quit"]
         };
 
         let menu_scale = 2.0;
@@ -2140,29 +2140,20 @@ impl Engine {
             let pr = map_y + half * map_pixel;
             self.ui.rect(pc - 2.0, pr - 2.0, 4.0, 4.0, [1.0, 1.0, 1.0, 1.0]);
 
-            // NPC dots.
+            // NPC and enemy dots.
             for e in self.world.entities.iter() {
-                if e.kind != EntityKind::Npc { continue; }
-                let npc_pos = self.physics.body_position(e.body.rigid_body);
-                let dx = (npc_pos.x - player_pos.x) / world_scale;
-                let dz = (npc_pos.z - player_pos.z) / world_scale;
-                if dx.abs() < half && dz.abs() < half {
-                    let mx = map_x + (dx + half) * map_pixel;
-                    let my = map_y + (dz + half) * map_pixel;
-                    self.ui.rect(mx - 2.0, my - 2.0, 4.0, 4.0, [0.2, 0.8, 1.0, 1.0]);
-                }
-            }
-
-            // Enemy dots.
-            for e in self.world.entities.iter() {
-                if e.kind != EntityKind::Enemy { continue; }
+                let (size, color) = match e.kind {
+                    EntityKind::Npc => (2.0, [0.2, 0.8, 1.0, 1.0]),
+                    EntityKind::Enemy => (1.5, [0.9, 0.2, 0.2, 1.0]),
+                    _ => continue,
+                };
                 let epos = self.physics.body_position(e.body.rigid_body);
                 let dx = (epos.x - player_pos.x) / world_scale;
                 let dz = (epos.z - player_pos.z) / world_scale;
                 if dx.abs() < half && dz.abs() < half {
                     let mx = map_x + (dx + half) * map_pixel;
                     let my = map_y + (dz + half) * map_pixel;
-                    self.ui.rect(mx - 1.5, my - 1.5, 3.0, 3.0, [0.9, 0.2, 0.2, 1.0]);
+                    self.ui.rect(mx - size, my - size, size * 2.0, size * 2.0, color);
                 }
             }
         }
