@@ -633,7 +633,7 @@ impl Engine {
                 }
             }
 
-            // --- Remove dead enemies + award XP ---
+            // --- Remove dead enemies + award XP + loot ---
             let dead_ids: Vec<(u32, u32)> = self.world.entities.iter()
                 .filter(|e| e.kind == EntityKind::Enemy)
                 .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
@@ -643,6 +643,9 @@ impl Engine {
                 })
                 .collect();
             for &(dead_id, enemy_level) in &dead_ids {
+                // Grab enemy type before removing.
+                let enemy_type = self.enemy_ais.get(&dead_id).map(|ai| ai.enemy_type);
+
                 if let Some(idx) = self.world.entities.iter().position(|e| e.id == dead_id) {
                     let entity = self.world.entities.swap_remove(idx);
                     self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
@@ -655,6 +658,24 @@ impl Engine {
                         println!("Enemy defeated! +{} XP", xp);
                         if levels > 0 {
                             println!("Level up! Now level {}", stats.level);
+                        }
+                    }
+
+                    // Roll and award loot.
+                    if let Some(etype) = enemy_type {
+                        let drops = enemy_ai::roll_loot(etype, &mut self.spawn_seed);
+                        for (item_id, count) in drops {
+                            if item_id == enemy_ai::LOOT_GOLD {
+                                if let Some(ref mut stats) = self.world.player_mut().stats {
+                                    stats.gold += count as u32;
+                                    println!("+{} gold (total: {})", count, stats.gold);
+                                }
+                            } else if let Some(ref mut inv) = self.world.player_mut().inventory {
+                                let overflow = inv.add(item_id, count);
+                                if overflow > 0 {
+                                    println!("Inventory full! {} items lost.", overflow);
+                                }
+                            }
                         }
                     }
                 }

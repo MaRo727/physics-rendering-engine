@@ -191,6 +191,54 @@ pub fn is_night(time_of_day: f32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Loot tables
+// ---------------------------------------------------------------------------
+
+/// A single drop entry: item id, count range, drop chance (0.0–1.0).
+pub struct LootEntry {
+    pub item_id: u16, // 0 = gold (special case)
+    pub min_count: u16,
+    pub max_count: u16,
+    pub chance: f32,
+}
+
+// Gold item id sentinel (not a real item).
+pub const LOOT_GOLD: u16 = 0;
+
+/// Per-type loot table. To add drops for a new enemy: add a match arm here.
+pub fn loot_table(enemy_type: EnemyType) -> &'static [LootEntry] {
+    match enemy_type {
+        EnemyType::Slime => &[
+            LootEntry { item_id: LOOT_GOLD, min_count: 1, max_count: 5, chance: 1.0 },
+        ],
+        EnemyType::Skeleton => &[
+            LootEntry { item_id: LOOT_GOLD, min_count: 3, max_count: 10, chance: 1.0 },
+        ],
+        EnemyType::GoblinArcher => &[
+            LootEntry { item_id: LOOT_GOLD, min_count: 5, max_count: 15, chance: 1.0 },
+        ],
+        EnemyType::Golem => &[
+            LootEntry { item_id: LOOT_GOLD, min_count: 15, max_count: 40, chance: 1.0 },
+        ],
+    }
+}
+
+/// Roll loot for a killed enemy. Returns list of (item_id, count) where item_id 0 = gold.
+pub fn roll_loot(enemy_type: EnemyType, seed: &mut u32) -> Vec<(u16, u16)> {
+    let table = loot_table(enemy_type);
+    let mut drops = Vec::new();
+    for entry in table {
+        if cheap_rand(seed) < entry.chance {
+            let range = (entry.max_count - entry.min_count + 1) as f32;
+            let count = entry.min_count + (cheap_rand(seed) * range) as u16;
+            let count = count.min(entry.max_count);
+            drops.push((entry.item_id, count));
+        }
+    }
+    drops
+}
+
+// ---------------------------------------------------------------------------
 // AI state machine
 // ---------------------------------------------------------------------------
 

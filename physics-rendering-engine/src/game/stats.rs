@@ -16,6 +16,7 @@ pub struct StatBlock {
 
     pub level: u32,
     pub xp: u32,
+    pub gold: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,7 @@ impl StatBlock {
             stamina: 0.0,
             level: 1,
             xp: 0,
+            gold: 0,
         };
         let derived = s.compute_derived(&StatBonuses::default());
         s.health = derived.max_health;
@@ -77,6 +79,7 @@ impl StatBlock {
             stamina: 0.0,
             level,
             xp: 0,
+            gold: 0,
         };
         let derived = s.compute_derived(&StatBonuses::default());
         s.health = derived.max_health;
