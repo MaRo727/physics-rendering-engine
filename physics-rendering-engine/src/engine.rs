@@ -99,6 +99,8 @@ pub struct Engine {
     debug_stats_prev: bool,
     fast_prev: bool,
     fast_mode: bool,
+    god_mode: bool,
+    god_prev: bool,
     show_debug_ui: bool,
     debug_ui_prev: bool,
     show_inventory: bool,
@@ -296,6 +298,8 @@ impl Engine {
             debug_stats_prev: false,
             fast_prev: false,
             fast_mode: false,
+            god_mode: false,
+            god_prev: false,
             show_debug_ui: false,
             debug_ui_prev: false,
             show_inventory: false,
@@ -681,6 +685,13 @@ impl Engine {
         }
         self.fast_prev = input.toggle_fast;
 
+        // --- God mode toggle (F6) ---
+        if input.toggle_god && !self.god_prev {
+            self.god_mode = !self.god_mode;
+            println!("God mode: {}", if self.god_mode { "ON" } else { "OFF" });
+        }
+        self.god_prev = input.toggle_god;
+
         // --- Debug UI toggle (F3) ---
         if input.toggle_debug_ui && !self.debug_ui_prev {
             self.show_debug_ui = !self.show_debug_ui;
@@ -958,7 +969,8 @@ impl Engine {
                 // Apply damage to hit enemy.
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
-                        let dealt = stats.take_damage(hit.damage);
+                        let dmg = if self.god_mode { 99999.0 } else { hit.damage };
+                        let dealt = stats.take_damage(dmg);
                         println!("Hit enemy {} for {:.0} damage! HP: {:.0}", hit.entity_id, dealt, stats.health);
                     }
                     let hit_pos = self.physics.body_position(entity.body.rigid_body);
@@ -1000,7 +1012,8 @@ impl Engine {
                             // Ice Shard direct hit.
                             if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
                                 if let Some(ref mut stats) = entity.stats {
-                                    stats.take_damage(spell_hit.damage);
+                                    let dmg = if self.god_mode { 99999.0 } else { spell_hit.damage };
+                                    stats.take_damage(dmg);
                                 }
                                 let hit_pos = self.physics.body_position(entity.body.rigid_body);
                                 self.particles.emit_ice(hit_pos);
@@ -1033,7 +1046,8 @@ impl Engine {
             for spell_hit in self.spell_hit_buf.iter() {
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
-                        let dealt = stats.take_damage(spell_hit.damage);
+                        let dmg = if self.god_mode { 99999.0 } else { spell_hit.damage };
+                        let dealt = stats.take_damage(dmg);
                         println!("Fireball hits enemy {} for {:.0}! HP: {:.0}", spell_hit.entity_id, dealt, stats.health);
                     }
                     let hit_pos = self.physics.body_position(entity.body.rigid_body);
@@ -1163,6 +1177,7 @@ impl Engine {
             );
             // Apply enemy damage to player (melee + projectile).
             for hit in self.enemy_hit_buf.iter().chain(self.arrow_hit_buf.iter()) {
+                if self.god_mode { continue; }
                 if let Some(ref mut stats) = self.world.player_mut().stats {
                     let dealt = stats.take_damage(hit.damage);
                     println!("Enemy hit you for {:.0} damage! HP: {:.0}", dealt, stats.health);

@@ -26,6 +26,7 @@ pub struct InputState {
     pub toggle_inventory: bool,  // I — toggle inventory screen
     pub quick_save: bool,         // F5 — quick save
     pub quick_load: bool,         // F9 — quick load
+    pub toggle_god: bool,         // F6 — toggle god mode (oneshot + invulnerable)
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -56,6 +57,7 @@ impl Default for InputState {
             toggle_inventory: false,
             quick_save: false,
             quick_load: false,
+            toggle_god: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }
