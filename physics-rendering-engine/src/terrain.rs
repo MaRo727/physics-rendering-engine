@@ -1,14 +1,16 @@
+use std::collections::VecDeque;
+
 use glam::Vec3;
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use crate::renderer::mesh::Vertex;
 
 pub const TERRAIN_HALF: i32 = 1800;
-pub const CELL_SIZE: i32 = 3;
+pub const CELL_SIZE: i32 = 2;
 pub const CHUNKS_PER_SIDE: i32 = 12;
-const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 600
-const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1201
-const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 100
+const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 900
+const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1801
+const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 150
 
 // ---------------------------------------------------------------------------
 // Biomes
@@ -176,20 +178,6 @@ fn sample_height(fbm: &Fbm<Perlin>, wx: f32, wz: f32, biome: Biome) -> f32 {
     h.clamp(p.min_height as f64, p.max_height as f64) as f32
 }
 
-/// Blend two biome heights at a transition zone.
-fn blend_biome_height(
-    fbm: &Fbm<Perlin>,
-    wx: f32,
-    wz: f32,
-    biome_a: Biome,
-    biome_b: Biome,
-    t: f32,
-) -> f32 {
-    let ha = sample_height(fbm, wx, wz, biome_a);
-    let hb = sample_height(fbm, wx, wz, biome_b);
-    ha * (1.0 - t) + hb * t
-}
-
 /// Color a terrain vertex, blending toward dirt brown if it has been dug.
 fn terrain_color(y: f32, original_y: f32, biome: Biome) -> Vec3 {
     let base = biome.color(y);
@@ -224,6 +212,7 @@ impl TerrainGrid {
         let mut heights = vec![0.0f32; total];
         let mut biomes = vec![Biome::Plains; total];
 
+        // Pass 1: compute biome and unblended height for every grid point.
         for gz in 0..GRID_SIZE {
             for gx in 0..GRID_SIZE {
                 let wx = (gx as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
@@ -235,21 +224,88 @@ impl TerrainGrid {
 
                 let idx = gz * GRID_SIZE + gx;
                 biomes[idx] = biome;
+                heights[idx] = sample_height(&fbm, wx, wz, biome);
+            }
+        }
 
-                // Check neighboring biome for smooth transitions.
-                // Use a slightly offset sample to detect transitions.
-                let temp2 = temp_noise.get([wx as f64 + 30.0, wz as f64 + 30.0]);
-                let moist2 = moist_noise.get([wx as f64 + 30.0, wz as f64 + 30.0]);
-                let neighbor_biome = pick_biome(temp2, moist2);
+        // Pass 2: BFS from biome boundary cells to compute distance-to-boundary
+        // and which "other" biome each interior cell should blend toward.
+        const BLEND_RADIUS: u16 = 25; // grid cells (~50 world units transition)
+        let mut boundary_dist = vec![u16::MAX; total];
+        let mut boundary_other = vec![Biome::Plains; total];
+        let mut queue = VecDeque::new();
 
-                if neighbor_biome != biome {
-                    // Blend zone — compute a soft transition factor.
-                    let edge_dist = (temperature.abs().min(0.15) + moisture.abs().min(0.15)) as f32;
-                    let t = (1.0 - edge_dist / 0.3).clamp(0.0, 0.5);
-                    heights[idx] = blend_biome_height(&fbm, wx, wz, biome, neighbor_biome, t);
-                } else {
-                    heights[idx] = sample_height(&fbm, wx, wz, biome);
+        // Seed BFS with cells that border a different biome.
+        for gz in 0..GRID_SIZE {
+            for gx in 0..GRID_SIZE {
+                let idx = gz * GRID_SIZE + gx;
+                let b = biomes[idx];
+                let neighbors: [(usize, usize); 4] = [
+                    (gx.wrapping_sub(1), gz),
+                    (gx + 1, gz),
+                    (gx, gz.wrapping_sub(1)),
+                    (gx, gz + 1),
+                ];
+                for (nx, nz) in neighbors {
+                    if nx < GRID_SIZE && nz < GRID_SIZE {
+                        let nb = biomes[nz * GRID_SIZE + nx];
+                        if nb != b {
+                            boundary_dist[idx] = 0;
+                            boundary_other[idx] = nb;
+                            queue.push_back((gx, gz));
+                            break;
+                        }
+                    }
                 }
+            }
+        }
+
+        // Propagate distance outward.
+        while let Some((gx, gz)) = queue.pop_front() {
+            let idx = gz * GRID_SIZE + gx;
+            let d = boundary_dist[idx];
+            if d >= BLEND_RADIUS {
+                continue;
+            }
+            let other = boundary_other[idx];
+            let neighbors: [(usize, usize); 4] = [
+                (gx.wrapping_sub(1), gz),
+                (gx + 1, gz),
+                (gx, gz.wrapping_sub(1)),
+                (gx, gz + 1),
+            ];
+            for (nx, nz) in neighbors {
+                if nx < GRID_SIZE && nz < GRID_SIZE {
+                    let nidx = nz * GRID_SIZE + nx;
+                    if boundary_dist[nidx] > d + 1 {
+                        boundary_dist[nidx] = d + 1;
+                        boundary_other[nidx] = other;
+                        queue.push_back((nx, nz));
+                    }
+                }
+            }
+        }
+
+        // Pass 3: blend heights near biome boundaries using smoothstep falloff.
+        // At the boundary (dist=0) each side blends 50% toward the other biome,
+        // so both sides meet at the same height — no cliff.
+        for gz in 0..GRID_SIZE {
+            for gx in 0..GRID_SIZE {
+                let idx = gz * GRID_SIZE + gx;
+                let dist = boundary_dist[idx];
+                if dist >= BLEND_RADIUS || dist == u16::MAX {
+                    continue;
+                }
+
+                let wx = (gx as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
+                let wz = (gz as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
+
+                let s = 1.0 - dist as f32 / BLEND_RADIUS as f32;
+                let s = s * s * (3.0 - 2.0 * s); // smoothstep
+                let t = s * 0.5; // max 50% blend at boundary itself
+
+                let other_h = sample_height(&fbm, wx, wz, boundary_other[idx]);
+                heights[idx] = heights[idx] * (1.0 - t) + other_h * t;
             }
         }
 
