@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
@@ -145,6 +146,11 @@ pub struct Engine {
     save_prev: bool,
     load_prev: bool,
     has_save_file: bool,
+    // Minimap biome cache: 20x20 grid, recomputed only when player moves a cell.
+    minimap_biome_cache: [u8; 400],
+    minimap_last_cell: (i32, i32),
+    // Reusable string buffer for HUD text (avoids format! heap allocs each frame).
+    hud_buf: String,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -342,6 +348,9 @@ impl Engine {
             save_prev: false,
             load_prev: false,
             has_save_file: crate::save::load().is_ok(),
+            minimap_biome_cache: [0; 400],
+            minimap_last_cell: (i32::MIN, i32::MIN),
+            hud_buf: String::with_capacity(64),
         };
 
         engine.spawn_npcs();
@@ -1284,9 +1293,7 @@ impl Engine {
         // --- Per-frame quest checks ---
         {
             if let Some(ref inv) = self.world.player().inventory {
-                // Clone needed items to avoid borrow conflict.
-                let inv_clone = inv.clone();
-                quest::check_collect_quests(&mut self.quests, &inv_clone);
+                quest::check_collect_quests(&mut self.quests, inv);
             }
             let player_pos = self.physics.body_position(self.player_rb);
             quest::check_reach_quests(&mut self.quests, player_pos.x, player_pos.z);
@@ -2017,8 +2024,9 @@ impl Engine {
 
         // Level + gold.
         let gold = self.world.player().stats.as_ref().map_or(0, |s| s.gold);
-        let info_str = format!("Lv.{}  {}g", level as u32, gold);
-        self.ui.text(hud_x, hud_y + 4.0 * (cell + 2.0), &info_str, scale, [1.0, 1.0, 0.5, 1.0]);
+        self.hud_buf.clear();
+        let _ = write!(self.hud_buf, "Lv.{}  {}g", level as u32, gold);
+        self.ui.text(hud_x, hud_y + 4.0 * (cell + 2.0), &self.hud_buf, scale, [1.0, 1.0, 0.5, 1.0]);
 
         // -- Debug overlay (F3) --
         if self.show_debug_ui {
@@ -2049,8 +2057,9 @@ impl Engine {
             self.ui.text(ox, oy, "BIOME: ", scale, white);
             self.ui.text(ox + 7.0 * cell, oy, biome_name, scale, biome_color);
 
-            let lvl_debug = format!("LEVEL: {}", level as u32);
-            self.ui.text(ox, oy + line_h, &lvl_debug, scale, white);
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "LEVEL: {}", level as u32);
+            self.ui.text(ox, oy + line_h, &self.hud_buf, scale, white);
 
             self.ui.labelled_bar(
                 ox, oy + 2.0 * line_h,
@@ -2077,8 +2086,9 @@ impl Engine {
                 scale,
             );
 
-            let pos_str = format!("POS: {} {}", player_pos.x as i32, player_pos.z as i32);
-            self.ui.text(ox, oy + 5.0 * line_h, &pos_str, scale, [0.8, 0.8, 0.8, 1.0]);
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "POS: {} {}", player_pos.x as i32, player_pos.z as i32);
+            self.ui.text(ox, oy + 5.0 * line_h, &self.hud_buf, scale, [0.8, 0.8, 0.8, 1.0]);
         }
 
         // -- Minimap (top-right corner) --
@@ -2092,20 +2102,30 @@ impl Engine {
             // Background.
             self.ui.rect(map_x - 2.0, map_y - 2.0, map_size + 4.0, map_size + 4.0, [0.0, 0.0, 0.0, 0.7]);
 
-            // Terrain grid centered on player.
+            // Terrain grid centered on player (cached, recomputed when player moves a cell).
             let half = map_cells as f32 * 0.5;
             let world_scale = 20.0; // each map cell = 20 world units
+            let cell_x = (player_pos.x / world_scale).floor() as i32;
+            let cell_z = (player_pos.z / world_scale).floor() as i32;
+            if (cell_x, cell_z) != self.minimap_last_cell {
+                self.minimap_last_cell = (cell_x, cell_z);
+                for cy in 0..map_cells {
+                    for cx in 0..map_cells {
+                        let wx = player_pos.x + (cx as f32 - half) * world_scale;
+                        let wz = player_pos.z + (cy as f32 - half) * world_scale;
+                        let biome = self.terrain.biome_at_world(wx, wz);
+                        self.minimap_biome_cache[cy * map_cells + cx] = biome as u8;
+                    }
+                }
+            }
             for cy in 0..map_cells {
                 for cx in 0..map_cells {
-                    let wx = player_pos.x + (cx as f32 - half) * world_scale;
-                    let wz = player_pos.z + (cy as f32 - half) * world_scale;
-                    let biome = self.terrain.biome_at_world(wx, wz);
-                    let color = match biome {
-                        Biome::Plains   => [0.35, 0.55, 0.25, 0.8],
-                        Biome::Forest   => [0.15, 0.35, 0.12, 0.8],
-                        Biome::Desert   => [0.7, 0.6, 0.35, 0.8],
-                        Biome::Mountains => [0.5, 0.5, 0.55, 0.8],
-                        Biome::Dungeon  => [0.3, 0.2, 0.35, 0.8],
+                    let color = match self.minimap_biome_cache[cy * map_cells + cx] {
+                        0 => [0.35, 0.55, 0.25, 0.8], // Plains
+                        1 => [0.15, 0.35, 0.12, 0.8], // Forest
+                        2 => [0.7, 0.6, 0.35, 0.8],   // Desert
+                        3 => [0.5, 0.5, 0.55, 0.8],   // Mountains
+                        _ => [0.3, 0.2, 0.35, 0.8],   // Dungeon
                     };
                     self.ui.rect(
                         map_x + cx as f32 * map_pixel,
@@ -2164,20 +2184,21 @@ impl Engine {
 
                 for q in &active_quests {
                     let status = if q.state == QuestState::Complete { "[DONE] " } else { "" };
-                    let progress = match &q.objective {
+                    self.hud_buf.clear();
+                    match &q.objective {
                         quest::QuestObjective::Kill { done, needed, .. } => {
-                            format!("{}{} ({}/{})", status, q.name, done, needed)
+                            let _ = write!(self.hud_buf, "{}{} ({}/{})", status, q.name, done, needed);
                         }
                         quest::QuestObjective::Collect { item_id, needed } => {
                             let have = self.world.player().inventory.as_ref()
                                 .map_or(0, |inv| inv.count(*item_id));
-                            format!("{}{} ({}/{})", status, q.name, have, needed)
+                            let _ = write!(self.hud_buf, "{}{} ({}/{})", status, q.name, have, needed);
                         }
                         quest::QuestObjective::Reach { reached, .. } => {
                             let mark = if *reached { "Y" } else { "N" };
-                            format!("{}{} ({})", status, q.name, mark)
+                            let _ = write!(self.hud_buf, "{}{} ({})", status, q.name, mark);
                         }
-                    };
+                    }
                     let color = if q.state == QuestState::Complete {
                         [0.4, 1.0, 0.4, 1.0]
                     } else {
@@ -2185,10 +2206,10 @@ impl Engine {
                     };
                     // Truncate to fit.
                     let max_chars = 28;
-                    let display = if progress.len() > max_chars {
-                        &progress[..max_chars]
+                    let display = if self.hud_buf.len() > max_chars {
+                        &self.hud_buf[..max_chars]
                     } else {
-                        &progress
+                        &self.hud_buf
                     };
                     self.ui.text(qt_x, y, display, scale, color);
                     y += line_h_qt;
