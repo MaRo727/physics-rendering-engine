@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::path::Path;
 
 use glam::Vec3;
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
@@ -11,6 +13,9 @@ pub const CHUNKS_PER_SIDE: i32 = 12;
 const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 900
 const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1801
 const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 150
+
+const TERRAIN_CACHE_FILE: &str = "terrain_cache.bin";
+const TERRAIN_CACHE_MAGIC: u32 = 0x5452_4E31; // "TRN1"
 
 // ---------------------------------------------------------------------------
 // Biomes
@@ -191,6 +196,27 @@ fn terrain_color(y: f32, original_y: f32, biome: Biome) -> Vec3 {
     }
 }
 
+fn biome_to_u8(b: Biome) -> u8 {
+    match b {
+        Biome::Plains => 0,
+        Biome::Forest => 1,
+        Biome::Desert => 2,
+        Biome::Mountains => 3,
+        Biome::Dungeon => 4,
+    }
+}
+
+fn u8_to_biome(v: u8) -> Biome {
+    match v {
+        0 => Biome::Plains,
+        1 => Biome::Forest,
+        2 => Biome::Desert,
+        3 => Biome::Mountains,
+        4 => Biome::Dungeon,
+        _ => Biome::Plains,
+    }
+}
+
 impl TerrainGrid {
     pub fn generate(seed: u32) -> Self {
         let fbm = Fbm::<Perlin>::new(seed)
@@ -319,6 +345,103 @@ impl TerrainGrid {
             biomes,
             dirty_chunks,
         }
+    }
+
+    /// Load terrain from cache if available, otherwise generate and save.
+    pub fn generate_or_load(seed: u32) -> Self {
+        if let Some(grid) = Self::load_cache(seed) {
+            log::info!("Loaded terrain from cache");
+            return grid;
+        }
+        log::info!("Generating terrain (no cache found)...");
+        let grid = Self::generate(seed);
+        grid.save_cache(seed);
+        grid
+    }
+
+    fn cache_path() -> std::path::PathBuf {
+        Path::new(TERRAIN_CACHE_FILE).to_path_buf()
+    }
+
+    fn save_cache(&self, seed: u32) {
+        let path = Self::cache_path();
+        let Ok(mut file) = std::fs::File::create(&path) else {
+            log::warn!("Failed to create terrain cache file");
+            return;
+        };
+
+        let mut write_all = || -> std::io::Result<()> {
+            file.write_all(&TERRAIN_CACHE_MAGIC.to_le_bytes())?;
+            file.write_all(&seed.to_le_bytes())?;
+
+            // Heights
+            let height_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    self.heights.as_ptr() as *const u8,
+                    self.heights.len() * 4,
+                )
+            };
+            file.write_all(height_bytes)?;
+
+            // Biomes as u8
+            let biome_bytes: Vec<u8> = self.biomes.iter().map(|b| biome_to_u8(*b)).collect();
+            file.write_all(&biome_bytes)?;
+
+            Ok(())
+        };
+
+        if let Err(e) = write_all() {
+            log::warn!("Failed to write terrain cache: {e}");
+            let _ = std::fs::remove_file(&path);
+        } else {
+            log::info!("Saved terrain cache ({:.1} MB)", path.metadata().map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0));
+        }
+    }
+
+    fn load_cache(seed: u32) -> Option<Self> {
+        let path = Self::cache_path();
+        let mut file = std::fs::File::open(&path).ok()?;
+
+        let mut buf4 = [0u8; 4];
+
+        // Check magic
+        file.read_exact(&mut buf4).ok()?;
+        if u32::from_le_bytes(buf4) != TERRAIN_CACHE_MAGIC {
+            log::info!("Terrain cache has wrong magic, regenerating");
+            return None;
+        }
+
+        // Check seed
+        file.read_exact(&mut buf4).ok()?;
+        if u32::from_le_bytes(buf4) != seed {
+            log::info!("Terrain cache has different seed, regenerating");
+            return None;
+        }
+
+        let total = GRID_SIZE * GRID_SIZE;
+
+        // Read heights
+        let mut heights = vec![0.0f32; total];
+        let height_bytes: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(heights.as_mut_ptr() as *mut u8, total * 4)
+        };
+        file.read_exact(height_bytes).ok()?;
+
+        // Read biomes
+        let mut biome_bytes = vec![0u8; total];
+        file.read_exact(&mut biome_bytes).ok()?;
+        let biomes: Vec<Biome> = biome_bytes.iter().map(|&b| u8_to_biome(b)).collect();
+
+        let original_heights = heights.clone();
+        let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
+        let dirty_chunks = vec![false; num_chunks];
+
+        Some(Self {
+            heights,
+            original_heights,
+            biomes,
+            dirty_chunks,
+        })
     }
 
     // -----------------------------------------------------------------------

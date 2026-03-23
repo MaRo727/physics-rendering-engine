@@ -153,7 +153,7 @@ pub fn init_world(
     progress.store(1, Ordering::Relaxed);
 
     // Generate terrain chunks.
-    let terrain = TerrainGrid::generate(42);
+    let terrain = TerrainGrid::generate_or_load(42);
     progress.store(2, Ordering::Relaxed);
 
     let (chunk_meshes, terrain_chunks, _full_mesh) =
