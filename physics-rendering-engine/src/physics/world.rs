@@ -94,6 +94,12 @@ impl PhysicsWorld {
         }
     }
 
+    /// Returns true if two colliders are actively in contact.
+    pub fn are_colliders_in_contact(&self, a: ColliderHandle, b: ColliderHandle) -> bool {
+        self.narrow_phase.contact_pair(a, b)
+            .map_or(false, |pair| pair.has_any_active_contact)
+    }
+
     /// Returns true if the collider has a contact with a surface whose normal
     /// points upward (Y > 0.7), i.e. the body is standing on something.
     pub fn is_on_ground(&self, collider: ColliderHandle) -> bool {
@@ -355,6 +361,35 @@ impl PhysicsWorld {
             vector![direction.x, direction.y, direction.z],
         );
         let filter = QueryFilter::default().exclude_collider(exclude);
+        self.query_pipeline
+            .cast_ray_and_get_normal(
+                &self.rigid_body_set,
+                &self.collider_set,
+                &ray,
+                max_toi,
+                true,
+                filter,
+            )
+            .and_then(|(collider_handle, intersection)| {
+                let body = self.collider_set[collider_handle].parent()?;
+                let hit_pos = origin + direction * intersection.time_of_impact;
+                let n = intersection.normal;
+                Some((body, hit_pos, Vec3::new(n.x, n.y, n.z)))
+            })
+    }
+
+    /// Raycast without excluding any collider.
+    pub fn cast_ray_unfiltered(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_toi: f32,
+    ) -> Option<(RigidBodyHandle, Vec3, Vec3)> {
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = QueryFilter::default();
         self.query_pipeline
             .cast_ray_and_get_normal(
                 &self.rigid_body_set,

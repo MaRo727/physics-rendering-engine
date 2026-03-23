@@ -49,8 +49,12 @@ pub const MESH_SLIME: u32 = 22;
 pub const MESH_FIST: u32 = 23;
 pub const MESH_FIREBALL: u32 = 24;
 pub const MESH_ICESHARD: u32 = 25;
-pub const MESH_TERRAIN_BASE: u32 = 26;
-const SHAPE_MESH_COUNT: usize = 26;
+pub const MESH_SKELETON: u32 = 26;
+pub const MESH_GOBLIN: u32 = 27;
+pub const MESH_GOLEM: u32 = 28;
+pub const MESH_ARROW: u32 = 29;
+pub const MESH_TERRAIN_BASE: u32 = 30;
+const SHAPE_MESH_COUNT: usize = 30;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -273,6 +277,10 @@ impl Renderer {
             shapes::ball_colored(8, 12, Vec3::new(0.85, 0.70, 0.55)),  // MESH_FIST = 23
             shapes::ball_colored(10, 16, Vec3::new(1.0, 0.45, 0.1)),   // MESH_FIREBALL = 24
             shapes::ball_colored(6, 8, Vec3::new(0.5, 0.8, 1.0)),     // MESH_ICESHARD = 25
+            shapes::skeleton(),                                           // MESH_SKELETON = 26
+            shapes::goblin(),                                             // MESH_GOBLIN = 27
+            shapes::golem(),                                              // MESH_GOLEM = 28
+            shapes::arrow(),                                              // MESH_ARROW = 29
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

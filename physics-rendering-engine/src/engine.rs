@@ -9,10 +9,11 @@ use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::ThirdPersonCamera;
 use crate::game::combat::CombatSystem;
-use crate::game::enemy_ai::{self, SlimeAi};
+use crate::game::enemy_ai::{self, EnemyAi, EnemyProjectile, EnemyType};
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::items::ITEM_IRON_SWORD;
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
+use crate::game::progression;
 use crate::game::spells::{SpellSystem, CastResult};
 use crate::game::stats::{StatBlock, StatBonuses};
 use crate::game::world::World;
@@ -22,7 +23,7 @@ use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_SLIME, MESH_WATER, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -96,7 +97,8 @@ pub struct Engine {
     combat: CombatSystem,
     spells: SpellSystem,
     cast_prev: bool,
-    enemy_ais: HashMap<u32, SlimeAi>,
+    enemy_ais: HashMap<u32, EnemyAi>,
+    enemy_projectiles: Vec<EnemyProjectile>,
     player_visual_yaw: f32,
     snow_intensity: f32,
     snow_time: f32,
@@ -203,6 +205,7 @@ impl Engine {
             spells: SpellSystem::new(),
             cast_prev: false,
             enemy_ais: HashMap::new(),
+            enemy_projectiles: Vec::new(),
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
@@ -211,8 +214,8 @@ impl Engine {
         // Spawn a few mining nodes scattered on the terrain.
         engine.spawn_mining_nodes();
 
-        // Spawn slime enemies on the terrain.
-        engine.spawn_slimes();
+        // Spawn enemies on the terrain.
+        engine.spawn_enemies();
 
         // Equip player with starting weapon.
         {
@@ -257,16 +260,27 @@ impl Engine {
         }
     }
 
-    fn spawn_slimes(&mut self) {
-        let positions = [
-            Vec3::new(12.0, 0.0, 8.0),
-            Vec3::new(-10.0, 0.0, 15.0),
-            Vec3::new(20.0, 0.0, -10.0),
-            Vec3::new(-18.0, 0.0, -12.0),
-            Vec3::new(8.0, 0.0, 25.0),
-            Vec3::new(-5.0, 0.0, -20.0),
+    fn spawn_enemies(&mut self) {
+        let spawns: &[(Vec3, EnemyType)] = &[
+            // Slimes
+            (Vec3::new(12.0, 0.0, 8.0), EnemyType::Slime),
+            (Vec3::new(-10.0, 0.0, 15.0), EnemyType::Slime),
+            (Vec3::new(20.0, 0.0, -10.0), EnemyType::Slime),
+            (Vec3::new(-18.0, 0.0, -12.0), EnemyType::Slime),
+            (Vec3::new(8.0, 0.0, 25.0), EnemyType::Slime),
+            (Vec3::new(-5.0, 0.0, -20.0), EnemyType::Slime),
+            // Skeletons
+            (Vec3::new(30.0, 0.0, 5.0), EnemyType::Skeleton),
+            (Vec3::new(-25.0, 0.0, 20.0), EnemyType::Skeleton),
+            // Goblin Archers
+            (Vec3::new(15.0, 0.0, -25.0), EnemyType::GoblinArcher),
+            (Vec3::new(-30.0, 0.0, -5.0), EnemyType::GoblinArcher),
+            // Golem
+            (Vec3::new(0.0, 0.0, 35.0), EnemyType::Golem),
         ];
-        for (i, &pos) in positions.iter().enumerate() {
+
+        for (i, &(pos, enemy_type)) in spawns.iter().enumerate() {
+            let params = enemy_type.params();
             let terrain_y = self.terrain.height_at_world(pos.x, pos.z);
             let spawn_pos = Vec3::new(pos.x, terrain_y + 1.0, pos.z);
 
@@ -274,20 +288,19 @@ impl Engine {
             let body = PhysicsBody::new_enemy_ball(
                 &mut self.physics,
                 spawn_pos,
-                0.5,
-                WeightClass::Light,
+                params.physics_radius,
+                params.weight_class,
             );
-            let stats = StatBlock::new_enemy(1, 5, 1, 3, 8, 3);
+            let stats = StatBlock::new_enemy(
+                params.level, params.str_, params.int,
+                params.dex, params.vit, params.end,
+            );
             let entity = Entity::enemy(
-                id,
-                body,
-                MESH_SLIME,
-                Vec3::new(1.0, 0.7, 1.0),
-                0.5,
-                stats,
+                id, body, params.mesh, params.render_scale,
+                params.bounding_radius, stats,
             );
             self.world.entities.push(entity);
-            self.enemy_ais.insert(id, SlimeAi::new(i as u32 * 7 + 13));
+            self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, i as u32 * 7 + 13));
         }
     }
 
@@ -614,29 +627,61 @@ impl Engine {
                 }
             }
 
-            // --- Remove dead enemies ---
-            let dead_ids: Vec<u32> = self.world.entities.iter()
+            // --- Remove dead enemies + award XP ---
+            let dead_ids: Vec<(u32, u32)> = self.world.entities.iter()
                 .filter(|e| e.kind == EntityKind::Enemy)
                 .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
-                .map(|e| e.id)
+                .map(|e| {
+                    let level = e.stats.as_ref().map_or(1, |s| s.level);
+                    (e.id, level)
+                })
                 .collect();
-            for dead_id in &dead_ids {
-                if let Some(idx) = self.world.entities.iter().position(|e| e.id == *dead_id) {
+            for &(dead_id, enemy_level) in &dead_ids {
+                if let Some(idx) = self.world.entities.iter().position(|e| e.id == dead_id) {
                     let entity = self.world.entities.swap_remove(idx);
                     self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
-                    self.enemy_ais.remove(dead_id);
-                    println!("Enemy {} defeated!", dead_id);
+                    self.enemy_ais.remove(&dead_id);
+
+                    // Award XP to player.
+                    let xp = progression::xp_for_kill(enemy_level);
+                    if let Some(ref mut stats) = self.world.player_mut().stats {
+                        let levels = progression::award_xp(stats, xp);
+                        println!("Enemy defeated! +{} XP", xp);
+                        if levels > 0 {
+                            println!("Level up! Now level {}", stats.level);
+                        }
+                    }
                 }
             }
 
             // --- Enemy AI ---
-            enemy_ai::update_all(
+            let player_col_handle = self.world.player().body.collider;
+            let enemy_hits = enemy_ai::update_all(
                 &mut self.enemy_ais,
+                &mut self.enemy_projectiles,
                 &mut self.physics,
                 &self.world.entities,
                 player_pos,
+                player_col_handle,
                 dt,
             );
+            // Tick enemy projectiles (arrows).
+            let arrow_hits = enemy_ai::update_projectiles(
+                &mut self.enemy_projectiles,
+                &self.physics,
+                &self.world.entities,
+                dt,
+            );
+            // Apply enemy damage to player (melee + projectile).
+            for hit in enemy_hits.into_iter().chain(arrow_hits) {
+                if let Some(ref mut stats) = self.world.player_mut().stats {
+                    let dealt = stats.take_damage(hit.damage);
+                    println!("Enemy hit you for {:.0} damage! HP: {:.0}", dealt, stats.health);
+                }
+                let player_rb = self.world.player().body.rigid_body;
+                let mass = self.physics.body_mass(player_rb);
+                self.physics.apply_impulse(player_rb, hit.knockback_dir * hit.knockback_force * mass);
+            }
 
             // --- Camera-relative player movement ---
             self.apply_player_movement(input);
@@ -967,6 +1012,29 @@ impl Engine {
             let t = Mat4::from_translation(proj.position) * Mat4::from_scale(Vec3::splat(proj.scale));
             transforms.push(t);
             instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
+        }
+
+        // Enemy projectiles (arrows).
+        let enemy_proj_object_base: u32 = 0xFF90;
+        for (i, proj) in self.enemy_projectiles.iter().enumerate() {
+            // Orient arrow along its velocity.
+            let dir = proj.velocity.normalize_or_zero();
+            let rot = if dir.length_squared() > 0.001 {
+                let up = Vec3::Y;
+                let right = up.cross(dir).normalize_or_zero();
+                let corrected_up = dir.cross(right);
+                Mat4::from_cols(
+                    Vec4::new(right.x, right.y, right.z, 0.0),
+                    Vec4::new(corrected_up.x, corrected_up.y, corrected_up.z, 0.0),
+                    Vec4::new(dir.x, dir.y, dir.z, 0.0),
+                    Vec4::new(0.0, 0.0, 0.0, 1.0),
+                )
+            } else {
+                Mat4::IDENTITY
+            };
+            let t = Mat4::from_translation(proj.position) * rot * Mat4::from_scale(Vec3::splat(proj.scale));
+            transforms.push(t);
+            instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.

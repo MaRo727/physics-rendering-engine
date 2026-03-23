@@ -107,7 +107,10 @@ pub fn ball_colored(stacks: u32, slices: u32, color: Vec3) -> (Vec<Vertex>, Vec<
 /// Capsule (pill shape) centered at origin: cylinder along Y with hemispherical caps.
 /// Total height = `height`, radius = `radius`. `stacks` and `slices` control tessellation.
 pub fn capsule(radius: f32, height: f32, stacks: u32, slices: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let color = Vec3::new(0.35, 0.75, 0.55);
+    capsule_colored(radius, height, stacks, slices, Vec3::new(0.35, 0.75, 0.55))
+}
+
+pub fn capsule_colored(radius: f32, height: f32, stacks: u32, slices: u32, color: Vec3) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -1107,5 +1110,45 @@ pub fn slope() -> (Vec<Vertex>, Vec<u32>) {
     push_tri(&mut v, &mut i, br_f, tl_f, bl_f, c);
     push_tri(&mut v, &mut i, bl_b, tl_b, br_b, c);
 
+    (v, i)
+}
+
+/// Skeleton: bone-white upright capsule.
+pub fn skeleton() -> (Vec<Vertex>, Vec<u32>) {
+    capsule_colored(0.2, 1.4, 10, 14, Vec3::new(0.85, 0.82, 0.75))
+}
+
+/// Goblin: short green-brown capsule.
+pub fn goblin() -> (Vec<Vertex>, Vec<u32>) {
+    capsule_colored(0.25, 0.9, 10, 14, Vec3::new(0.35, 0.50, 0.25))
+}
+
+/// Golem: large gray-brown rocky sphere.
+pub fn golem() -> (Vec<Vertex>, Vec<u32>) {
+    ball_colored(16, 24, Vec3::new(0.55, 0.50, 0.45))
+}
+
+/// Arrow: small dark brown elongated diamond shape for goblin projectiles.
+pub fn arrow() -> (Vec<Vertex>, Vec<u32>) {
+    let c = Vec3::new(0.45, 0.30, 0.15);
+    let tip = Vec3::new(0.0, 0.0, 0.5);
+    let tail = Vec3::new(0.0, 0.0, -0.5);
+    let top = Vec3::new(0.0, 0.08, 0.0);
+    let bot = Vec3::new(0.0, -0.08, 0.0);
+    let left = Vec3::new(-0.08, 0.0, 0.0);
+    let right = Vec3::new(0.08, 0.0, 0.0);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+    // Front 4 faces (tip)
+    push_tri(&mut v, &mut i, tip, top, right, c);
+    push_tri(&mut v, &mut i, tip, right, bot, c);
+    push_tri(&mut v, &mut i, tip, bot, left, c);
+    push_tri(&mut v, &mut i, tip, left, top, c);
+    // Back 4 faces (tail)
+    push_tri(&mut v, &mut i, tail, right, top, c);
+    push_tri(&mut v, &mut i, tail, bot, right, c);
+    push_tri(&mut v, &mut i, tail, left, bot, c);
+    push_tri(&mut v, &mut i, tail, top, left, c);
     (v, i)
 }
