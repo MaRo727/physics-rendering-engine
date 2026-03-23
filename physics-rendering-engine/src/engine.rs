@@ -9,7 +9,7 @@ use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::ThirdPersonCamera;
 use crate::game::combat::CombatSystem;
-use crate::game::enemy_ai::{self, EnemyAi, EnemyProjectile, EnemyType};
+use crate::game::enemy_ai::{self, EnemyAi, EnemyProjectile};
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::items::ITEM_IRON_SWORD;
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
@@ -100,6 +100,8 @@ pub struct Engine {
     cast_prev: bool,
     enemy_ais: HashMap<u32, EnemyAi>,
     enemy_projectiles: Vec<EnemyProjectile>,
+    spawn_timer: f32,
+    spawn_seed: u32,
     player_visual_yaw: f32,
     snow_intensity: f32,
     snow_time: f32,
@@ -207,6 +209,8 @@ impl Engine {
             cast_prev: false,
             enemy_ais: HashMap::new(),
             enemy_projectiles: Vec::new(),
+            spawn_timer: 0.0,
+            spawn_seed: 42,
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
@@ -214,9 +218,6 @@ impl Engine {
 
         // Spawn a few mining nodes scattered on the terrain.
         engine.spawn_mining_nodes();
-
-        // Spawn enemies on the terrain.
-        engine.spawn_enemies();
 
         // Equip player with starting weapon.
         {
@@ -261,48 +262,52 @@ impl Engine {
         }
     }
 
-    fn spawn_enemies(&mut self) {
-        let spawns: &[(Vec3, EnemyType)] = &[
-            // Slimes
-            (Vec3::new(12.0, 0.0, 8.0), EnemyType::Slime),
-            (Vec3::new(-10.0, 0.0, 15.0), EnemyType::Slime),
-            (Vec3::new(20.0, 0.0, -10.0), EnemyType::Slime),
-            (Vec3::new(-18.0, 0.0, -12.0), EnemyType::Slime),
-            (Vec3::new(8.0, 0.0, 25.0), EnemyType::Slime),
-            (Vec3::new(-5.0, 0.0, -20.0), EnemyType::Slime),
-            // Skeletons
-            (Vec3::new(30.0, 0.0, 5.0), EnemyType::Skeleton),
-            (Vec3::new(-25.0, 0.0, 20.0), EnemyType::Skeleton),
-            // Goblin Archers
-            (Vec3::new(15.0, 0.0, -25.0), EnemyType::GoblinArcher),
-            (Vec3::new(-30.0, 0.0, -5.0), EnemyType::GoblinArcher),
-            // Golem
-            (Vec3::new(0.0, 0.0, 35.0), EnemyType::Golem),
-        ];
-
-        for (i, &(pos, enemy_type)) in spawns.iter().enumerate() {
-            let params = enemy_type.params();
-            let terrain_y = self.terrain.height_at_world(pos.x, pos.z);
-            let spawn_pos = Vec3::new(pos.x, terrain_y + 1.0, pos.z);
-
-            let id = self.world.alloc_id();
-            let body = PhysicsBody::new_enemy_ball(
-                &mut self.physics,
-                spawn_pos,
-                params.physics_radius,
-                params.weight_class,
-            );
-            let stats = StatBlock::new_enemy(
-                params.level, params.str_, params.int,
-                params.dex, params.vit, params.end,
-            );
-            let entity = Entity::enemy(
-                id, body, params.mesh, params.render_scale,
-                params.bounding_radius, stats,
-            );
-            self.world.entities.push(entity);
-            self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, i as u32 * 7 + 13));
+    /// Try to spawn one enemy at a random position near the player (biome-weighted).
+    fn try_spawn_enemy(&mut self, player_pos: Vec3) {
+        // Count current enemies.
+        let enemy_count = self.world.entities.iter()
+            .filter(|e| e.kind == EntityKind::Enemy)
+            .count();
+        if enemy_count >= enemy_ai::MAX_ENEMIES {
+            return;
         }
+
+        // Pick a random angle and distance from the player.
+        let angle = enemy_ai::cheap_rand_pub(&mut self.spawn_seed) * std::f32::consts::TAU;
+        let min = enemy_ai::MIN_SPAWN_DIST;
+        let max = enemy_ai::MAX_SPAWN_DIST;
+        let dist = min + enemy_ai::cheap_rand_pub(&mut self.spawn_seed) * (max - min);
+        let x = player_pos.x + angle.cos() * dist;
+        let z = player_pos.z + angle.sin() * dist;
+
+        // Check terrain height — skip if underwater.
+        let terrain_y = self.terrain.height_at_world(x, z);
+        if terrain_y < WATER_LEVEL + 0.5 {
+            return;
+        }
+
+        let biome = self.terrain.biome_at_world(x, z);
+        let enemy_type = enemy_ai::pick_enemy_for_biome(biome, &mut self.spawn_seed);
+        let params = enemy_type.params();
+        let spawn_pos = Vec3::new(x, terrain_y + 1.0, z);
+
+        let id = self.world.alloc_id();
+        let body = PhysicsBody::new_enemy_ball(
+            &mut self.physics,
+            spawn_pos,
+            params.physics_radius,
+            params.weight_class,
+        );
+        let stats = StatBlock::new_enemy(
+            params.level, params.str_, params.int,
+            params.dex, params.vit, params.end,
+        );
+        let entity = Entity::enemy(
+            id, body, params.mesh, params.render_scale,
+            params.bounding_radius, stats,
+        );
+        self.world.entities.push(entity);
+        self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, self.spawn_seed));
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
@@ -651,6 +656,33 @@ impl Engine {
                         if levels > 0 {
                             println!("Level up! Now level {}", stats.level);
                         }
+                    }
+                }
+            }
+
+            // --- Night enemy spawning ---
+            if enemy_ai::is_night(self.time_of_day) {
+                self.spawn_timer -= dt;
+                if self.spawn_timer <= 0.0 {
+                    self.try_spawn_enemy(player_pos);
+                    // Spawn interval: 2-4 seconds.
+                    self.spawn_timer = 2.0 + enemy_ai::cheap_rand_pub(&mut self.spawn_seed) * 2.0;
+                }
+            } else {
+                // Daytime: despawn enemies far from player.
+                let despawn_ids: Vec<u32> = self.world.entities.iter()
+                    .filter(|e| e.kind == EntityKind::Enemy)
+                    .filter(|e| {
+                        let epos = self.physics.body_position(e.body.rigid_body);
+                        (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5
+                    })
+                    .map(|e| e.id)
+                    .collect();
+                for id in despawn_ids {
+                    if let Some(idx) = self.world.entities.iter().position(|e| e.id == id) {
+                        let entity = self.world.entities.swap_remove(idx);
+                        self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                        self.enemy_ais.remove(&id);
                     }
                 }
             }

@@ -9,6 +9,7 @@ use crate::game::entity::{Entity, EntityId, EntityKind};
 use crate::physics::body::{ColliderHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_SLIME, MESH_SKELETON, MESH_GOBLIN, MESH_GOLEM, MESH_ARROW};
+use crate::terrain::Biome;
 
 // ---------------------------------------------------------------------------
 // Enemy type definitions
@@ -122,6 +123,74 @@ impl EnemyType {
 }
 
 // ---------------------------------------------------------------------------
+// Biome-based spawn weights
+// ---------------------------------------------------------------------------
+
+// (EnemyType, weight) per biome. Higher weight = more likely to spawn.
+// To add a new enemy: add entries here for each biome it can appear in.
+fn spawn_table(biome: Biome) -> &'static [(EnemyType, u32)] {
+    match biome {
+        Biome::Plains => &[
+            (EnemyType::Slime, 50),
+            (EnemyType::Skeleton, 30),
+            (EnemyType::GoblinArcher, 15),
+            (EnemyType::Golem, 5),
+        ],
+        Biome::Forest => &[
+            (EnemyType::Slime, 25),
+            (EnemyType::Skeleton, 30),
+            (EnemyType::GoblinArcher, 35),
+            (EnemyType::Golem, 10),
+        ],
+        Biome::Desert => &[
+            (EnemyType::Slime, 10),
+            (EnemyType::Skeleton, 50),
+            (EnemyType::GoblinArcher, 25),
+            (EnemyType::Golem, 15),
+        ],
+        Biome::Mountains => &[
+            (EnemyType::Slime, 10),
+            (EnemyType::Skeleton, 15),
+            (EnemyType::GoblinArcher, 20),
+            (EnemyType::Golem, 55),
+        ],
+        Biome::Dungeon => &[
+            (EnemyType::Skeleton, 40),
+            (EnemyType::GoblinArcher, 30),
+            (EnemyType::Golem, 30),
+        ],
+    }
+}
+
+/// Pick a random enemy type for a biome using weighted selection.
+pub fn pick_enemy_for_biome(biome: Biome, seed: &mut u32) -> EnemyType {
+    let table = spawn_table(biome);
+    let total: u32 = table.iter().map(|(_, w)| *w).sum();
+    let roll = (cheap_rand(seed) * total as f32) as u32;
+    let mut acc = 0;
+    for &(enemy_type, weight) in table {
+        acc += weight;
+        if roll < acc {
+            return enemy_type;
+        }
+    }
+    table.last().unwrap().0
+}
+
+/// Maximum number of enemies alive at once.
+pub const MAX_ENEMIES: usize = 30;
+
+/// Minimum distance from the player to spawn an enemy.
+pub const MIN_SPAWN_DIST: f32 = 40.0;
+/// Maximum distance from the player to spawn an enemy.
+pub const MAX_SPAWN_DIST: f32 = 120.0;
+
+/// Whether it's night (enemies spawn). Night: 0.75 (sunset) through 0.0 to 0.25 (sunrise).
+pub fn is_night(time_of_day: f32) -> bool {
+    time_of_day >= 0.75 || time_of_day < 0.25
+}
+
+// ---------------------------------------------------------------------------
 // AI state machine
 // ---------------------------------------------------------------------------
 
@@ -178,6 +247,11 @@ pub struct EnemyProjectile {
     pub knockback_force: f32,
     pub mesh: u32,
     pub scale: f32,
+}
+
+/// Pseudo-random float [0, 1) from a seed, advancing the seed (public for spawn system).
+pub fn cheap_rand_pub(seed: &mut u32) -> f32 {
+    cheap_rand(seed)
 }
 
 /// Pseudo-random float [0, 1) from a seed, advancing the seed.
