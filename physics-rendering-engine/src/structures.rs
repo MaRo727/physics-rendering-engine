@@ -198,11 +198,10 @@ impl StructureGrid {
                     let tree = &self.trees[tree_idx];
                     let dx = tree.position.x - player_pos.x;
                     let dz = tree.position.z - player_pos.z;
-                    if dx * dx + dz * dz > dist_sq {
+                    let d_sq = dx * dx + dz * dz;
+                    if d_sq > dist_sq {
                         continue;
                     }
-
-                    let d_sq = dx * dx + dz * dz;
 
                     // Frustum cull using a bounding sphere at the tree's mid-height.
                     let center = tree.position + Vec3::new(0.0, 4.0 * tree.scale.y, 0.0);

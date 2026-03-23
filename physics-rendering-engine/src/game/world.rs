@@ -1,5 +1,9 @@
 /// Game world: owns all entities and game state.
 
+use std::collections::HashMap;
+
+use crate::physics::body::RigidBodyHandle;
+
 use crate::game::entity::{Entity, EntityId, EntityKind};
 use crate::game::stats::StatBonuses;
 use crate::game::items::item_by_id;
@@ -17,16 +21,26 @@ pub struct World {
     pub state: GameState,
     pub game_time: f32,
     pub next_entity_id: EntityId,
+    id_to_index: HashMap<EntityId, usize>,
+    rb_to_index: HashMap<RigidBodyHandle, usize>,
 }
 
 impl World {
     pub fn new(entities: Vec<Entity>, player_id: EntityId, next_id: EntityId) -> Self {
+        let mut id_to_index = HashMap::with_capacity(entities.len());
+        let mut rb_to_index = HashMap::with_capacity(entities.len());
+        for (i, e) in entities.iter().enumerate() {
+            id_to_index.insert(e.id, i);
+            rb_to_index.insert(e.body.rigid_body, i);
+        }
         Self {
             entities,
             player_id,
             state: GameState::Playing,
             game_time: 0.0,
             next_entity_id: next_id,
+            id_to_index,
+            rb_to_index,
         }
     }
 
@@ -40,13 +54,47 @@ impl World {
         self.next_entity_id
     }
 
-    /// Find entity by id.
+    /// Find entity by id (O(1) via HashMap).
     pub fn entity(&self, id: EntityId) -> Option<&Entity> {
-        self.entities.iter().find(|e| e.id == id)
+        self.id_to_index.get(&id).map(|&idx| &self.entities[idx])
     }
 
     pub fn entity_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
-        self.entities.iter_mut().find(|e| e.id == id)
+        self.id_to_index.get(&id).copied().map(move |idx| &mut self.entities[idx])
+    }
+
+    /// Find entity by rigid body handle (O(1) via HashMap).
+    pub fn entity_by_rb(&self, rb: RigidBodyHandle) -> Option<&Entity> {
+        self.rb_to_index.get(&rb).map(|&idx| &self.entities[idx])
+    }
+
+    /// Add an entity, maintaining lookup indices.
+    pub fn add_entity(&mut self, entity: Entity) {
+        let idx = self.entities.len();
+        self.id_to_index.insert(entity.id, idx);
+        self.rb_to_index.insert(entity.body.rigid_body, idx);
+        self.entities.push(entity);
+    }
+
+    /// Remove entity by id (O(1)). Returns the removed entity.
+    pub fn remove_by_id(&mut self, id: EntityId) -> Option<Entity> {
+        let idx = *self.id_to_index.get(&id)?;
+        let entity = self.entities.swap_remove(idx);
+        self.id_to_index.remove(&entity.id);
+        self.rb_to_index.remove(&entity.body.rigid_body);
+        // Update the swapped entity's indices
+        if idx < self.entities.len() {
+            let swapped = &self.entities[idx];
+            self.id_to_index.insert(swapped.id, idx);
+            self.rb_to_index.insert(swapped.body.rigid_body, idx);
+        }
+        Some(entity)
+    }
+
+    /// Remove entity by rigid body handle (O(1)). Returns the removed entity.
+    pub fn remove_by_rb(&mut self, rb: RigidBodyHandle) -> Option<Entity> {
+        let id = self.rb_to_index.get(&rb).map(|&idx| self.entities[idx].id)?;
+        self.remove_by_id(id)
     }
 
     /// Get the player entity.
@@ -73,10 +121,10 @@ impl World {
 
     /// Try to pick up a nearby item drop for the player.
     pub fn pickup_item(&mut self, drop_entity_id: EntityId) -> bool {
-        // Find the drop
-        let drop_idx = match self.entities.iter().position(|e| e.id == drop_entity_id && e.kind == EntityKind::ItemDrop) {
-            Some(idx) => idx,
-            None => return false,
+        // Find the drop via index map
+        let drop_idx = match self.id_to_index.get(&drop_entity_id).copied() {
+            Some(idx) if self.entities[idx].kind == EntityKind::ItemDrop => idx,
+            _ => return false,
         };
 
         let (item_id, count) = match self.entities[drop_idx].drop_item {
@@ -84,8 +132,8 @@ impl World {
             None => return false,
         };
 
-        // Find the player's inventory
-        let player_idx = self.entities.iter().position(|e| e.id == self.player_id).unwrap();
+        // Find the player's inventory via index map
+        let player_idx = self.id_to_index[&self.player_id];
 
         // Check if player has inventory space
         let leftover = {

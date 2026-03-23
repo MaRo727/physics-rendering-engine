@@ -436,8 +436,11 @@ impl BuildingGrid {
     /// Generate an optimized mesh with only externally-visible faces.
     /// Each sub-block face is emitted only when the neighbor sub-block is empty.
     pub fn generate_mesh(&self) -> (Vec<Vertex>, Vec<u32>) {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
+        // Each cell can produce up to 6 faces × 4 sub-blocks per axis = many quads.
+        // Estimate ~4 verts and ~6 indices per visible face; rough heuristic.
+        let estimate = self.cells.len() * 24;
+        let mut vertices = Vec::with_capacity(estimate);
+        let mut indices = Vec::with_capacity(estimate);
         let s = SUB_SIZE;
 
         for (&(cx, cy, cz), cell) in &self.cells {

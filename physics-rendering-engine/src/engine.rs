@@ -64,6 +64,7 @@ pub struct Engine {
     world: World,
     player_rb: rapier3d::prelude::RigidBodyHandle,
     player_col: rapier3d::prelude::ColliderHandle,
+    player_on_ground: bool,
     camera: FirstPersonCamera,
     player_model: PlayerModel,
     renderer: Renderer,
@@ -249,6 +250,7 @@ impl Engine {
             world: data.world,
             player_rb: data.player_rb,
             player_col: data.player_col,
+            player_on_ground: false,
             camera: data.camera,
             player_model: data.player_model,
             renderer,
@@ -391,7 +393,7 @@ impl Engine {
             id, body, params.mesh, params.render_scale,
             params.bounding_radius, stats,
         );
-        self.world.entities.push(entity);
+        self.world.add_entity(entity);
         self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, self.spawn_seed));
     }
 
@@ -492,8 +494,7 @@ impl Engine {
             // --- Handle item pickup ---
             if let Some(drop_id) = interaction_result.picked_up_item {
                 if self.world.pickup_item(drop_id) {
-                    if let Some(idx) = self.world.entities.iter().position(|e| e.id == drop_id) {
-                        let entity = self.world.entities.swap_remove(idx);
+                    if let Some(entity) = self.world.remove_by_id(drop_id) {
                         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                     }
                 }
@@ -516,7 +517,7 @@ impl Engine {
                 self.physics.set_gravity_enabled(body.rigid_body, false);
                 self.interaction.held_body = Some(body.rigid_body);
 
-                self.world.entities.push(Entity::prop(
+                self.world.add_entity(Entity::prop(
                     obj_id,
                     body,
                     MESH_CUBE,
@@ -596,8 +597,7 @@ impl Engine {
                         cz as f32 + 0.5,
                     );
                     if self.building.place(&mut self.physics, cx, cy, cz, terrain_h) {
-                        if let Some(idx) = self.world.entities.iter().position(|o| o.body.rigid_body == held_handle) {
-                            let entity = self.world.entities.swap_remove(idx);
+                        if let Some(entity) = self.world.remove_by_rb(held_handle) {
                             self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                         }
                     } else {
@@ -623,7 +623,7 @@ impl Engine {
                 self.physics.set_gravity_enabled(body.rigid_body, false);
                 self.interaction.held_body = Some(body.rigid_body);
 
-                self.world.entities.push(Entity::prop(
+                self.world.add_entity(Entity::prop(
                     obj_id,
                     body,
                     MESH_CUBE,
@@ -762,8 +762,7 @@ impl Engine {
                 // Grab enemy type before removing.
                 let enemy_type = self.enemy_ais.get(&dead_id).map(|ai| ai.enemy_type);
 
-                if let Some(idx) = self.world.entities.iter().position(|e| e.id == dead_id) {
-                    let entity = self.world.entities.swap_remove(idx);
+                if let Some(entity) = self.world.remove_by_id(dead_id) {
                     self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                     self.enemy_ais.remove(&dead_id);
 
@@ -819,8 +818,7 @@ impl Engine {
                 );
                 for i in 0..self.despawn_ids.len() {
                     let id = self.despawn_ids[i];
-                    if let Some(idx) = self.world.entities.iter().position(|e| e.id == id) {
-                        let entity = self.world.entities.swap_remove(idx);
+                    if let Some(entity) = self.world.remove_by_id(id) {
                         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                         self.enemy_ais.remove(&id);
                     }
@@ -857,6 +855,9 @@ impl Engine {
                 let mass = self.physics.body_mass(player_rb);
                 self.physics.apply_impulse(player_rb, hit.knockback_dir * hit.knockback_force * mass);
             }
+
+            // --- Cache ground state once per frame ---
+            self.player_on_ground = self.physics.is_on_ground(self.player_col);
 
             // --- Camera-relative player movement ---
             self.apply_player_movement(input);
@@ -922,8 +923,7 @@ impl Engine {
 
             let vel = self.physics.body_linvel_xz(self.player_rb);
             let horizontal_speed = (vel.x * vel.x + vel.z * vel.z).sqrt();
-            let on_ground = self.physics.is_on_ground(self.player_col);
-            audio.update_footsteps(dt, biome, horizontal_speed, on_ground);
+            audio.update_footsteps(dt, biome, horizontal_speed, self.player_on_ground);
         }
     }
 
@@ -987,7 +987,7 @@ impl Engine {
         }
 
         let mut vy = self.physics.body_linvel_y(self.player_rb);
-        if input.jump && self.physics.is_on_ground(self.player_col) {
+        if input.jump && self.player_on_ground {
             vy = JUMP_VELOCITY;
         }
         self.physics.set_body_linvel(
@@ -1036,15 +1036,13 @@ impl Engine {
     /// Damage a mining chunk and handle destruction + stability collapse.
     fn damage_mining_chunk(&mut self, rb: rapier3d::prelude::RigidBodyHandle) {
         if let Some(destroyed_id) = self.mining.damage_chunk(rb, 1) {
-            if let Some(idx) = self.world.entities.iter().position(|e| e.id == destroyed_id) {
-                let entity = self.world.entities.swap_remove(idx);
+            if let Some(entity) = self.world.remove_by_id(destroyed_id) {
                 self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
             }
             let impact_pos = self.physics.body_position(rb);
             let collapsed = self.mining.check_stability(&self.physics, impact_pos);
             for eid in collapsed {
-                if let Some(idx) = self.world.entities.iter().position(|e| e.id == eid) {
-                    let entity = self.world.entities.swap_remove(idx);
+                if let Some(entity) = self.world.remove_by_id(eid) {
                     self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                 }
             }
@@ -1061,7 +1059,7 @@ impl Engine {
                 Vec3::splat(0.5),
                 WeightClass::Medium,
             );
-            self.world.entities.push(Entity::prop(
+            self.world.add_entity(Entity::prop(
                 obj_id,
                 body,
                 MESH_CUBE,
@@ -1112,19 +1110,19 @@ impl Engine {
 
     /// Split a cube object into two halves along the axis most aligned with the hit.
     fn split_cube(&mut self, target_body: rapier3d::prelude::RigidBodyHandle, _eye: Vec3, look_dir: Vec3) {
-        let obj_idx = match self.world.entities.iter().position(|o| o.body.rigid_body == target_body) {
-            Some(idx) => idx,
+        let target_entity = match self.world.entity_by_rb(target_body) {
+            Some(e) => e,
             None => return,
         };
 
-        if self.world.entities[obj_idx].mesh_type != MESH_CUBE {
-            let wc = self.world.entities[obj_idx].body.weight_class;
+        if target_entity.mesh_type != MESH_CUBE {
+            let wc = target_entity.body.weight_class;
             let force = look_dir * 8.0 * wc.punch_knockback();
             self.physics.apply_impulse(target_body, force);
             return;
         }
 
-        let entity = self.world.entities.swap_remove(obj_idx);
+        let entity = self.world.remove_by_rb(target_body).unwrap();
         let pos = self.physics.body_position(entity.body.rigid_body);
         let transform = self.physics.body_transform(entity.body.rigid_body);
         let scale = entity.render_scale;
@@ -1175,7 +1173,7 @@ impl Engine {
             let separation_impulse = world_offset.normalize_or_zero() * sign * 2.0;
             self.physics.apply_impulse(body.rigid_body, separation_impulse);
 
-            self.world.entities.push(Entity::prop(
+            self.world.add_entity(Entity::prop(
                 obj_id,
                 body,
                 MESH_CUBE,
