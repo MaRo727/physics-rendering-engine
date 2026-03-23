@@ -26,9 +26,11 @@ use crate::renderer::context::VulkanContext;
 use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
-use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
+use crate::terrain::{Biome, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
 use crate::ui::Ui;
 use crate::game::items::item_by_id;
+use crate::game::npc::{self, ActiveDialogue};
+use crate::game::quest::{self, Quest, QuestState};
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -125,6 +127,9 @@ pub struct Engine {
     arrow_hit_buf: Vec<EnemyAttackHit>,
     spell_hit_buf: Vec<SpellHit>,
     ui: Ui,
+    quests: Vec<Quest>,
+    active_dialogue: Option<ActiveDialogue>,
+    npc_interact_prev: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -311,8 +316,13 @@ impl Engine {
             arrow_hit_buf: Vec::new(),
             spell_hit_buf: Vec::new(),
             ui: Ui::new(),
+            quests: quest::create_quests(),
+            active_dialogue: None,
+            npc_interact_prev: false,
         };
 
+        engine.spawn_npcs();
+        engine.spawn_world_structures();
         engine.spawn_mining_nodes();
 
         {
@@ -354,6 +364,135 @@ impl Engine {
                 },
             );
             self.world.entities.extend(new_entities);
+        }
+    }
+
+    fn spawn_npcs(&mut self) {
+        use crate::game::entity::Entity;
+        use crate::renderer::MESH_CAPSULE;
+        use crate::physics::body::{PhysicsBody, WeightClass};
+        for def in npc::npc_defs() {
+            let y = self.terrain.height_at_world(def.world_x, def.world_z) + 1.0;
+            let pos = Vec3::new(def.world_x, y, def.world_z);
+            let id = self.world.alloc_id();
+            let half = Vec3::new(0.4, 0.6, 0.4);
+            let (rb, col) = self.physics.add_static_box(pos, half);
+            let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
+            let entity = Entity::npc(id, body, MESH_CAPSULE, def.scale, 1.5, def.kind as u8);
+            self.world.entities.push(entity);
+        }
+    }
+
+    fn spawn_world_structures(&mut self) {
+        use crate::game::entity::Entity;
+        use crate::renderer::{MESH_CUBE, MESH_ROCK};
+        use crate::physics::body::{PhysicsBody, WeightClass};
+
+        // Helper: spawn a prop at world (x, z) with automatic terrain Y.
+        let spawn = |physics: &mut PhysicsWorld, world: &mut World, terrain: &TerrainGrid,
+                         x: f32, z: f32, y_offset: f32, mesh: u32, scale: Vec3| {
+            let y = terrain.height_at_world(x, z) + y_offset + scale.y * 0.5;
+            let id = world.alloc_id();
+            let half = scale * 0.5;
+            let (rb, col) = physics.add_static_box(Vec3::new(x, y, z), half);
+            let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
+            let entity = Entity::prop(id, body, mesh, scale, scale.length());
+            world.entities.push(entity);
+        };
+
+        // Waystone Circle (Plains, near spawn).
+        for i in 0..5 {
+            let angle = i as f32 * std::f32::consts::TAU / 5.0;
+            let cx = 45.0 + angle.cos() * 6.0;
+            let cz = 80.0 + angle.sin() * 6.0;
+            spawn(&mut self.physics, &mut self.world, &self.terrain,
+                cx, cz, 0.0, MESH_ROCK, Vec3::new(0.8, 1.4, 0.8));
+        }
+        // Altar slab.
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            45.0, 80.0, 0.0, MESH_CUBE, Vec3::new(1.5, 0.25, 1.5));
+
+        // Abandoned Campsite (Plains).
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -30.0, 120.0, 0.0, MESH_CUBE, Vec3::new(0.6, 0.4, 0.6));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -28.5, 120.5, 0.0, MESH_CUBE, Vec3::new(0.6, 0.4, 0.6));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -29.0, 121.0, 0.0, MESH_CUBE, Vec3::new(2.0, 0.1, 2.0));
+
+        // Stone Shrine (Forest, near Aldric).
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -220.0, -355.0, 0.0, MESH_CUBE, Vec3::new(0.6, 3.0, 0.6));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -220.0, -355.0, 3.0, MESH_CUBE, Vec3::new(1.2, 0.3, 1.2));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -218.0, -355.0, 0.0, MESH_ROCK, Vec3::new(1.0, 1.2, 1.0));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            -222.0, -355.0, 0.0, MESH_ROCK, Vec3::new(1.0, 1.2, 1.0));
+
+        // Forge Camp (Mountains, near Smith).
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            375.0, -825.0, 0.0, MESH_CUBE, Vec3::new(2.0, 0.5, 2.0));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            374.0, -825.0, 0.5, MESH_CUBE, Vec3::new(0.5, 1.8, 2.0));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            376.0, -825.0, 0.5, MESH_CUBE, Vec3::new(0.5, 1.8, 2.0));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            375.5, -824.0, 0.0, MESH_ROCK, Vec3::new(0.7, 0.9, 0.7));
+
+        // Giant's Cairn (Mountains).
+        for (i, s) in [(2.0, 1.2), (1.6, 1.0), (1.2, 0.8), (0.8, 0.6)].iter().enumerate() {
+            let stack_y = if i == 0 { 0.0 } else {
+                (0..i).map(|j| [(2.0, 1.2), (1.6, 1.0), (1.2, 0.8), (0.8, 0.6)][j].1).sum::<f32>()
+            };
+            spawn(&mut self.physics, &mut self.world, &self.terrain,
+                500.0, -950.0, stack_y, MESH_ROCK, Vec3::new(s.0, s.1, s.0));
+        }
+
+        // Sunken Vault Entrance (Dungeon, near Oracle).
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            645.0, 903.0, 0.0, MESH_CUBE, Vec3::new(0.8, 2.5, 0.8));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            648.0, 903.0, 0.0, MESH_CUBE, Vec3::new(0.8, 2.5, 0.8));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            646.5, 903.0, 2.5, MESH_CUBE, Vec3::new(3.0, 0.6, 0.8));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            646.5, 903.5, 0.0, MESH_ROCK, Vec3::new(1.0, 0.8, 1.0));
+        spawn(&mut self.physics, &mut self.world, &self.terrain,
+            647.5, 902.0, 0.0, MESH_ROCK, Vec3::new(0.8, 0.6, 0.8));
+
+    }
+
+    /// Try to turn in complete quests and accept available quests from an NPC.
+    fn try_quest_turnin_accept(&mut self, npc_kind: u8) {
+        // Turn in complete quests first.
+        for q in self.quests.iter_mut() {
+            if q.state == QuestState::Complete && q.giver_npc == npc_kind {
+                // Award rewards.
+                if let Some(ref mut stats) = self.world.player_mut().stats {
+                    let levels = progression::award_xp(stats, q.reward_xp);
+                    stats.gold += q.reward_gold;
+                    println!("Quest '{}' complete! +{} XP, +{} gold", q.name, q.reward_xp, q.reward_gold);
+                    if levels > 0 {
+                        println!("Level up! Now level {}", stats.level);
+                    }
+                }
+                for &(item_id, count) in q.reward_items {
+                    if let Some(ref mut inv) = self.world.player_mut().inventory {
+                        inv.add(item_id, count);
+                    }
+                }
+                q.state = QuestState::TurnedIn;
+            }
+        }
+        // Unlock any quests whose prerequisites are now met.
+        quest::unlock_quests(&mut self.quests);
+        // Accept available quests from this NPC.
+        for q in self.quests.iter_mut() {
+            if q.state == QuestState::Available && q.giver_npc == npc_kind {
+                q.state = QuestState::Active;
+                println!("Quest accepted: '{}'", q.name);
+            }
         }
     }
 
@@ -790,6 +929,11 @@ impl Engine {
                         }
                     }
 
+                    // Notify quest system of kill.
+                    if let Some(etype) = enemy_type {
+                        quest::notify_kill(&mut self.quests, etype as u8);
+                    }
+
                     // Roll and award loot.
                     if let Some(etype) = enemy_type {
                         let drops = enemy_ai::roll_loot(etype, &mut self.spawn_seed);
@@ -924,6 +1068,62 @@ impl Engine {
         {
             self.terrain_rebuild_timer = 0.0;
             self.rebuild_dirty_terrain();
+        }
+
+        // --- NPC interaction (E key) ---
+        {
+            let interact_edge = input.interact && !self.npc_interact_prev;
+            self.npc_interact_prev = input.interact;
+
+            if interact_edge {
+                if self.active_dialogue.is_some() {
+                    // Advance or close dialogue.
+                    let finished = self.active_dialogue.as_mut().unwrap().advance();
+                    if finished {
+                        // Try to turn in / accept quests from this NPC.
+                        let npc_kind = self.active_dialogue.as_ref().unwrap().npc_kind as u8;
+                        self.try_quest_turnin_accept(npc_kind);
+                        self.active_dialogue = None;
+                    }
+                } else {
+                    // Check proximity to NPCs.
+                    let player_pos = self.physics.body_position(self.player_rb);
+                    let npc_defs = npc::npc_defs();
+                    let mut closest: Option<(u32, u8, f32)> = None;
+                    for e in self.world.entities.iter() {
+                        if e.kind != EntityKind::Npc { continue; }
+                        let npc_pos = self.physics.body_position(e.body.rigid_body);
+                        let dist = (player_pos - npc_pos).length();
+                        if dist < 4.0 {
+                            if closest.is_none() || dist < closest.unwrap().2 {
+                                closest = Some((e.id, e.npc_kind.unwrap_or(0), dist));
+                            }
+                        }
+                    }
+                    if let Some((eid, nk, _)) = closest {
+                        if let Some(def) = npc_defs.iter().find(|d| d.kind as u8 == nk) {
+                            self.active_dialogue = Some(ActiveDialogue {
+                                npc_entity_id: eid,
+                                npc_kind: def.kind,
+                                npc_name: def.name,
+                                lines: def.dialogue,
+                                current_line: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Per-frame quest checks ---
+        {
+            if let Some(ref inv) = self.world.player().inventory {
+                // Clone needed items to avoid borrow conflict.
+                let inv_clone = inv.clone();
+                quest::check_collect_quests(&mut self.quests, &inv_clone);
+            }
+            let player_pos = self.physics.body_position(self.player_rb);
+            quest::check_reach_quests(&mut self.quests, player_pos.x, player_pos.z);
         }
 
         // --- Game tick: regen, etc. ---
@@ -1638,6 +1838,144 @@ impl Engine {
 
             let pos_str = format!("POS: {} {}", player_pos.x as i32, player_pos.z as i32);
             self.ui.text(ox, oy + 5.0 * line_h, &pos_str, scale, [0.8, 0.8, 0.8, 1.0]);
+        }
+
+        // -- Minimap (top-right corner) --
+        {
+            let map_cells = 20;
+            let map_pixel = 5.0 * scale; // size of each cell on screen
+            let map_size = map_cells as f32 * map_pixel;
+            let map_x = sw - map_size - 12.0;
+            let map_y = 12.0;
+
+            // Background.
+            self.ui.rect(map_x - 2.0, map_y - 2.0, map_size + 4.0, map_size + 4.0, [0.0, 0.0, 0.0, 0.7]);
+
+            // Terrain grid centered on player.
+            let half = map_cells as f32 * 0.5;
+            let world_scale = 20.0; // each map cell = 20 world units
+            for cy in 0..map_cells {
+                for cx in 0..map_cells {
+                    let wx = player_pos.x + (cx as f32 - half) * world_scale;
+                    let wz = player_pos.z + (cy as f32 - half) * world_scale;
+                    let biome = self.terrain.biome_at_world(wx, wz);
+                    let color = match biome {
+                        Biome::Plains   => [0.35, 0.55, 0.25, 0.8],
+                        Biome::Forest   => [0.15, 0.35, 0.12, 0.8],
+                        Biome::Desert   => [0.7, 0.6, 0.35, 0.8],
+                        Biome::Mountains => [0.5, 0.5, 0.55, 0.8],
+                        Biome::Dungeon  => [0.3, 0.2, 0.35, 0.8],
+                    };
+                    self.ui.rect(
+                        map_x + cx as f32 * map_pixel,
+                        map_y + cy as f32 * map_pixel,
+                        map_pixel, map_pixel, color,
+                    );
+                }
+            }
+
+            // Player dot (center).
+            let pc = map_x + half * map_pixel;
+            let pr = map_y + half * map_pixel;
+            self.ui.rect(pc - 2.0, pr - 2.0, 4.0, 4.0, [1.0, 1.0, 1.0, 1.0]);
+
+            // NPC dots.
+            for e in self.world.entities.iter() {
+                if e.kind != EntityKind::Npc { continue; }
+                let npc_pos = self.physics.body_position(e.body.rigid_body);
+                let dx = (npc_pos.x - player_pos.x) / world_scale;
+                let dz = (npc_pos.z - player_pos.z) / world_scale;
+                if dx.abs() < half && dz.abs() < half {
+                    let mx = map_x + (dx + half) * map_pixel;
+                    let my = map_y + (dz + half) * map_pixel;
+                    self.ui.rect(mx - 2.0, my - 2.0, 4.0, 4.0, [0.2, 0.8, 1.0, 1.0]);
+                }
+            }
+
+            // Enemy dots.
+            for e in self.world.entities.iter() {
+                if e.kind != EntityKind::Enemy { continue; }
+                let epos = self.physics.body_position(e.body.rigid_body);
+                let dx = (epos.x - player_pos.x) / world_scale;
+                let dz = (epos.z - player_pos.z) / world_scale;
+                if dx.abs() < half && dz.abs() < half {
+                    let mx = map_x + (dx + half) * map_pixel;
+                    let my = map_y + (dz + half) * map_pixel;
+                    self.ui.rect(mx - 1.5, my - 1.5, 3.0, 3.0, [0.9, 0.2, 0.2, 1.0]);
+                }
+            }
+        }
+
+        // -- Quest tracker (right side, below minimap) --
+        {
+            let qt_x = sw - 260.0;
+            let qt_y = 12.0 + 20.0 * 5.0 * scale + 20.0; // below minimap
+            let line_h_qt = cell + 2.0;
+            let mut y = qt_y;
+
+            let active_quests: Vec<_> = self.quests.iter()
+                .filter(|q| q.state == QuestState::Active || q.state == QuestState::Complete)
+                .collect();
+
+            if !active_quests.is_empty() {
+                self.ui.text(qt_x, y, "QUESTS", scale, [1.0, 0.85, 0.3, 1.0]);
+                y += line_h_qt;
+
+                for q in &active_quests {
+                    let status = if q.state == QuestState::Complete { "[DONE] " } else { "" };
+                    let progress = match &q.objective {
+                        quest::QuestObjective::Kill { done, needed, .. } => {
+                            format!("{}{} ({}/{})", status, q.name, done, needed)
+                        }
+                        quest::QuestObjective::Collect { item_id, needed } => {
+                            let have = self.world.player().inventory.as_ref()
+                                .map_or(0, |inv| inv.count(*item_id));
+                            format!("{}{} ({}/{})", status, q.name, have, needed)
+                        }
+                        quest::QuestObjective::Reach { reached, .. } => {
+                            let mark = if *reached { "Y" } else { "N" };
+                            format!("{}{} ({})", status, q.name, mark)
+                        }
+                    };
+                    let color = if q.state == QuestState::Complete {
+                        [0.4, 1.0, 0.4, 1.0]
+                    } else {
+                        [0.8, 0.8, 0.8, 1.0]
+                    };
+                    // Truncate to fit.
+                    let max_chars = 28;
+                    let display = if progress.len() > max_chars {
+                        &progress[..max_chars]
+                    } else {
+                        &progress
+                    };
+                    self.ui.text(qt_x, y, display, scale, color);
+                    y += line_h_qt;
+                }
+            }
+        }
+
+        // -- NPC Dialogue box --
+        if let Some(ref dialogue) = self.active_dialogue {
+            let dw = 500.0;
+            let dh = 100.0;
+            let dx = sw * 0.5 - dw * 0.5;
+            let dy = sh - dh - 60.0;
+
+            self.ui.panel(dx, dy, dw, dh);
+            self.ui.text(dx + 8.0, dy + 4.0, dialogue.npc_name, scale, [1.0, 0.85, 0.3, 1.0]);
+
+            let lines = dialogue.current_text();
+            for (i, line) in lines.iter().enumerate() {
+                self.ui.text(
+                    dx + 8.0,
+                    dy + 4.0 + (i as f32 + 1.5) * (cell + 2.0),
+                    line,
+                    scale,
+                    [0.9, 0.9, 0.9, 1.0],
+                );
+            }
+            self.ui.text(dx + 8.0, dy + dh - cell - 4.0, "[E] Continue", scale, [0.6, 0.6, 0.6, 1.0]);
         }
 
         // -- Inventory screen (I key) --

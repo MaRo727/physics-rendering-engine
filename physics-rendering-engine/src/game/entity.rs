@@ -44,6 +44,9 @@ pub struct Entity {
 
     // For ItemDrop entities
     pub drop_item: Option<(ItemId, u16)>,
+
+    // For NPC entities — indexes into NpcKind enum.
+    pub npc_kind: Option<u8>,
 }
 
 impl Entity {
@@ -61,6 +64,7 @@ impl Entity {
             equipment: None,
             cached_derived: None,
             drop_item: None,
+            npc_kind: None,
         }
     }
 
@@ -80,6 +84,7 @@ impl Entity {
             equipment: Some(EquipmentSlots::default()),
             cached_derived: Some(derived),
             drop_item: None,
+            npc_kind: None,
         }
     }
 
@@ -97,6 +102,7 @@ impl Entity {
             equipment: None,
             cached_derived: None,
             drop_item: Some((item_id, count)),
+            npc_kind: None,
         }
     }
 
@@ -115,6 +121,25 @@ impl Entity {
             equipment: None,
             cached_derived: Some(derived),
             drop_item: None,
+            npc_kind: None,
+        }
+    }
+
+    /// Create a friendly NPC entity.
+    pub fn npc(id: EntityId, body: PhysicsBody, mesh_type: u32, render_scale: Vec3, bounding_radius: f32, npc_kind: u8) -> Self {
+        Self {
+            id,
+            kind: EntityKind::Npc,
+            body,
+            mesh_type,
+            render_scale,
+            bounding_radius,
+            stats: None,
+            inventory: None,
+            equipment: None,
+            cached_derived: None,
+            drop_item: None,
+            npc_kind: Some(npc_kind),
         }
     }
 
