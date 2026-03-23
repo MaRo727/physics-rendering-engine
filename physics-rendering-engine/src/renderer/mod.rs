@@ -230,6 +230,8 @@ pub struct Renderer {
     surface_width: u32,
     surface_height: u32,
     swapchain_dirty: bool,
+    // Reusable per-frame buffer for TLAS instances.
+    tlas_instances: Vec<vk::AccelerationStructureInstanceKHR>,
 }
 
 impl Renderer {
@@ -403,6 +405,7 @@ impl Renderer {
             surface_width: size.width,
             surface_height: size.height,
             swapchain_dirty: false,
+            tlas_instances: Vec::new(),
         };
 
         // Write initial descriptor sets.
@@ -808,27 +811,29 @@ impl Renderer {
         }
 
         // Build TLAS instances — each references the correct BLAS for its mesh type.
-        let instances: Vec<vk::AccelerationStructureInstanceKHR> = transforms
-            .iter()
-            .zip(instance_ids.iter())
-            .map(|(&t, &packed_id)| {
-                let mesh_type = (packed_id >> 16) as usize;
-                let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
-                vk::AccelerationStructureInstanceKHR {
-                    transform: mat4_to_transform(t),
-                    instance_custom_index_and_mask: vk::Packed24_8::new(packed_id, 0xFF),
-                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                        0,
-                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-                    ),
-                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                        device_handle: blas_address,
-                    },
-                }
-            })
-            .collect();
+        self.tlas_instances.clear();
+        self.tlas_instances.extend(
+            transforms
+                .iter()
+                .zip(instance_ids.iter())
+                .map(|(&t, &packed_id)| {
+                    let mesh_type = (packed_id >> 16) as usize;
+                    let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
+                    vk::AccelerationStructureInstanceKHR {
+                        transform: mat4_to_transform(t),
+                        instance_custom_index_and_mask: vk::Packed24_8::new(packed_id, 0xFF),
+                        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                            0,
+                            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+                        ),
+                        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                            device_handle: blas_address,
+                        },
+                    }
+                }),
+        );
 
-        self.tlas.update(&self.context, cb, &instances);
+        self.tlas.update(&self.context, cb, &self.tlas_instances);
 
         // Trace rays.
         unsafe {

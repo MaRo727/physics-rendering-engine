@@ -107,6 +107,9 @@ pub struct Engine {
     snow_time: f32,
     tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     tree_punch_seed: u32,
+    // Reusable per-frame buffers (avoid heap allocs every frame).
+    frame_transforms: Vec<Mat4>,
+    frame_instance_ids: Vec<u32>,
 }
 
 impl Engine {
@@ -220,6 +223,8 @@ impl Engine {
             snow_time: 0.0,
             tree_rbs,
             tree_punch_seed: 12345,
+            frame_transforms: Vec::new(),
+            frame_instance_ids: Vec::new(),
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -1037,8 +1042,8 @@ impl Engine {
             (cull_view, cull_proj)
         };
 
-        let mut transforms = Vec::new();
-        let mut instance_ids = Vec::new();
+        self.frame_transforms.clear();
+        self.frame_instance_ids.clear();
 
         // In ghost mode, frustum-cull to the frozen camera so only visible
         // geometry appears.  In normal mode, skip culling so off-screen
@@ -1062,8 +1067,8 @@ impl Engine {
 
             let t = self.physics.body_transform(entity.body.rigid_body)
                 * Mat4::from_scale(entity.render_scale);
-            transforms.push(t);
-            instance_ids.push(pack_instance_id(entity.mesh_type, entity.id));
+            self.frame_transforms.push(t);
+            self.frame_instance_ids.push(pack_instance_id(entity.mesh_type, entity.id));
         }
 
         // Player model body parts.
@@ -1072,16 +1077,16 @@ impl Engine {
         let parts = self.player_model.compute_transforms(player_pos, player_yaw);
         let part_meshes = PlayerModel::mesh_types();
         for (i, (transform, _scale)) in parts.iter().enumerate() {
-            transforms.push(*transform);
-            instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));
+            self.frame_transforms.push(*transform);
+            self.frame_instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));
         }
 
         // Spell projectiles.
         let projectile_object_base: u32 = 0xFFA0;
         for (i, proj) in self.spells.projectiles.iter().enumerate() {
             let t = Mat4::from_translation(proj.position) * Mat4::from_scale(Vec3::splat(proj.scale));
-            transforms.push(t);
-            instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
+            self.frame_transforms.push(t);
+            self.frame_instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
         }
 
         // Enemy projectiles (arrows).
@@ -1103,8 +1108,8 @@ impl Engine {
                 Mat4::IDENTITY
             };
             let t = Mat4::from_translation(proj.position) * rot * Mat4::from_scale(Vec3::splat(proj.scale));
-            transforms.push(t);
-            instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
+            self.frame_transforms.push(t);
+            self.frame_instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
@@ -1114,14 +1119,14 @@ impl Engine {
                     continue;
                 }
             }
-            transforms.push(Mat4::IDENTITY);
-            instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
+            self.frame_transforms.push(Mat4::IDENTITY);
+            self.frame_instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
 
         // Trees near the player, frustum-culled to the player camera
         // (in ghost mode, use the frozen player frustum like terrain chunks).
         let tree_frustum = extract_frustum_planes(cull_proj * cull_view);
-        self.structures.render_nearby(player_pos, &tree_frustum, &mut transforms, &mut instance_ids);
+        self.structures.render_nearby(player_pos, &tree_frustum, &mut self.frame_transforms, &mut self.frame_instance_ids);
 
         // Leaf particles from tree punches.
         let leaf_object_base: u32 = 0xFF80;
@@ -1132,24 +1137,24 @@ impl Engine {
             let t = Mat4::from_translation(leaf.position)
                 * Mat4::from_rotation_y(leaf.rotation_y)
                 * Mat4::from_scale(Vec3::splat(s));
-            transforms.push(t);
-            instance_ids.push(pack_instance_id(leaf.mesh_type, leaf_object_base + (i as u32 & 0xFF)));
+            self.frame_transforms.push(t);
+            self.frame_instance_ids.push(pack_instance_id(leaf.mesh_type, leaf_object_base + (i as u32 & 0xFF)));
         }
 
         // Grass patches near the player, frustum-culled.
-        self.grass.render_nearby(player_pos, &tree_frustum, &mut transforms, &mut instance_ids);
+        self.grass.render_nearby(player_pos, &tree_frustum, &mut self.frame_transforms, &mut self.frame_instance_ids);
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
         // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.
         let wave_period = std::f32::consts::TAU / 0.12;
         let water_offset = (self.water_time * 2.0) % wave_period;
-        transforms.push(Mat4::from_translation(Vec3::new(water_offset, WATER_LEVEL, water_offset * 0.6)));
-        instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
+        self.frame_transforms.push(Mat4::from_translation(Vec3::new(water_offset, WATER_LEVEL, water_offset * 0.6)));
+        self.frame_instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
 
         // Building mesh.
         if !self.building.is_empty() && self.renderer.has_building_blas() {
-            transforms.push(Mat4::IDENTITY);
-            instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
+            self.frame_transforms.push(Mat4::IDENTITY);
+            self.frame_instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
         }
 
         let player_vp = cull_proj * cull_view;
@@ -1253,8 +1258,8 @@ impl Engine {
         let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, 0.0, 0.0);
 
         self.renderer.draw_frame(
-            &transforms,
-            &instance_ids,
+            &self.frame_transforms,
+            &self.frame_instance_ids,
             render_view,
             render_proj,
             Vec4::from((light_dir, 0.0)),
