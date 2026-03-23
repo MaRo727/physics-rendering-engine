@@ -12,6 +12,7 @@ mod renderer;
 mod scene;
 mod structures;
 mod terrain;
+mod ui;
 
 use app::App;
 use winit::event_loop::EventLoop;

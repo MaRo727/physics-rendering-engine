@@ -114,6 +114,12 @@ fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSe
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+        // 6: UI SSBO (immediate-mode primitives: header + font + quads/glyphs)
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(6)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
     ];
 
     unsafe {

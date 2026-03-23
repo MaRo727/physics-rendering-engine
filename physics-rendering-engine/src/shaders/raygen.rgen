@@ -17,213 +17,98 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
 } scene;
 
+// ---------------------------------------------------------------------------
+// UI SSBO — immediate-mode primitives uploaded each frame
+// ---------------------------------------------------------------------------
+//
+// Layout (std430):
+//   UiHeader   { count, screen_w, screen_h, _pad }   16 bytes
+//   uint[192]  font_data  (96 glyphs × 2 uints)      768 bytes
+//   UiPrim[]   primitives                              48 bytes each
+
+struct UiPrim {
+    vec4 rect;   // x, y, w, h (screen pixels)
+    vec4 color;  // r, g, b, a
+    uint glyph;  // 0 = solid rect, 32..127 = ASCII
+    uint flags;  // bit 0 = 1px border
+    uint _p1;
+    uint _p2;
+};
+
+layout(set = 0, binding = 6, std430) buffer UiBuffer {
+    uint ui_count;
+    uint screen_w;
+    uint screen_h;
+    uint _pad;
+    uint font_data[192];
+    UiPrim prims[];
+} ui;
+
 layout(location = 0) rayPayloadEXT vec3 payload;
 
 // ---------------------------------------------------------------------------
-// 5x6 bitmap font — each character encoded as 30 bits in a uint.
-// Bit layout: row0(5 bits) | row1(5) | row2(5) | row3(5) | row4(5) | row5(5)
-// MSB first per row, top to bottom. Rows packed into bits 29..0.
+// 8×8 bitmap font sampling  (font data lives in the UI SSBO)
 // ---------------------------------------------------------------------------
 
-const uint FONT_CHARS[40] = uint[40](
-    // 0-9
-    0x1D18C62Eu, // 0
-    0x08C2108Eu, // 1
-    0x1D11111Fu, // 2
-    0x1D13062Eu, // 3
-    0x04654BE2u, // 4
-    0x3F0F062Eu, // 5
-    0x1D0F462Eu, // 6
-    0x3E111108u, // 7
-    0x1D17462Eu, // 8
-    0x1D17844Cu, // 9
-
-    // A-Z (10-35)
-    0x1D18FE31u, // A
-    0x3D1F463Eu, // B
-    0x1D18422Eu, // C
-    0x3D18C63Eu, // D
-    0x3F0E421Fu, // E
-    0x3F0E4210u, // F
-    0x1D185E2Fu, // G
-    0x231FC631u, // H
-    0x1C42108Eu, // I
-    0x0E210A4Cu, // J
-    0x232E7251u, // K
-    0x2108421Fu, // L
-    0x23BAC631u, // M
-    0x239ACE31u, // N
-    0x1D18C62Eu, // O
-    0x3D18FA10u, // P
-    0x1D18D64Du, // Q
-    0x3D18FA51u, // R
-    0x1F07043Eu, // S
-    0x3E421084u, // T
-    0x2318C62Eu, // U
-    0x2318A944u, // V
-    0x231AD6AAu, // W
-    0x22A21151u, // X
-    0x22A21084u, // Y
-    0x3E11111Fu, // Z
-
-    // 36: space, 37: colon, 38: period, 39: minus
-    0x00000000u, // space
-    0x00400080u, // :
-    0x00000084u, // .
-    0x000F8000u  // -
-);
-
-// Returns 1 if pixel (px, py) relative to char origin is "on" for character index c.
-float sampleChar(int c, int px, int py) {
-    if (c < 0 || c >= 40 || px < 0 || px >= 5 || py < 0 || py >= 6) return 0.0;
-    uint glyph = FONT_CHARS[c];
-    int bit = (5 - py) * 5 + (4 - px); // MSB = top-left
-    return float((glyph >> bit) & 1u);
+float sampleFont8(uint ascii, int px, int py) {
+    if (ascii < 32u || ascii > 127u || px < 0 || px >= 8 || py < 0 || py >= 8)
+        return 0.0;
+    uint idx = (ascii - 32u) * 2u + uint(py / 4);
+    uint word = ui.font_data[idx];
+    uint row = (word >> (8u * uint(3 - py % 4))) & 0xFFu;
+    return float((row >> uint(px)) & 1u);
 }
 
-// Map ASCII to font index.
-int charIndex(int ascii) {
-    if (ascii >= 48 && ascii <= 57) return ascii - 48;       // 0-9
-    if (ascii >= 65 && ascii <= 90) return ascii - 65 + 10;  // A-Z
-    if (ascii >= 97 && ascii <= 122) return ascii - 97 + 10; // a-z -> A-Z
-    if (ascii == 32) return 36;  // space
-    if (ascii == 58) return 37;  // :
-    if (ascii == 46) return 38;  // .
-    if (ascii == 45) return 39;  // -
-    return 36; // default to space
-}
+// ---------------------------------------------------------------------------
+// Render all UI primitives over the scene colour
+// ---------------------------------------------------------------------------
 
-// Draw a string at (ox, oy) with given scale. Returns 1.0 if pixel is on a glyph.
-float sampleString(ivec2 pixel, ivec2 origin, int scale, int chars[20], int len) {
-    ivec2 rel = pixel - origin;
-    if (rel.x < 0 || rel.y < 0) return 0.0;
-    int charW = 6 * scale; // 5 pixels + 1 gap
-    int charH = 7 * scale; // 6 pixels + 1 gap
-    int ci = rel.x / charW;
-    if (ci >= len) return 0.0;
-    int px = (rel.x % charW) / scale;
-    int py = (rel.y % charH) / scale;
-    if (px >= 5 || py >= 6) return 0.0; // in the gap
-    if (rel.y >= charH) return 0.0;
-    int idx = charIndex(chars[ci]);
-    return sampleChar(idx, px, py);
-}
+vec3 renderUi(ivec2 pixel, vec3 col) {
+    uint count = ui.ui_count;
+    for (uint i = 0u; i < count; i++) {
+        UiPrim p = ui.prims[i];
 
-// Draw a number (integer) right-aligned.
-int intToChars(float val, out int chars[20]) {
-    int v = int(abs(val));
-    int len = 0;
-    if (v == 0) { chars[0] = 48; return 1; }
-    int tmp[20];
-    while (v > 0 && len < 20) {
-        tmp[len] = 48 + (v % 10);
-        v /= 10;
-        len++;
-    }
-    if (val < 0.0 && len < 19) { tmp[len] = 45; len++; }
-    // Reverse
-    for (int i = 0; i < len; i++) chars[i] = tmp[len - 1 - i];
-    return len;
-}
+        float px = float(pixel.x);
+        float py = float(pixel.y);
 
-// Draw a filled bar.
-vec3 drawBar(ivec2 pixel, ivec2 origin, ivec2 size, float fraction, vec3 fillColor, vec3 bgColor) {
-    ivec2 rel = pixel - origin;
-    if (rel.x >= 0 && rel.x < size.x && rel.y >= 0 && rel.y < size.y) {
-        // Border
-        if (rel.x == 0 || rel.x == size.x - 1 || rel.y == 0 || rel.y == size.y - 1) {
-            return vec3(0.3);
+        // Hit test against the primitive's rectangle.
+        float rx = p.rect.x;
+        float ry = p.rect.y;
+        float rw = p.rect.z;
+        float rh = p.rect.w;
+
+        if (px < rx || px >= rx + rw || py < ry || py >= ry + rh)
+            continue;
+
+        float alpha = p.color.a;
+
+        if (p.glyph == 0u) {
+            // Solid rectangle.
+            // Border (flags bit 0)?
+            if ((p.flags & 1u) != 0u) {
+                float lx = px - rx;
+                float ly = py - ry;
+                if (lx < 1.0 || lx >= rw - 1.0 || ly < 1.0 || ly >= rh - 1.0) {
+                    col = mix(col, vec3(0.4), alpha);
+                    continue;
+                }
+            }
+            col = mix(col, p.color.rgb, alpha);
+        } else {
+            // Glyph — sample the 8×8 bitmap.
+            float lx = px - rx;
+            float ly = py - ry;
+            float scaleX = rw / 8.0;
+            float scaleY = rh / 8.0;
+            int gx = int(lx / scaleX);
+            int gy = int(ly / scaleY);
+            float hit = sampleFont8(p.glyph, gx, gy);
+            if (hit > 0.5) {
+                col = mix(col, p.color.rgb, alpha);
+            }
         }
-        float t = float(rel.x - 1) / float(size.x - 2);
-        if (t <= fraction) return fillColor;
-        return bgColor;
     }
-    return vec3(-1.0); // not in bar
-}
-
-vec3 drawDebugOverlay(ivec2 pixel, ivec2 screenSize, vec3 scene_color) {
-    int scale = 2;
-    int cw = 6 * scale; // char cell width (5px + 1px gap) * scale
-    int lineH = 7 * scale; // char cell height (6px + 1px gap) * scale
-    int ox = 12;
-    int oy = 12;
-
-    // Background panel
-    int panelW = cw * 20 + 16;
-    int panelH = lineH * 6 + 16;
-    ivec2 rel = pixel - ivec2(ox - 6, oy - 6);
-    if (rel.x >= 0 && rel.x < panelW && rel.y >= 0 && rel.y < panelH) {
-        scene_color = mix(scene_color, vec3(0.0), 0.75);
-    } else {
-        return scene_color;
-    }
-
-    vec3 textCol = vec3(0.9);
-    int chars[20];
-    float hit;
-
-    // Line 1: BIOME: <name>
-    int biome = int(scene.debugInfo.y);
-    int lbl1[20] = int[20](66,73,79,77,69,58,32, 0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy), scale, lbl1, 7);
-    if (hit > 0.0) return textCol;
-
-    int bname[20];
-    int blen = 0;
-    if (biome == 0) { bname = int[20](80,76,65,73,78,83, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
-    else if (biome == 1) { bname = int[20](70,79,82,69,83,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
-    else if (biome == 2) { bname = int[20](68,69,83,69,82,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
-    else if (biome == 3) { bname = int[20](77,79,85,78,84,65,73,78, 0,0,0,0,0,0,0,0,0,0,0,0); blen = 8; }
-    else { bname = int[20](68,85,78,71,69,79,78, 0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 7; }
-    hit = sampleString(pixel, ivec2(ox + 7 * cw, oy), scale, bname, blen);
-    vec3 biomeCol = biome == 0 ? vec3(0.5, 0.8, 0.3) :
-                    biome == 1 ? vec3(0.2, 0.6, 0.2) :
-                    biome == 2 ? vec3(0.9, 0.8, 0.4) :
-                    biome == 3 ? vec3(0.7, 0.7, 0.9) :
-                                 vec3(0.6, 0.4, 0.7);
-    if (hit > 0.0) return biomeCol;
-
-    // Line 2: LEVEL: <n>
-    int lbl2[20] = int[20](76,69,86,69,76,58,32, 0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy + lineH), scale, lbl2, 7);
-    if (hit > 0.0) return textCol;
-    int lvlLen = intToChars(scene.debugInfo2.x, chars);
-    hit = sampleString(pixel, ivec2(ox + 7 * cw, oy + lineH), scale, chars, lvlLen);
-    if (hit > 0.0) return vec3(1.0, 1.0, 0.5);
-
-    // Line 3: HP bar
-    int lbl3[20] = int[20](72,80,58, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy + lineH * 2), scale, lbl3, 3);
-    if (hit > 0.0) return textCol;
-    vec3 barResult = drawBar(pixel, ivec2(ox + 4 * cw, oy + lineH * 2 + 2), ivec2(120, lineH - 4), scene.debugInfo.z, vec3(0.8, 0.2, 0.2), vec3(0.2, 0.05, 0.05));
-    if (barResult.x >= 0.0) return barResult;
-
-    // Line 4: MANA bar
-    int lbl4[20] = int[20](77,65,78,65,58, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy + lineH * 3), scale, lbl4, 5);
-    if (hit > 0.0) return textCol;
-    barResult = drawBar(pixel, ivec2(ox + 6 * cw, oy + lineH * 3 + 2), ivec2(120, lineH - 4), scene.debugInfo.w, vec3(0.2, 0.3, 0.9), vec3(0.05, 0.05, 0.2));
-    if (barResult.x >= 0.0) return barResult;
-
-    // Line 5: STAM bar
-    int lbl5[20] = int[20](83,84,65,77,58, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy + lineH * 4), scale, lbl5, 5);
-    if (hit > 0.0) return textCol;
-    barResult = drawBar(pixel, ivec2(ox + 6 * cw, oy + lineH * 4 + 2), ivec2(120, lineH - 4), scene.debugInfo2.y, vec3(0.2, 0.8, 0.3), vec3(0.05, 0.15, 0.05));
-    if (barResult.x >= 0.0) return barResult;
-
-    // Line 6: POS: x z
-    int lbl6[20] = int[20](80,79,83,58,32, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
-    hit = sampleString(pixel, ivec2(ox, oy + lineH * 5), scale, lbl6, 5);
-    if (hit > 0.0) return textCol;
-    int xLen = intToChars(scene.debugInfo2.z, chars);
-    hit = sampleString(pixel, ivec2(ox + 5 * cw, oy + lineH * 5), scale, chars, xLen);
-    if (hit > 0.0) return vec3(0.8, 0.8, 0.8);
-    int zLen = intToChars(scene.debugInfo2.w, chars);
-    hit = sampleString(pixel, ivec2(ox + (5 + xLen + 1) * cw, oy + lineH * 5), scale, chars, zLen);
-    if (hit > 0.0) return vec3(0.8, 0.8, 0.8);
-
-    return scene_color;
+    return col;
 }
 
 void main() {
@@ -368,10 +253,8 @@ void main() {
         }
     }
 
-    // Debug overlay (F3).
-    if (scene.debugInfo.x > 0.5) {
-        payload = drawDebugOverlay(pixel, ivec2(gl_LaunchSizeEXT.xy), payload);
-    }
+    // UI overlay — data-driven primitives from the UI SSBO.
+    payload = renderUi(pixel, payload);
 
     imageStore(outputImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload, 1.0));
 }

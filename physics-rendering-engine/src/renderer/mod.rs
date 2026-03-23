@@ -17,6 +17,8 @@ use mesh::Mesh;
 use rt_pipeline::{RtPipeline, SceneUBO};
 use swapchain::Swapchain;
 
+use crate::ui;
+
 // ---------------------------------------------------------------------------
 // Mesh type constants
 // ---------------------------------------------------------------------------
@@ -135,6 +137,40 @@ fn create_mesh_offsets_buffer(
 }
 
 // ---------------------------------------------------------------------------
+// Per-frame UI buffer (host-visible, written each frame)
+// ---------------------------------------------------------------------------
+
+struct UiGpuBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    mapped: *mut u8,
+    capacity: usize, // total byte capacity
+}
+
+unsafe impl Send for UiGpuBuffer {}
+
+fn create_ui_buffer(context: &VulkanContext) -> Result<UiGpuBuffer> {
+    let capacity = ui::UI_BUFFER_BYTES;
+    let (buffer, memory) = mesh::create_buffer(
+        &context.device,
+        &context.memory_properties,
+        capacity as vk::DeviceSize,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
+    )?;
+    let mapped = unsafe {
+        context.device.map_memory(memory, 0, capacity as vk::DeviceSize, vk::MemoryMapFlags::empty())
+    }
+    .context("Failed to map UI buffer memory")? as *mut u8;
+
+    // Zero-initialise so the shader sees count=0 on the first frame.
+    unsafe { std::ptr::write_bytes(mapped, 0, capacity) };
+
+    Ok(UiGpuBuffer { buffer, memory, mapped, capacity })
+}
+
+// ---------------------------------------------------------------------------
 // Storage image
 // ---------------------------------------------------------------------------
 
@@ -227,6 +263,7 @@ pub struct Renderer {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     scene_ubo_buffers: [SceneUboBuffer; MAX_FRAMES_IN_FLIGHT],
+    ui_buffers: [UiGpuBuffer; MAX_FRAMES_IN_FLIGHT],
     mesh_offsets_buf: MeshOffsetsBuffer,
     current_frame: usize,
     extent: vk::Extent2D,
@@ -346,6 +383,10 @@ impl Renderer {
 
         let mesh_offsets_buf = create_mesh_offsets_buffer(&context, &sub_mesh_infos)?;
 
+        let ui0 = create_ui_buffer(&context)?;
+        let ui1 = create_ui_buffer(&context)?;
+        let ui_buffers = [ui0, ui1];
+
         // Descriptor pool.
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -359,7 +400,7 @@ impl Renderer {
                 .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 3),
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 4), // +1 for UI SSBO
         ];
         let descriptor_pool = unsafe {
             context.device.create_descriptor_pool(
@@ -399,6 +440,7 @@ impl Renderer {
             descriptor_pool,
             descriptor_sets,
             scene_ubo_buffers,
+            ui_buffers,
             mesh_offsets_buf,
             current_frame: 0,
             extent,
@@ -445,6 +487,11 @@ impl Renderer {
             .offset(0)
             .range(vk::WHOLE_SIZE);
 
+        let ui_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.ui_buffers[i].buffer)
+            .offset(0)
+            .range(self.ui_buffers[i].capacity as vk::DeviceSize);
+
         let set = self.descriptor_sets[i];
         let writes = [
             vk::WriteDescriptorSet::default()
@@ -478,6 +525,11 @@ impl Renderer {
                 .dst_binding(5)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&mesh_offset_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(6)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&ui_info)),
         ];
 
         unsafe { self.context.device.update_descriptor_sets(&writes, &[]) };
@@ -487,6 +539,49 @@ impl Renderer {
         self.surface_width = width;
         self.surface_height = height;
         self.swapchain_dirty = true;
+    }
+
+    /// Upload UI primitives for the current frame.
+    /// Must be called before `draw_frame`.
+    pub fn upload_ui(&mut self, prims: &[ui::UiPrimitive], screen_w: u32, screen_h: u32) {
+        let fi = self.current_frame;
+        let buf = &self.ui_buffers[fi];
+        let count = prims.len().min(ui::MAX_UI_PRIMS);
+
+        let header = ui::UiHeader {
+            count: count as u32,
+            screen_w,
+            screen_h,
+            _pad: 0,
+        };
+
+        let font = ui::font_gpu_data();
+
+        unsafe {
+            let dst = buf.mapped;
+            // Header (16 bytes).
+            std::ptr::copy_nonoverlapping(
+                &header as *const _ as *const u8,
+                dst,
+                std::mem::size_of::<ui::UiHeader>(),
+            );
+            // Font data (768 bytes).
+            let font_dst = dst.add(std::mem::size_of::<ui::UiHeader>());
+            std::ptr::copy_nonoverlapping(
+                font.as_ptr() as *const u8,
+                font_dst,
+                192 * std::mem::size_of::<u32>(),
+            );
+            // Primitives.
+            if count > 0 {
+                let prim_dst = font_dst.add(192 * std::mem::size_of::<u32>());
+                std::ptr::copy_nonoverlapping(
+                    prims.as_ptr() as *const u8,
+                    prim_dst,
+                    count * std::mem::size_of::<ui::UiPrimitive>(),
+                );
+            }
+        }
     }
 
     /// Wait for all in-flight frames to finish on the GPU.
@@ -1025,6 +1120,13 @@ impl Drop for Renderer {
                 self.context.device.unmap_memory(ubo.memory);
                 self.context.device.destroy_buffer(ubo.buffer, None);
                 self.context.device.free_memory(ubo.memory, None);
+            }
+        }
+        for ui_buf in &self.ui_buffers {
+            unsafe {
+                self.context.device.unmap_memory(ui_buf.memory);
+                self.context.device.destroy_buffer(ui_buf.buffer, None);
+                self.context.device.free_memory(ui_buf.memory, None);
             }
         }
         unsafe {

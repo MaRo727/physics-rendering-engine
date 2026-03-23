@@ -27,6 +27,8 @@ use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
+use crate::ui::Ui;
+use crate::game::items::item_by_id;
 
 const PLACE_RANGE: f32 = 8.0;
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
@@ -88,6 +90,8 @@ pub struct Engine {
     fast_mode: bool,
     show_debug_ui: bool,
     debug_ui_prev: bool,
+    show_inventory: bool,
+    inventory_prev: bool,
     mute_prev: bool,
     fast_time: bool,
     fast_time_prev: bool,
@@ -120,6 +124,7 @@ pub struct Engine {
     enemy_hit_buf: Vec<EnemyAttackHit>,
     arrow_hit_buf: Vec<EnemyAttackHit>,
     spell_hit_buf: Vec<SpellHit>,
+    ui: Ui,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -274,6 +279,8 @@ impl Engine {
             fast_mode: false,
             show_debug_ui: false,
             debug_ui_prev: false,
+            show_inventory: false,
+            inventory_prev: false,
             mute_prev: false,
             fast_time: false,
             fast_time_prev: false,
@@ -303,6 +310,7 @@ impl Engine {
             enemy_hit_buf: Vec::new(),
             arrow_hit_buf: Vec::new(),
             spell_hit_buf: Vec::new(),
+            ui: Ui::new(),
         };
 
         engine.spawn_mining_nodes();
@@ -420,6 +428,12 @@ impl Engine {
             self.show_debug_ui = !self.show_debug_ui;
         }
         self.debug_ui_prev = input.toggle_debug_ui;
+
+        // --- Inventory toggle (I) ---
+        if input.toggle_inventory && !self.inventory_prev {
+            self.show_inventory = !self.show_inventory;
+        }
+        self.inventory_prev = input.toggle_inventory;
 
         // --- Mute toggle (M) ---
         if input.toggle_mute && !self.mute_prev {
@@ -1437,6 +1451,14 @@ impl Engine {
 
         let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, 0.0, 0.0);
 
+        // Build UI for this frame.
+        self.build_ui(hp_frac, mana_frac, stam_frac, level, biome_id, player_pos);
+        self.renderer.upload_ui(
+            self.ui.primitives(),
+            self.surface_width,
+            self.surface_height,
+        );
+
         self.renderer.draw_frame(
             &self.frame_transforms,
             &self.frame_instance_ids,
@@ -1473,5 +1495,279 @@ impl Engine {
         self.surface_width = width;
         self.surface_height = height;
         self.renderer.resize(width, height);
+    }
+
+    // -----------------------------------------------------------------------
+    // UI building — immediate-mode, runs each frame
+    // -----------------------------------------------------------------------
+
+    fn build_ui(
+        &mut self,
+        hp_frac: f32,
+        mana_frac: f32,
+        stam_frac: f32,
+        level: f32,
+        biome_id: f32,
+        player_pos: Vec3,
+    ) {
+        let sw = self.surface_width as f32;
+        let sh = self.surface_height as f32;
+        self.ui.begin_frame(sw, sh);
+
+        let scale = 2.0;
+        let cell = 8.0 * scale;
+        let bar_w = 140.0;
+        let bar_h = cell - 2.0;
+
+        // -- Always-on HUD (bottom-left) --
+        let hud_x = 12.0;
+        let hud_y = sh - 5.0 * (cell + 2.0) - 12.0;
+
+        // HP bar.
+        self.ui.labelled_bar(
+            hud_x, hud_y,
+            "HP", bar_w, bar_h, hp_frac,
+            [0.9, 0.9, 0.9, 1.0],
+            [0.8, 0.2, 0.2, 1.0],
+            [0.2, 0.05, 0.05, 0.9],
+            scale,
+        );
+
+        // Mana bar.
+        self.ui.labelled_bar(
+            hud_x, hud_y + cell + 2.0,
+            "MP", bar_w, bar_h, mana_frac,
+            [0.9, 0.9, 0.9, 1.0],
+            [0.2, 0.3, 0.9, 1.0],
+            [0.05, 0.05, 0.2, 0.9],
+            scale,
+        );
+
+        // Stamina bar.
+        self.ui.labelled_bar(
+            hud_x, hud_y + 2.0 * (cell + 2.0),
+            "SP", bar_w, bar_h, stam_frac,
+            [0.9, 0.9, 0.9, 1.0],
+            [0.2, 0.8, 0.3, 1.0],
+            [0.05, 0.15, 0.05, 0.9],
+            scale,
+        );
+
+        // XP bar.
+        let (xp, xp_frac) = if let Some(stats) = &self.world.player().stats {
+            let current = stats.xp;
+            let base = progression::xp_for_level(stats.level);
+            let needed = progression::xp_to_next(stats.level);
+            let progress = current.saturating_sub(base);
+            let frac = if needed > 0 { progress as f32 / needed as f32 } else { 1.0 };
+            (current, frac)
+        } else {
+            (0, 0.0)
+        };
+        let _ = xp; // used in debug
+        self.ui.labelled_bar(
+            hud_x, hud_y + 3.0 * (cell + 2.0),
+            "XP", bar_w, bar_h, xp_frac,
+            [0.9, 0.9, 0.9, 1.0],
+            [0.9, 0.75, 0.2, 1.0],
+            [0.15, 0.12, 0.05, 0.9],
+            scale,
+        );
+
+        // Level + gold.
+        let gold = self.world.player().stats.as_ref().map_or(0, |s| s.gold);
+        let info_str = format!("Lv.{}  {}g", level as u32, gold);
+        self.ui.text(hud_x, hud_y + 4.0 * (cell + 2.0), &info_str, scale, [1.0, 1.0, 0.5, 1.0]);
+
+        // -- Debug overlay (F3) --
+        if self.show_debug_ui {
+            let ox = 12.0;
+            let oy = 12.0;
+            let line_h = cell + 2.0;
+
+            let panel_w = 22.0 * cell + 16.0;
+            let panel_h = 6.0 * line_h + 12.0;
+            self.ui.panel(ox - 6.0, oy - 6.0, panel_w, panel_h);
+
+            let white = [0.9, 0.9, 0.9, 1.0];
+
+            let biome_name = match biome_id as u32 {
+                0 => "PLAINS",
+                1 => "FOREST",
+                2 => "DESERT",
+                3 => "MOUNTAIN",
+                _ => "DUNGEON",
+            };
+            let biome_color = match biome_id as u32 {
+                0 => [0.5, 0.8, 0.3, 1.0],
+                1 => [0.2, 0.6, 0.2, 1.0],
+                2 => [0.9, 0.8, 0.4, 1.0],
+                3 => [0.7, 0.7, 0.9, 1.0],
+                _ => [0.6, 0.4, 0.7, 1.0],
+            };
+            self.ui.text(ox, oy, "BIOME: ", scale, white);
+            self.ui.text(ox + 7.0 * cell, oy, biome_name, scale, biome_color);
+
+            let lvl_debug = format!("LEVEL: {}", level as u32);
+            self.ui.text(ox, oy + line_h, &lvl_debug, scale, white);
+
+            self.ui.labelled_bar(
+                ox, oy + 2.0 * line_h,
+                "HP:  ", bar_w, bar_h, hp_frac,
+                white,
+                [0.8, 0.2, 0.2, 1.0],
+                [0.2, 0.05, 0.05, 0.9],
+                scale,
+            );
+            self.ui.labelled_bar(
+                ox, oy + 3.0 * line_h,
+                "MANA:", bar_w, bar_h, mana_frac,
+                white,
+                [0.2, 0.3, 0.9, 1.0],
+                [0.05, 0.05, 0.2, 0.9],
+                scale,
+            );
+            self.ui.labelled_bar(
+                ox, oy + 4.0 * line_h,
+                "STAM:", bar_w, bar_h, stam_frac,
+                white,
+                [0.2, 0.8, 0.3, 1.0],
+                [0.05, 0.15, 0.05, 0.9],
+                scale,
+            );
+
+            let pos_str = format!("POS: {} {}", player_pos.x as i32, player_pos.z as i32);
+            self.ui.text(ox, oy + 5.0 * line_h, &pos_str, scale, [0.8, 0.8, 0.8, 1.0]);
+        }
+
+        // -- Inventory screen (I key) --
+        if self.show_inventory {
+            self.build_inventory_ui(scale, cell);
+        }
+    }
+
+    fn build_inventory_ui(&mut self, scale: f32, cell: f32) {
+        let (sw, sh) = self.ui.screen_size();
+        let line_h = cell + 2.0;
+
+        // -- Equipment panel (left half) --
+        let eq_w = 18.0 * cell;
+        let eq_h = 10.0 * line_h + 12.0;
+        let eq_x = sw * 0.25 - eq_w * 0.5;
+        let eq_y = sh * 0.5 - eq_h * 0.5;
+
+        self.ui.panel(eq_x - 6.0, eq_y - 6.0, eq_w + 12.0, eq_h + 12.0);
+
+        let white = [0.9, 0.9, 0.9, 1.0];
+        let gray = [0.5, 0.5, 0.5, 1.0];
+        let yellow = [1.0, 1.0, 0.5, 1.0];
+
+        self.ui.text(eq_x, eq_y, "= EQUIPMENT =", scale, yellow);
+
+        let player = self.world.player();
+        let eq = player.equipment.as_ref();
+
+        let slots: [(&str, Option<u16>); 7] = if let Some(eq) = eq {
+            [
+                ("Weapon: ", eq.weapon),
+                ("Head:   ", eq.head),
+                ("Chest:  ", eq.chest),
+                ("Legs:   ", eq.legs),
+                ("Boots:  ", eq.boots),
+                ("Ring 1: ", eq.accessory1),
+                ("Ring 2: ", eq.accessory2),
+            ]
+        } else {
+            [
+                ("Weapon: ", None),
+                ("Head:   ", None),
+                ("Chest:  ", None),
+                ("Legs:   ", None),
+                ("Boots:  ", None),
+                ("Ring 1: ", None),
+                ("Ring 2: ", None),
+            ]
+        };
+
+        for (i, (label, item_id)) in slots.iter().enumerate() {
+            let y = eq_y + (i as f32 + 1.5) * line_h;
+            self.ui.text(eq_x, y, label, scale, white);
+            let name = item_id
+                .and_then(|id| item_by_id(id))
+                .map_or("---", |def| def.name);
+            self.ui.text(eq_x + 8.0 * cell, y, name, scale, if item_id.is_some() { white } else { gray });
+        }
+
+        // Stats summary.
+        if let Some(stats) = &player.stats {
+            let stats_y = eq_y + 9.0 * line_h;
+            let stat_str = format!(
+                "STR:{} INT:{} DEX:{}",
+                stats.strength, stats.intelligence, stats.dexterity,
+            );
+            self.ui.text(eq_x, stats_y, &stat_str, scale, [0.7, 0.8, 0.9, 1.0]);
+        }
+
+        // -- Inventory grid (right half) --
+        let inv_cols = 6;
+        let inv_rows = 4;
+        let slot_w = 10.0 * cell; // enough for item name
+        let slot_h = line_h;
+        let inv_w = inv_cols as f32 * slot_w;
+        let inv_h = (inv_rows as f32 + 1.5) * slot_h + 12.0;
+        let inv_x = sw * 0.75 - inv_w * 0.5;
+        let inv_y = sh * 0.5 - inv_h * 0.5;
+
+        self.ui.panel(inv_x - 6.0, inv_y - 6.0, inv_w + 12.0, inv_h + 12.0);
+        self.ui.text(inv_x, inv_y, "= INVENTORY =", scale, yellow);
+
+        let inv = player.inventory.as_ref();
+        for slot_idx in 0..24 {
+            let col = slot_idx % inv_cols;
+            let row = slot_idx / inv_cols;
+            let sx = inv_x + col as f32 * slot_w;
+            let sy = inv_y + (row as f32 + 1.5) * slot_h;
+
+            let item_str = if let Some(inv) = inv {
+                if let Some(stack) = inv.slot(slot_idx) {
+                    if let Some(def) = item_by_id(stack.item_id) {
+                        if stack.count > 1 {
+                            format!("{}x{}", def.name, stack.count)
+                        } else {
+                            def.name.to_string()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            // Draw slot background.
+            self.ui.rect_border(sx, sy, slot_w - 2.0, slot_h - 2.0, [0.1, 0.1, 0.1, 0.6]);
+
+            if !item_str.is_empty() {
+                // Truncate long names to fit slot.
+                let max_chars = (slot_w / cell) as usize;
+                let display: &str = if item_str.len() > max_chars {
+                    &item_str[..max_chars]
+                } else {
+                    &item_str
+                };
+                self.ui.text(sx + 2.0, sy + 1.0, display, scale, white);
+            }
+        }
+
+        // Hint text at bottom.
+        self.ui.text(
+            sw * 0.5 - 10.0 * cell,
+            inv_y + inv_h + 8.0,
+            "Press I to close",
+            scale,
+            gray,
+        );
     }
 }

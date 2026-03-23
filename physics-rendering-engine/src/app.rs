@@ -133,6 +133,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F4) => self.input.fast_time = pressed,
                     PhysicalKey::Code(KeyCode::KeyQ) => self.input.cycle_spell = pressed,
                     PhysicalKey::Code(KeyCode::KeyR) => self.input.cast_spell = pressed,
+                    PhysicalKey::Code(KeyCode::KeyI) => self.input.toggle_inventory = pressed,
                     _ => {}
                 }
             }
