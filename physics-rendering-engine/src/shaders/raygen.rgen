@@ -12,6 +12,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 ghostMode;   // .x = ghost active, .y = pry progress (0..1), .z = tool type (0=hands, 1=axe, 2=pickaxe, 3=hammer)
     vec4 debugInfo;   // .x = show debug UI, .y = biome (0-3), .z = hp%, .w = mana%
     vec4 debugInfo2;  // .x = level, .y = stamina%, .z = player x, .w = player z
+    vec4 sunMoon;     // .xyz = sun direction, .w = sun altitude
+    vec4 moonInfo;    // .xyz = moon direction, .w = moon altitude
 } scene;
 
 layout(location = 0) rayPayloadEXT vec3 payload;

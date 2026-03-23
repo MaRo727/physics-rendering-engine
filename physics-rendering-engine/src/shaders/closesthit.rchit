@@ -15,6 +15,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 ghostMode;   // .x > 0 when ghost mode active
     vec4 debugInfo;
     vec4 debugInfo2;
+    vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude
+    vec4 moonInfo; // .xyz = moon direction, .w = moon altitude
 } scene;
 
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
@@ -76,9 +78,15 @@ void main() {
     );
 
     float NdotL = dot(normal, L);
-    float ambient = 0.15;
+    // Day/night adaptive lighting.
+    float sunAlt = scene.sunMoon.w;
+    float dayFactor = smoothstep(-0.35, 0.45, sunAlt);
+    // At night: higher ambient (moonlight scattering), softer shadows.
+    float ambient = mix(0.06, 0.15, dayFactor);
     float fill = max(0.0, NdotL) * 0.15;
-    float diffuse = max(0.0, NdotL) * shadowed;
+    // Moon casts dimmer, softer shadows than sun.
+    float shadowStrength = mix(0.4, 1.0, dayFactor); // night shadows are faint
+    float diffuse = max(0.0, NdotL) * mix(1.0, shadowed, shadowStrength);
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 
     // Water surface shading.

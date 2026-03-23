@@ -19,6 +19,8 @@ pub struct SceneUBO {
     pub ghost_mode: glam::Vec4, // .x > 0 when ghost mode is active
     pub debug_info: glam::Vec4, // .x = show debug UI, .y = biome (0=forest,1=desert,2=mountain,3=dungeon), .z = hp fraction, .w = mana fraction
     pub debug_info2: glam::Vec4, // .x = level, .y = stamina fraction, .z = player x, .w = player z
+    pub sun_moon: glam::Vec4, // .xyz = sun direction, .w = sun altitude
+    pub moon_info: glam::Vec4, // .xyz = moon direction, .w = moon altitude
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +94,7 @@ fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSe
             .binding(2)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR),
         // 3: vertex SSBO
         vk::DescriptorSetLayoutBinding::default()
             .binding(3)

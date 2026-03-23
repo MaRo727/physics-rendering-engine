@@ -80,10 +80,12 @@ pub struct Engine {
     show_debug_ui: bool,
     debug_ui_prev: bool,
     mute_prev: bool,
+    fast_time: bool,
+    fast_time_prev: bool,
     water_time: f32,
+    time_of_day: f32, // 0..1 where 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
     surface_width: u32,
     surface_height: u32,
-    light_dir: Vec3,
     audio: Option<AudioManager>,
 }
 
@@ -177,10 +179,12 @@ impl Engine {
             show_debug_ui: false,
             debug_ui_prev: false,
             mute_prev: false,
+            fast_time: false,
+            fast_time_prev: false,
             water_time: 0.0,
+            time_of_day: 0.35, // start at mid-morning
             surface_width,
             surface_height,
-            light_dir: Vec3::new(1.0, 3.0, 1.0).normalize(),
             audio: AudioManager::new(std::path::Path::new("../assets")),
         };
 
@@ -224,6 +228,14 @@ impl Engine {
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
         self.water_time += dt;
+        // Day/night cycle: ~4 minutes per full day, F4 speeds up 10x.
+        if input.fast_time && !self.fast_time_prev {
+            self.fast_time = !self.fast_time;
+        }
+        self.fast_time_prev = input.fast_time;
+        const DAY_DURATION: f32 = 240.0;
+        let time_speed = if self.fast_time { 10.0 } else { 1.0 };
+        self.time_of_day = (self.time_of_day + dt * time_speed / DAY_DURATION) % 1.0;
         self.terrain_rebuild_timer += dt;
 
         // --- Fast mode toggle (F2) ---
@@ -782,19 +794,77 @@ impl Engine {
             player_pos.z,
         );
 
+        // Compute sun/moon positions from time of day.
+        // -cos gives: midnight(0)=-1, sunrise(0.25)=0, noon(0.5)=+1, sunset(0.75)=0
+        let phase = self.time_of_day * std::f32::consts::TAU;
+        let sun_altitude = -(phase.cos()); // -1 at midnight, +1 at noon
+        // Sun east-west sweep: sin gives +1 at sunrise, 0 at noon, -1 at sunset
+        let sun_x = phase.sin();
+        // Sun direction in world space — allow going below horizon so it visually sets.
+        let sun_dir = Vec3::new(sun_x, sun_altitude, 0.3).normalize();
+
+        // Moon is opposite the sun.
+        let moon_altitude = -sun_altitude; // +1 at midnight, -1 at noon
+        let moon_dir = Vec3::new(-sun_x, moon_altitude, -0.3).normalize();
+
+        // Light: blend between sun and moon based on sun altitude.
+        // Sun fades out as it dips below horizon, moon fades in.
+        // Fade over a wide range: 0 at altitude -0.25, full at 0.5 — slow ramp up as they rise.
+        let sun_fade = ((sun_altitude + 0.25) / 0.75).clamp(0.0, 1.0);
+        let moon_fade = ((moon_altitude + 0.25) / 0.75).clamp(0.0, 1.0);
+
+        let sun_height = sun_altitude.max(0.0);
+        let sunset_factor = (1.0 - sun_height * 2.0).max(0.0);
+        let r = 1.0;
+        let g = 0.95 - sunset_factor * 0.35;
+        let b = 0.9 - sunset_factor * 0.6;
+        let sun_intensity = (0.3 + sun_height.min(1.0) * 0.7) * sun_fade;
+        let sun_color = Vec4::new(r, g, b, sun_intensity);
+
+        let moon_height = moon_altitude.max(0.0);
+        let moon_intensity = (0.08 + moon_height * 0.12) * moon_fade;
+        let moon_color = Vec4::new(0.6, 0.7, 1.0, moon_intensity);
+
+        // Blend light direction and color smoothly between sun and moon.
+        let total = sun_intensity + moon_intensity;
+        let (light_dir, light_color) = if total < 0.001 {
+            // Both below horizon — use a dim upward fill light.
+            (Vec3::new(0.0, 1.0, 0.0), Vec4::new(0.5, 0.5, 0.7, 0.05))
+        } else {
+            let sun_weight = sun_intensity / total;
+            let blended_dir = (sun_dir * sun_weight + moon_dir * (1.0 - sun_weight)).normalize();
+            let blended_color = Vec4::new(
+                sun_color.x * sun_weight + moon_color.x * (1.0 - sun_weight),
+                sun_color.y * sun_weight + moon_color.y * (1.0 - sun_weight),
+                sun_color.z * sun_weight + moon_color.z * (1.0 - sun_weight),
+                total,
+            );
+            (blended_dir, blended_color)
+        };
+
+        // Pack sun and moon directions for shader disc rendering.
+        // sunMoon.xyz = sun direction, sunMoon.w = sun altitude for sky color.
+        let sun_moon = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, sun_altitude);
+        // Repurpose ghostMode.w (was unused 0.0) for moon direction packing won't work cleanly.
+        // Instead pass moon dir via lightDir.w (was 0.0) — but lightDir is already used.
+        // Simplest: add a second vec4 for moon.
+        let moon_info = Vec4::new(moon_dir.x, moon_dir.y, moon_dir.z, moon_altitude);
+
         self.renderer.draw_frame(
             &transforms,
             &instance_ids,
             render_view,
             render_proj,
-            Vec4::from((self.light_dir, 0.0)),
-            Vec4::new(1.0, 0.95, 0.9, 1.0),
+            Vec4::from((light_dir, 0.0)),
+            light_color,
             player_vp,
             self.ghost.active,
             pry_progress,
             tool_type,
             debug_info,
             debug_info2,
+            sun_moon,
+            moon_info,
         )
     }
 
