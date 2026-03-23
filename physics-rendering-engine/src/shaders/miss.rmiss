@@ -30,6 +30,7 @@ void main() {
 
     // Blend factor: 0 = full night, 1 = full day. Wide range for gradual transition.
     float dayFactor = smoothstep(-0.35, 0.45, sunAlt);
+    float nightness = 1.0 - dayFactor;
     // Sunset factor: strongest when sun is near horizon.
     float sunsetFactor = smoothstep(-0.2, 0.05, sunAlt) * smoothstep(0.5, 0.0, sunAlt);
 
@@ -92,20 +93,17 @@ void main() {
         // Moon disc (pale white).
         if (moonAngle < moonDiscRadius) {
             float discFade = 1.0 - moonAngle / moonDiscRadius;
-            float nightness = 1.0 - dayFactor;
             vec3 moonColor = vec3(0.85, 0.88, 0.95);
             sky = mix(sky, moonColor * (0.8 + discFade * 0.8), (0.7 + 0.3 * nightness) * horizonFade);
         }
         // Moon glow (subtle).
         else if (moonAngle < moonGlowRadius) {
             float glowStr = pow(1.0 - moonAngle / moonGlowRadius, 3.0);
-            float nightness = 1.0 - dayFactor;
             sky += vec3(0.1, 0.12, 0.2) * glowStr * 0.25 * nightness * horizonFade;
         }
     }
 
     // --- Stars at night ---
-    float nightness = 1.0 - dayFactor;
     if (nightness > 0.1 && y > 0.0) {
         // Hash based on quantized direction for stable stars.
         // Use spherical coordinates for uniform distribution.

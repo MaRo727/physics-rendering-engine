@@ -1770,11 +1770,14 @@ impl Engine {
         let moon_altitude = -sun_altitude; // +1 at midnight, -1 at noon
         let moon_dir = Vec3::new(-sun_x, moon_altitude, -0.3).normalize();
 
-        // Light: blend between sun and moon based on sun altitude.
-        // Sun fades out as it dips below horizon, moon fades in.
-        // Fade over a wide range: 0 at altitude -0.25, full at 0.5 — slow ramp up as they rise.
-        let sun_fade = ((sun_altitude + 0.25) / 0.75).clamp(0.0, 1.0);
-        let moon_fade = ((moon_altitude + 0.25) / 0.75).clamp(0.0, 1.0);
+        // Light: blend between sun and moon based on altitude.
+        // Use smoothstep matching the GPU shader curve for consistent transitions.
+        fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+            let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        }
+        let sun_fade = smoothstep(-0.35, 0.45, sun_altitude);
+        let moon_fade = smoothstep(-0.35, 0.45, moon_altitude);
 
         let sun_height = sun_altitude.max(0.0);
         let sunset_factor = (1.0 - sun_height * 2.0).max(0.0);
@@ -1789,21 +1792,26 @@ impl Engine {
         let moon_color = Vec4::new(0.6, 0.7, 1.0, moon_intensity);
 
         // Blend light direction and color smoothly between sun and moon.
-        let total = sun_intensity + moon_intensity;
-        let (light_dir, light_color) = if total < 0.001 {
-            // Both below horizon — use a dim upward fill light.
-            (Vec3::new(0.0, 1.0, 0.0), Vec4::new(0.5, 0.5, 0.7, 0.05))
-        } else {
-            let sun_weight = sun_intensity / total;
-            let blended_dir = (sun_dir * sun_weight + moon_dir * (1.0 - sun_weight)).normalize();
-            let blended_color = Vec4::new(
-                sun_color.x * sun_weight + moon_color.x * (1.0 - sun_weight),
-                sun_color.y * sun_weight + moon_color.y * (1.0 - sun_weight),
-                sun_color.z * sun_weight + moon_color.z * (1.0 - sun_weight),
-                total,
-            );
-            (blended_dir, blended_color)
-        };
+        // A constant fill light ensures the total never hits zero, eliminating
+        // the hard cutoff that caused a visible pop at horizon transitions.
+        let fill_intensity = 0.02_f32;
+        let fill_dir = Vec3::new(0.0, 1.0, 0.0);
+        let fill_color = Vec4::new(0.5, 0.5, 0.7, fill_intensity);
+
+        let total = sun_intensity + moon_intensity + fill_intensity;
+        let sun_weight = sun_intensity / total;
+        let moon_weight = moon_intensity / total;
+        let fill_weight = fill_intensity / total;
+
+        let blended_dir =
+            (sun_dir * sun_weight + moon_dir * moon_weight + fill_dir * fill_weight).normalize();
+        let light_dir = blended_dir;
+        let light_color = Vec4::new(
+            sun_color.x * sun_weight + moon_color.x * moon_weight + fill_color.x * fill_weight,
+            sun_color.y * sun_weight + moon_color.y * moon_weight + fill_color.y * fill_weight,
+            sun_color.z * sun_weight + moon_color.z * moon_weight + fill_color.z * fill_weight,
+            total,
+        );
 
         // Pack sun and moon directions for shader disc rendering.
         // sunMoon.xyz = sun direction, sunMoon.w = sun altitude for sky color.

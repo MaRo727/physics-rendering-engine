@@ -82,8 +82,8 @@ void main() {
     // Day/night adaptive lighting.
     float sunAlt = scene.sunMoon.w;
     float dayFactor = smoothstep(-0.35, 0.45, sunAlt);
-    // At night: higher ambient (moonlight scattering), softer shadows.
-    float ambient = mix(0.06, 0.15, dayFactor);
+    // Night: dim ambient (0.03), Day: higher ambient from sky scattering (0.15).
+    float ambient = mix(0.03, 0.15, dayFactor);
     float fill = max(0.0, NdotL) * 0.15;
     // Moon casts dimmer, softer shadows than sun.
     float shadowStrength = mix(0.4, 1.0, dayFactor); // night shadows are faint
