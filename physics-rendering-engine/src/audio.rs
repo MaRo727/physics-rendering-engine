@@ -94,7 +94,7 @@ impl AudioManager {
         // Register footstep sounds per biome.
         let mut footstep_sounds = HashMap::new();
         let footstep_defs: &[(Biome, &[&str], &[&str])] = &[
-            (Biome::Plains,    &["grass_walk.wav"],                   &["grass_run.wav"]),
+            (Biome::Plains,    &["forest_walk1.wav", "forest_walk2.wav"], &["forest_walk1.wav", "forest_walk2.wav"]),
             (Biome::Forest,    &["forest_walk1.wav", "forest_walk2.wav"], &["forest_walk1.wav", "forest_walk2.wav"]),
             (Biome::Desert,    &["sand_walk.wav"],                    &["sand_walk.wav"]),
             (Biome::Mountains, &["gravel_walk.wav"],                  &["gravel_run.wav"]),
