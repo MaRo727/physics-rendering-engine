@@ -78,6 +78,8 @@ pub struct InteractionResult {
     pub pickaxe_hit: Option<PickaxeHit>,
     /// What the hammer hit this frame (structures only).
     pub hammer_hit: Option<HammerHit>,
+    /// Hit position on a tree trunk (for shake + leaf effect).
+    pub tree_hit: Option<Vec3>,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +146,7 @@ impl Interaction {
         dt: f32,
         building_cell_aimed_at: Option<(i32, i32, i32)>,
         terrain_rbs: &HashSet<RigidBodyHandle>,
+        tree_rbs: &HashSet<RigidBodyHandle>,
     ) -> InteractionResult {
         let interact_edge = interact_pressed && !self.interact_prev;
         self.interact_prev = interact_pressed;
@@ -154,6 +157,7 @@ impl Interaction {
             picked_up_item: None,
             pickaxe_hit: None,
             hammer_hit: None,
+            tree_hit: None,
         };
 
         // --- E press (edge): drop held OR pick up dynamic object OR pick up item drop OR start prying ---
@@ -223,14 +227,19 @@ impl Interaction {
             } else {
                 match self.equipped_tool {
                     ToolType::Hands => {
-                        // Bare-fist punch — knock back props only (enemies handled by combat system).
-                        let hit = physics.cast_ray(eye, look_dir, PUNCH_RANGE, player_collider);
-                        if let Some(target_body) = hit {
-                            let is_enemy = entities.iter().any(|e| e.body.rigid_body == target_body && e.kind == EntityKind::Enemy);
-                            if physics.is_dynamic(target_body) && !is_enemy {
-                                let wc = weight_class_of(entities, target_body);
-                                let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
-                                physics.apply_impulse(target_body, force);
+                        // Bare-fist punch — knock back props, or shake trees.
+                        if let Some((target_body, hit_pos, _normal)) =
+                            physics.cast_ray_full(eye, look_dir, PUNCH_RANGE, player_collider)
+                        {
+                            if tree_rbs.contains(&target_body) {
+                                result.tree_hit = Some(hit_pos);
+                            } else {
+                                let is_enemy = entities.iter().any(|e| e.body.rigid_body == target_body && e.kind == EntityKind::Enemy);
+                                if physics.is_dynamic(target_body) && !is_enemy {
+                                    let wc = weight_class_of(entities, target_body);
+                                    let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
+                                    physics.apply_impulse(target_body, force);
+                                }
                             }
                         }
                     }

@@ -105,6 +105,8 @@ pub struct Engine {
     player_visual_yaw: f32,
     snow_intensity: f32,
     snow_time: f32,
+    tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
+    tree_punch_seed: u32,
 }
 
 impl Engine {
@@ -154,9 +156,11 @@ impl Engine {
         let grass = GrassGrid::generate(42, &terrain);
 
         // Add tree trunk colliders (compound collider per chunk).
+        let mut tree_rbs = std::collections::HashSet::new();
         for (_, trunks) in structures.trunk_colliders() {
             if !trunks.is_empty() {
-                physics.add_compound_static(&trunks);
+                let rb = physics.add_compound_static(&trunks);
+                tree_rbs.insert(rb);
             }
         }
 
@@ -214,6 +218,8 @@ impl Engine {
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
+            tree_rbs,
+            tree_punch_seed: 12345,
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -401,6 +407,7 @@ impl Engine {
                 dt,
                 building_cell_aimed_at,
                 &self.terrain_rbs,
+                &self.tree_rbs,
             );
 
             // --- Handle item pickup ---
@@ -466,6 +473,12 @@ impl Engine {
                         }
                     }
                 }
+            }
+
+            // --- Handle tree punch (shake + leaves) ---
+            if let Some(hit_pos) = interaction_result.tree_hit {
+                self.tree_punch_seed = self.tree_punch_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                self.structures.punch_tree_at(hit_pos, self.tree_punch_seed);
             }
 
             // --- RMB: place held cube into building grid ---
@@ -761,6 +774,9 @@ impl Engine {
             let max_step = turn_speed * dt;
             self.player_visual_yaw += delta.clamp(-max_step, max_step);
         }
+
+        // --- Update tree shake + leaf particles ---
+        self.structures.update_effects(dt);
 
         // --- Blizzard intensity + snow particles ---
         self.snow_time += dt;
@@ -1106,6 +1122,19 @@ impl Engine {
         // (in ghost mode, use the frozen player frustum like terrain chunks).
         let tree_frustum = extract_frustum_planes(cull_proj * cull_view);
         self.structures.render_nearby(player_pos, &tree_frustum, &mut transforms, &mut instance_ids);
+
+        // Leaf particles from tree punches.
+        let leaf_object_base: u32 = 0xFF80;
+        for (i, leaf) in self.structures.leaf_particles.iter().enumerate() {
+            // Fade out: shrink during last 0.5s of life.
+            let fade = (leaf.lifetime / 0.5).min(1.0);
+            let s = leaf.scale * fade;
+            let t = Mat4::from_translation(leaf.position)
+                * Mat4::from_rotation_y(leaf.rotation_y)
+                * Mat4::from_scale(Vec3::splat(s));
+            transforms.push(t);
+            instance_ids.push(pack_instance_id(leaf.mesh_type, leaf_object_base + (i as u32 & 0xFF)));
+        }
 
         // Grass patches near the player, frustum-culled.
         self.grass.render_nearby(player_pos, &tree_frustum, &mut transforms, &mut instance_ids);

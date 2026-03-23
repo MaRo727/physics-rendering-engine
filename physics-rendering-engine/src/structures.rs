@@ -28,10 +28,37 @@ pub struct TreeInstance {
     pub rotation_y: f32,
 }
 
+/// A leaf particle spawned when a tree is punched.
+pub struct LeafParticle {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub lifetime: f32,
+    pub mesh_type: u32,
+    pub scale: f32,
+    pub rotation_y: f32,
+}
+
+/// Active tree shake: (tree index, remaining time).
+struct TreeShake {
+    tree_idx: usize,
+    timer: f32,
+}
+
+const SHAKE_DURATION: f32 = 0.5;
+const SHAKE_AMPLITUDE: f32 = 0.06; // radians
+const SHAKE_FREQUENCY: f32 = 25.0; // Hz
+
+const LEAF_COUNT: usize = 10;
+const LEAF_LIFETIME: f32 = 2.0;
+
 pub struct StructureGrid {
     trees: Vec<TreeInstance>,
     /// Trees bucketed by terrain chunk index (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE buckets).
     chunk_buckets: Vec<Vec<usize>>,
+    /// Currently shaking trees.
+    shakes: Vec<TreeShake>,
+    /// Active leaf particles from tree punches.
+    pub leaf_particles: Vec<LeafParticle>,
 }
 
 /// Simple deterministic hash for seeded placement.
@@ -140,7 +167,7 @@ impl StructureGrid {
 
         log::info!("Placed {} trees across {} chunks", trees.len(), num_buckets);
 
-        Self { trees, chunk_buckets }
+        Self { trees, chunk_buckets, shakes: Vec::new(), leaf_particles: Vec::new() }
     }
 
     /// Collect transforms and instance IDs for trees near `player_pos` that pass frustum culling.
@@ -191,9 +218,13 @@ impl StructureGrid {
                         tree.mesh_type
                     };
 
-                    let transform = Mat4::from_translation(tree.position)
-                        * Mat4::from_rotation_y(tree.rotation_y)
-                        * Mat4::from_scale(tree.scale);
+                    let shake = self.shake_angle(tree_idx);
+                    let mut transform = Mat4::from_translation(tree.position)
+                        * Mat4::from_rotation_y(tree.rotation_y);
+                    if shake != 0.0 {
+                        transform = transform * Mat4::from_rotation_z(shake);
+                    }
+                    transform = transform * Mat4::from_scale(tree.scale);
                     transforms.push(transform);
                     instance_ids.push(pack_instance_id(mesh, TREE_OBJECT_ID));
                 }
@@ -227,6 +258,115 @@ impl StructureGrid {
             result.push((bucket_idx, trunks));
         }
         result
+    }
+
+    /// Find the nearest tree to a world position and trigger a shake + leaf particles.
+    /// `seed` is used for randomizing leaf directions.
+    pub fn punch_tree_at(&mut self, hit_pos: Vec3, seed: u32) {
+        // Find nearest tree within 3 units of hit position.
+        let mut best: Option<(usize, f32)> = None;
+        for (i, tree) in self.trees.iter().enumerate() {
+            let dx = tree.position.x - hit_pos.x;
+            let dz = tree.position.z - hit_pos.z;
+            let dist_sq = dx * dx + dz * dz;
+            if dist_sq < 9.0 {
+                if best.map_or(true, |(_, d)| dist_sq < d) {
+                    best = Some((i, dist_sq));
+                }
+            }
+        }
+
+        let tree_idx = match best {
+            Some((idx, _)) => idx,
+            None => return,
+        };
+
+        // Don't stack shakes on the same tree.
+        if self.shakes.iter().any(|s| s.tree_idx == tree_idx) {
+            return;
+        }
+
+        self.shakes.push(TreeShake { tree_idx, timer: SHAKE_DURATION });
+
+        // Spawn leaf particles at the tree canopy.
+        let tree = &self.trees[tree_idx];
+        let canopy_height = match tree.mesh_type {
+            MESH_TREE_OAK => 5.0 * tree.scale.y,
+            MESH_TREE_PINE => 6.0 * tree.scale.y,
+            MESH_TREE_DEAD => 3.0 * tree.scale.y,
+            _ => 5.0 * tree.scale.y,
+        };
+        let canopy_center = tree.position + Vec3::new(0.0, canopy_height, 0.0);
+        let canopy_radius = 3.0 * tree.scale.x;
+
+        let mut h = seed;
+        for _ in 0..LEAF_COUNT {
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let angle = hash_f32(h) * std::f32::consts::TAU;
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let r = hash_f32(h) * canopy_radius;
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let vy = -0.5 - hash_f32(h) * 1.5; // falling speed
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let vx = (hash_f32(h) - 0.5) * 2.0;
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let vz = (hash_f32(h) - 0.5) * 2.0;
+            h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+            let rot = hash_f32(h) * std::f32::consts::TAU;
+
+            let pos = canopy_center + Vec3::new(angle.cos() * r, (hash_f32(h) - 0.5) * 1.0, angle.sin() * r);
+
+            // Use grass mesh types for leaf look
+            let mesh = if tree.mesh_type == MESH_TREE_DEAD {
+                MESH_GRASS_C // brownish for dead trees
+            } else {
+                MESH_GRASS_A
+            };
+
+            self.leaf_particles.push(LeafParticle {
+                position: pos,
+                velocity: Vec3::new(vx, vy, vz),
+                lifetime: LEAF_LIFETIME,
+                mesh_type: mesh,
+                scale: 0.15 + hash_f32(h.wrapping_add(1)) * 0.1,
+                rotation_y: rot,
+            });
+        }
+    }
+
+    /// Update shake timers and leaf particles. Call once per frame.
+    pub fn update_effects(&mut self, dt: f32) {
+        // Update shakes.
+        self.shakes.retain_mut(|s| {
+            s.timer -= dt;
+            s.timer > 0.0
+        });
+
+        // Update leaf particles with gravity and slight drift.
+        self.leaf_particles.retain_mut(|p| {
+            p.lifetime -= dt;
+            if p.lifetime <= 0.0 {
+                return false;
+            }
+            p.velocity.y -= 2.0 * dt; // gravity
+            p.velocity.x *= 1.0 - 0.5 * dt; // air drag
+            p.velocity.z *= 1.0 - 0.5 * dt;
+            p.position += p.velocity * dt;
+            p.rotation_y += 3.0 * dt; // spin
+            true
+        });
+    }
+
+    /// Get the current shake angle for a tree index (0.0 if not shaking).
+    fn shake_angle(&self, tree_idx: usize) -> f32 {
+        for s in &self.shakes {
+            if s.tree_idx == tree_idx {
+                let t = SHAKE_DURATION - s.timer;
+                let decay = (s.timer / SHAKE_DURATION).powi(2);
+                return (t * SHAKE_FREQUENCY).sin() * SHAKE_AMPLITUDE * decay;
+            }
+        }
+        0.0
     }
 }
 
