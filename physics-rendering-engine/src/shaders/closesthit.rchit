@@ -17,6 +17,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
 } scene;
 
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
@@ -128,6 +129,20 @@ void main() {
                 lit = mix(lit, lit * vec3(0.7, 1.3, 0.7), 0.4);
             }
         }
+    }
+
+    // Blizzard distance fog — white fog that reduces visibility.
+    float snowIntensity = scene.blizzardInfo.x;
+    if (snowIntensity > 0.0) {
+        float dist = gl_HitTEXT;
+        // Fog range shrinks with intensity: full blizzard ~15-40 unit visibility.
+        float fogNear = mix(80.0, 15.0, snowIntensity);
+        float fogFar = mix(200.0, 40.0, snowIntensity);
+        float fogFactor = clamp((dist - fogNear) / (fogFar - fogNear), 0.0, 1.0);
+        // Blizzard fog color: slightly blue-white.
+        vec3 fogColor = vec3(0.75, 0.78, 0.82) * scene.lightColor.w * 1.5;
+        fogColor = max(fogColor, vec3(0.08, 0.09, 0.11));
+        lit = mix(lit, fogColor, fogFactor * snowIntensity);
     }
 
     payload = lit;

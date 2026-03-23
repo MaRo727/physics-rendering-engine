@@ -329,6 +329,11 @@ impl TerrainGrid {
     // Deformation
     // -----------------------------------------------------------------------
 
+    /// Check if a world position is in the mountain snow zone (biome=Mountains, height>30).
+    pub fn is_snow_zone(&self, x: f32, z: f32) -> bool {
+        self.biome_at_world(x, z) == Biome::Mountains && self.height_at_world(x, z) > 30.0
+    }
+
     /// Lower terrain within `radius` of `point` by up to `amount` (with linear falloff).
     pub fn deform_ground(&mut self, point: Vec3, radius: f32, amount: f32) {
         let step = CELL_SIZE as f32;

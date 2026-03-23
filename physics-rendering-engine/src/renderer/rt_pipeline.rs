@@ -21,6 +21,7 @@ pub struct SceneUBO {
     pub debug_info2: glam::Vec4, // .x = level, .y = stamina fraction, .z = player x, .w = player z
     pub sun_moon: glam::Vec4, // .xyz = sun direction, .w = sun altitude
     pub moon_info: glam::Vec4, // .xyz = moon direction, .w = moon altitude
+    pub blizzard_info: glam::Vec4, // .x = snow intensity (0..1), .y = time, .z = unused, .w = unused
 }
 
 // ---------------------------------------------------------------------------

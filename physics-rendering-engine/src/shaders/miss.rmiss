@@ -14,6 +14,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude (-1 to 1)
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude (-1 to 1)
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
 } scene;
 
 void main() {
@@ -126,6 +127,13 @@ void main() {
             vec3 starColor = mix(vec3(0.8, 0.85, 1.0), vec3(1.0, 0.9, 0.7), h2);
             sky += starColor * brightness * nightness * 0.5;
         }
+    }
+
+    // Blizzard: whiteout the sky.
+    float snowIntensity = scene.blizzardInfo.x;
+    if (snowIntensity > 0.0) {
+        vec3 fogColor = vec3(0.75, 0.78, 0.82) * max(dayFactor * 1.2, 0.15);
+        sky = mix(sky, fogColor, snowIntensity * 0.9);
     }
 
     payload = sky;

@@ -14,6 +14,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;  // .x = level, .y = stamina%, .z = player x, .w = player z
     vec4 sunMoon;     // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo;    // .xyz = moon direction, .w = moon altitude
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
 } scene;
 
 layout(location = 0) rayPayloadEXT vec3 payload;
