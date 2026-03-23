@@ -263,15 +263,32 @@ impl StructureGrid {
     /// Find the nearest tree to a world position and trigger a shake + leaf particles.
     /// `seed` is used for randomizing leaf directions.
     pub fn punch_tree_at(&mut self, hit_pos: Vec3, seed: u32) {
-        // Find nearest tree within 3 units of hit position.
+        // Find nearest tree within 3 units of hit position using the spatial index.
+        const PUNCH_RADIUS: f32 = 3.0;
+        let half = TERRAIN_HALF as f32;
+        let min_cx = ((hit_pos.x - PUNCH_RADIUS + half) / CHUNK_WORLD_SIZE)
+            .floor().max(0.0) as usize;
+        let max_cx = ((hit_pos.x + PUNCH_RADIUS + half) / CHUNK_WORLD_SIZE)
+            .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
+        let min_cz = ((hit_pos.z - PUNCH_RADIUS + half) / CHUNK_WORLD_SIZE)
+            .floor().max(0.0) as usize;
+        let max_cz = ((hit_pos.z + PUNCH_RADIUS + half) / CHUNK_WORLD_SIZE)
+            .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
+
         let mut best: Option<(usize, f32)> = None;
-        for (i, tree) in self.trees.iter().enumerate() {
-            let dx = tree.position.x - hit_pos.x;
-            let dz = tree.position.z - hit_pos.z;
-            let dist_sq = dx * dx + dz * dz;
-            if dist_sq < 9.0 {
-                if best.map_or(true, |(_, d)| dist_sq < d) {
-                    best = Some((i, dist_sq));
+        for cx in min_cx..max_cx {
+            for cz in min_cz..max_cz {
+                let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
+                for &tree_idx in &self.chunk_buckets[bucket] {
+                    let tree = &self.trees[tree_idx];
+                    let dx = tree.position.x - hit_pos.x;
+                    let dz = tree.position.z - hit_pos.z;
+                    let dist_sq = dx * dx + dz * dz;
+                    if dist_sq < PUNCH_RADIUS * PUNCH_RADIUS {
+                        if best.map_or(true, |(_, d)| dist_sq < d) {
+                            best = Some((tree_idx, dist_sq));
+                        }
+                    }
                 }
             }
         }
