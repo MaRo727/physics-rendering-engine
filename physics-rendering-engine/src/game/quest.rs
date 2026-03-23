@@ -1,10 +1,11 @@
 /// Quest system — kill/collect/reach objectives with XP and item rewards.
 
+use serde::{Serialize, Deserialize};
 use crate::game::items::ItemId;
 
 pub type QuestId = u8;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QuestObjective {
     /// Kill N enemies of a specific type.  `enemy_kind` matches `EnemyType` discriminant.
     Kill { enemy_kind: u8, needed: u32, done: u32 },
@@ -14,7 +15,7 @@ pub enum QuestObjective {
     Reach { x: f32, z: f32, radius: f32, reached: bool },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestState {
     /// Not yet offered (prerequisite not met).
     Locked,

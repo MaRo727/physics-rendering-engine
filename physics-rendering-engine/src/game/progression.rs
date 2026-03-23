@@ -46,7 +46,7 @@ fn apply_level_up_growth(stats: &mut StatBlock) {
 
 /// XP reward for killing an enemy of the given level.
 pub fn xp_for_kill(enemy_level: u32) -> u32 {
-    20 + enemy_level * 10
+    25 + enemy_level * 15
 }
 
 #[cfg(test)]

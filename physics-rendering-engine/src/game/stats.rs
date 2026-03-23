@@ -1,6 +1,8 @@
 /// Core RPG stat block and derived stats.
 
-#[derive(Debug, Clone)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatBlock {
     // Primary attributes
     pub strength: u32,

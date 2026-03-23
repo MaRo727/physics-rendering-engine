@@ -27,6 +27,7 @@ use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{Biome, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
+use crate::particles::ParticleSystem;
 use crate::ui::Ui;
 use crate::game::items::item_by_id;
 use crate::game::npc::{self, ActiveDialogue};
@@ -62,8 +63,16 @@ pub struct EngineConfig {
     pub gravity: Vec3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameState {
+    MainMenu,
+    Playing,
+}
+
 pub struct Engine {
     pub config: EngineConfig,
+    game_state: GameState,
+    menu_selection: u8, // 0=New Game, 1=Continue, 2=Quit
     physics: PhysicsWorld,
     world: World,
     player_rb: rapier3d::prelude::RigidBodyHandle,
@@ -127,9 +136,12 @@ pub struct Engine {
     arrow_hit_buf: Vec<EnemyAttackHit>,
     spell_hit_buf: Vec<SpellHit>,
     ui: Ui,
+    particles: ParticleSystem,
     quests: Vec<Quest>,
     active_dialogue: Option<ActiveDialogue>,
     npc_interact_prev: bool,
+    save_prev: bool,
+    load_prev: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -256,6 +268,8 @@ impl Engine {
         let mining = MiningSystem::new();
         let mut engine = Self {
             config: data.config,
+            game_state: GameState::MainMenu,
+            menu_selection: 0,
             physics: data.physics,
             world: data.world,
             player_rb: data.player_rb,
@@ -316,9 +330,12 @@ impl Engine {
             arrow_hit_buf: Vec::new(),
             spell_hit_buf: Vec::new(),
             ui: Ui::new(),
+            particles: ParticleSystem::new(),
             quests: quest::create_quests(),
             active_dialogue: None,
             npc_interact_prev: false,
+            save_prev: false,
+            load_prev: false,
         };
 
         engine.spawn_npcs();
@@ -496,6 +513,97 @@ impl Engine {
         }
     }
 
+    fn update_menu(&mut self, input: &InputState) {
+        // Navigate with W/S (reuse forward/backward).
+        if input.forward && !self.save_prev {
+            // Reusing save_prev as "up_prev" for edge detection in menu.
+            if self.menu_selection > 0 { self.menu_selection -= 1; }
+        }
+        // Reusing load_prev as "down_prev".
+        if input.backward && !self.load_prev {
+            let has_save = crate::save::load().is_ok();
+            let max = if has_save { 2 } else { 1 }; // New Game, [Continue], Quit
+            if self.menu_selection < max { self.menu_selection += 1; }
+        }
+        self.save_prev = input.forward;
+        self.load_prev = input.backward;
+
+        // Confirm with E or Space.
+        if input.interact || input.jump {
+            let has_save = crate::save::load().is_ok();
+            match self.menu_selection {
+                0 => {
+                    // New Game.
+                    self.game_state = GameState::Playing;
+                }
+                1 if has_save => {
+                    // Continue — load save.
+                    self.do_load();
+                    self.game_state = GameState::Playing;
+                }
+                s if s == (if has_save { 2 } else { 1 }) => {
+                    // Quit — signal via sentinel.
+                    self.menu_selection = 255;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn do_save(&mut self) {
+        let player_pos = self.physics.body_position(self.player_rb);
+        let stats = match self.world.player().stats.clone() {
+            Some(s) => s,
+            None => return,
+        };
+        let inventory = self.world.player().inventory.clone().unwrap_or_default();
+        let equipment = self.world.player().equipment.clone().unwrap_or_default();
+
+        let data = crate::save::SaveData {
+            player_x: player_pos.x,
+            player_y: player_pos.y,
+            player_z: player_pos.z,
+            camera_yaw: self.camera.yaw,
+            camera_pitch: self.camera.pitch,
+            stats,
+            inventory,
+            equipment,
+            quest_states: crate::save::quests_to_save(&self.quests),
+            time_of_day: self.time_of_day,
+        };
+        match crate::save::save(&data) {
+            Ok(()) => println!("Game saved."),
+            Err(e) => println!("Save failed: {}", e),
+        }
+    }
+
+    fn do_load(&mut self) {
+        let data = match crate::save::load() {
+            Ok(d) => d,
+            Err(e) => { println!("Load failed: {}", e); return; }
+        };
+
+        // Restore player position.
+        let pos = Vec3::new(data.player_x, data.player_y, data.player_z);
+        self.physics.set_body_position(self.player_rb, pos);
+        self.camera.yaw = data.camera_yaw;
+        self.camera.pitch = data.camera_pitch;
+
+        // Restore stats.
+        if let Some(ref mut stats) = self.world.player_mut().stats {
+            *stats = data.stats;
+        }
+        self.world.player_mut().inventory = Some(data.inventory);
+        self.world.player_mut().equipment = Some(data.equipment);
+
+        // Restore quests.
+        self.quests = quest::create_quests();
+        crate::save::apply_quest_saves(&mut self.quests, &data.quest_states);
+
+        self.time_of_day = data.time_of_day;
+        println!("Game loaded.");
+    }
+
     /// Try to spawn one enemy at a random position near the player (biome-weighted).
     fn try_spawn_enemy(&mut self, player_pos: Vec3) {
         // Count current enemies.
@@ -544,7 +652,18 @@ impl Engine {
         self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, self.spawn_seed));
     }
 
+    /// Returns true if the game should quit.
+    pub fn should_quit(&self) -> bool {
+        self.game_state == GameState::MainMenu && self.menu_selection == 255
+    }
+
     pub fn update(&mut self, dt: f32, input: &InputState) {
+        // --- Main menu ---
+        if self.game_state == GameState::MainMenu {
+            self.update_menu(input);
+            return;
+        }
+
         self.water_time += dt;
         // Day/night cycle: ~4 minutes per full day, F4 speeds up 10x.
         if input.fast_time && !self.fast_time_prev {
@@ -573,6 +692,18 @@ impl Engine {
             self.show_inventory = !self.show_inventory;
         }
         self.inventory_prev = input.toggle_inventory;
+
+        // --- Quick save (F5) ---
+        if input.quick_save && !self.save_prev {
+            self.do_save();
+        }
+        self.save_prev = input.quick_save;
+
+        // --- Quick load (F9) ---
+        if input.quick_load && !self.load_prev {
+            self.do_load();
+        }
+        self.load_prev = input.quick_load;
 
         // --- Mute toggle (M) ---
         if input.toggle_mute && !self.mute_prev {
@@ -646,9 +777,16 @@ impl Engine {
 
             // --- Handle item pickup ---
             if let Some(drop_id) = interaction_result.picked_up_item {
+                // Get position for particles before removing.
+                let pickup_pos = self.world.entities.iter()
+                    .find(|e| e.id == drop_id)
+                    .map(|e| self.physics.body_position(e.body.rigid_body));
                 if self.world.pickup_item(drop_id) {
                     if let Some(entity) = self.world.remove_by_id(drop_id) {
                         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                    }
+                    if let Some(pos) = pickup_pos {
+                        self.particles.emit_pickup(pos);
                     }
                 }
             }
@@ -823,6 +961,8 @@ impl Engine {
                         let dealt = stats.take_damage(hit.damage);
                         println!("Hit enemy {} for {:.0} damage! HP: {:.0}", hit.entity_id, dealt, stats.health);
                     }
+                    let hit_pos = self.physics.body_position(entity.body.rigid_body);
+                    self.particles.emit_hit(hit_pos);
                     self.physics.apply_impulse(
                         entity.body.rigid_body,
                         hit.knockback_dir * hit.knockback_force * self.physics.body_mass(entity.body.rigid_body),
@@ -862,6 +1002,8 @@ impl Engine {
                                 if let Some(ref mut stats) = entity.stats {
                                     stats.take_damage(spell_hit.damage);
                                 }
+                                let hit_pos = self.physics.body_position(entity.body.rigid_body);
+                                self.particles.emit_ice(hit_pos);
                                 self.physics.apply_impulse(
                                     entity.body.rigid_body,
                                     spell_hit.knockback_dir * 4.0 * self.physics.body_mass(entity.body.rigid_body),
@@ -872,6 +1014,8 @@ impl Engine {
                             if let Some(ref mut stats) = self.world.player_mut().stats {
                                 stats.health = (stats.health + amount).min(derived.max_health);
                             }
+                            let player_pos = self.physics.body_position(self.player_rb);
+                            self.particles.emit_heal(player_pos);
                         }
                         CastResult::Projectile | CastResult::Miss => {}
                     }
@@ -892,6 +1036,8 @@ impl Engine {
                         let dealt = stats.take_damage(spell_hit.damage);
                         println!("Fireball hits enemy {} for {:.0}! HP: {:.0}", spell_hit.entity_id, dealt, stats.health);
                     }
+                    let hit_pos = self.physics.body_position(entity.body.rigid_body);
+                    self.particles.emit_fireball(hit_pos);
                     self.physics.apply_impulse(
                         entity.body.rigid_body,
                         spell_hit.knockback_dir * 4.0 * self.physics.body_mass(entity.body.rigid_body),
@@ -915,9 +1061,19 @@ impl Engine {
                 // Grab enemy type before removing.
                 let enemy_type = self.enemy_ais.get(&dead_id).map(|ai| ai.enemy_type);
 
+                // Get enemy position for death particles before removing.
+                let death_pos = self.world.entities.iter()
+                    .find(|e| e.id == dead_id)
+                    .map(|e| self.physics.body_position(e.body.rigid_body));
+
                 if let Some(entity) = self.world.remove_by_id(dead_id) {
                     self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                     self.enemy_ais.remove(&dead_id);
+
+                    // Death particles.
+                    if let Some(pos) = death_pos {
+                        self.particles.emit_death(pos);
+                    }
 
                     // Award XP to player.
                     let xp = progression::xp_for_kill(enemy_level);
@@ -926,6 +1082,8 @@ impl Engine {
                         println!("Enemy defeated! +{} XP", xp);
                         if levels > 0 {
                             println!("Level up! Now level {}", stats.level);
+                            let player_pos = self.physics.body_position(self.player_rb);
+                            self.particles.emit_level_up(player_pos);
                         }
                     }
 
@@ -1041,6 +1199,9 @@ impl Engine {
             let max_step = turn_speed * dt;
             self.player_visual_yaw += delta.clamp(-max_step, max_step);
         }
+
+        // --- Update particles ---
+        self.particles.update(dt);
 
         // --- Update tree shake + leaf particles ---
         self.structures.update_effects(dt);
@@ -1476,6 +1637,9 @@ impl Engine {
             | SHADOW_ONLY_BIT,
         );
 
+        // Particles.
+        self.particles.render(&mut self.frame_transforms, &mut self.frame_instance_ids);
+
         // Spell projectiles.
         let projectile_object_base: u32 = 0xFFA0;
         for (i, proj) in self.spells.projectiles.iter().enumerate() {
@@ -1652,7 +1816,11 @@ impl Engine {
         let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, 0.0, 0.0);
 
         // Build UI for this frame.
-        self.build_ui(hp_frac, mana_frac, stam_frac, level, biome_id, player_pos);
+        if self.game_state == GameState::MainMenu {
+            self.build_menu_ui();
+        } else {
+            self.build_ui(hp_frac, mana_frac, stam_frac, level, biome_id, player_pos);
+        }
         self.renderer.upload_ui(
             self.ui.primitives(),
             self.surface_width,
@@ -1700,6 +1868,67 @@ impl Engine {
     // -----------------------------------------------------------------------
     // UI building — immediate-mode, runs each frame
     // -----------------------------------------------------------------------
+
+    fn build_menu_ui(&mut self) {
+        let sw = self.surface_width as f32;
+        let sh = self.surface_height as f32;
+        self.ui.begin_frame(sw, sh);
+
+        let scale = 3.0;
+        let cell = 8.0 * scale;
+
+        // Dark overlay.
+        self.ui.rect(0.0, 0.0, sw, sh, [0.02, 0.02, 0.05, 0.95]);
+
+        // Title.
+        let title = "VOXEL REALMS";
+        let title_w = title.len() as f32 * cell;
+        self.ui.text(sw * 0.5 - title_w * 0.5, sh * 0.25, title, scale, [0.9, 0.75, 0.2, 1.0]);
+
+        // Subtitle.
+        let sub = "An Action RPG";
+        let sub_scale = 2.0;
+        let sub_cell = 8.0 * sub_scale;
+        let sub_w = sub.len() as f32 * sub_cell;
+        self.ui.text(sw * 0.5 - sub_w * 0.5, sh * 0.25 + cell + 8.0, sub, sub_scale, [0.6, 0.6, 0.7, 1.0]);
+
+        // Menu options.
+        let has_save = crate::save::load().is_ok();
+        let options: Vec<&str> = if has_save {
+            vec!["New Game", "Continue", "Quit"]
+        } else {
+            vec!["New Game", "Quit"]
+        };
+
+        let menu_scale = 2.0;
+        let menu_cell = 8.0 * menu_scale;
+        let line_h = menu_cell + 12.0;
+        let menu_y = sh * 0.5;
+
+        for (i, opt) in options.iter().enumerate() {
+            let opt_w = opt.len() as f32 * menu_cell;
+            let x = sw * 0.5 - opt_w * 0.5;
+            let y = menu_y + i as f32 * line_h;
+
+            let selected = i as u8 == self.menu_selection;
+            let color = if selected {
+                [1.0, 0.85, 0.3, 1.0]
+            } else {
+                [0.5, 0.5, 0.5, 1.0]
+            };
+
+            if selected {
+                // Selection indicator.
+                self.ui.text(x - menu_cell * 2.0, y, ">", menu_scale, color);
+            }
+            self.ui.text(x, y, opt, menu_scale, color);
+        }
+
+        // Controls hint.
+        let hint = "W/S Navigate   E Select   ESC Quit";
+        let hint_w = hint.len() as f32 * 8.0 * 1.5;
+        self.ui.text(sw * 0.5 - hint_w * 0.5, sh * 0.85, hint, 1.5, [0.4, 0.4, 0.4, 1.0]);
+    }
 
     fn build_ui(
         &mut self,

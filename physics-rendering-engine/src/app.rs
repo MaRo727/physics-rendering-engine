@@ -134,6 +134,8 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyQ) => self.input.cycle_spell = pressed,
                     PhysicalKey::Code(KeyCode::KeyR) => self.input.cast_spell = pressed,
                     PhysicalKey::Code(KeyCode::KeyI) => self.input.toggle_inventory = pressed,
+                    PhysicalKey::Code(KeyCode::F5) => self.input.quick_save = pressed,
+                    PhysicalKey::Code(KeyCode::F9) => self.input.quick_load = pressed,
                     _ => {}
                 }
             }
@@ -216,6 +218,10 @@ impl ApplicationHandler for App {
 
                     if let Some(engine) = self.engine.as_mut() {
                         engine.update(dt, &self.input);
+                        if engine.should_quit() {
+                            event_loop.exit();
+                            return;
+                        }
                         engine.render().expect("Render error");
                     }
 

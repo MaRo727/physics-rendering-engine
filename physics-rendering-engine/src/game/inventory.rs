@@ -4,13 +4,15 @@ use crate::game::items::{ItemId, item_by_id};
 
 pub const INVENTORY_SIZE: usize = 24;
 
-#[derive(Debug, Clone)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item_id: ItemId,
     pub count: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inventory {
     slots: [Option<ItemStack>; INVENTORY_SIZE],
 }

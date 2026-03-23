@@ -28,6 +28,10 @@ anyhow = "1"
 # Audio
 rodio = "0.20"
 
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
 # Logging
 log = "0.4"
 env_logger = "0.11"

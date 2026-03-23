@@ -24,6 +24,8 @@ pub struct InputState {
     pub cycle_spell: bool,      // Q — cycle active spell
     pub cast_spell: bool,       // R — cast active spell
     pub toggle_inventory: bool,  // I — toggle inventory screen
+    pub quick_save: bool,         // F5 — quick save
+    pub quick_load: bool,         // F9 — quick load
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -52,6 +54,8 @@ impl Default for InputState {
             cycle_spell: false,
             cast_spell: false,
             toggle_inventory: false,
+            quick_save: false,
+            quick_load: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

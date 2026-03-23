@@ -3,7 +3,9 @@
 use crate::game::items::{ItemId, EquipSlotKind, ItemKind, item_by_id};
 use crate::game::stats::StatBonuses;
 
-#[derive(Debug, Clone, Default)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EquipmentSlots {
     pub weapon: Option<ItemId>,
     pub head: Option<ItemId>,
