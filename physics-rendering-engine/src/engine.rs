@@ -144,6 +144,7 @@ pub struct Engine {
     npc_interact_prev: bool,
     save_prev: bool,
     load_prev: bool,
+    has_save_file: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -340,6 +341,7 @@ impl Engine {
             npc_interact_prev: false,
             save_prev: false,
             load_prev: false,
+            has_save_file: crate::save::load().is_ok(),
         };
 
         engine.spawn_npcs();
@@ -525,8 +527,7 @@ impl Engine {
         }
         // Reusing load_prev as "down_prev".
         if input.backward && !self.load_prev {
-            let has_save = crate::save::load().is_ok();
-            let max = if has_save { 2 } else { 1 }; // New Game, [Continue], Quit
+            let max = if self.has_save_file { 2 } else { 1 }; // New Game, [Continue], Quit
             if self.menu_selection < max { self.menu_selection += 1; }
         }
         self.save_prev = input.forward;
@@ -534,18 +535,17 @@ impl Engine {
 
         // Confirm with E or Space.
         if input.interact || input.jump {
-            let has_save = crate::save::load().is_ok();
             match self.menu_selection {
                 0 => {
                     // New Game.
                     self.game_state = GameState::Playing;
                 }
-                1 if has_save => {
+                1 if self.has_save_file => {
                     // Continue — load save.
                     self.do_load();
                     self.game_state = GameState::Playing;
                 }
-                s if s == (if has_save { 2 } else { 1 }) => {
+                s if s == (if self.has_save_file { 2 } else { 1 }) => {
                     // Quit — signal via sentinel.
                     self.menu_selection = 255;
                 }
@@ -576,8 +576,8 @@ impl Engine {
             time_of_day: self.time_of_day,
         };
         match crate::save::save(&data) {
-            Ok(()) => println!("Game saved."),
-            Err(e) => println!("Save failed: {}", e),
+            Ok(()) => { self.has_save_file = true; }
+            Err(_) => {}
         }
     }
 
@@ -688,7 +688,6 @@ impl Engine {
         // --- God mode toggle (F6) ---
         if input.toggle_god && !self.god_prev {
             self.god_mode = !self.god_mode;
-            println!("God mode: {}", if self.god_mode { "ON" } else { "OFF" });
         }
         self.god_prev = input.toggle_god;
 
@@ -970,8 +969,7 @@ impl Engine {
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
                         let dmg = if self.god_mode { 99999.0 } else { hit.damage };
-                        let dealt = stats.take_damage(dmg);
-                        println!("Hit enemy {} for {:.0} damage! HP: {:.0}", hit.entity_id, dealt, stats.health);
+                        stats.take_damage(dmg);
                     }
                     let hit_pos = self.physics.body_position(entity.body.rigid_body);
                     self.particles.emit_hit(hit_pos);
@@ -1047,8 +1045,7 @@ impl Engine {
                 if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
                         let dmg = if self.god_mode { 99999.0 } else { spell_hit.damage };
-                        let dealt = stats.take_damage(dmg);
-                        println!("Fireball hits enemy {} for {:.0}! HP: {:.0}", spell_hit.entity_id, dealt, stats.health);
+                        stats.take_damage(dmg);
                     }
                     let hit_pos = self.physics.body_position(entity.body.rigid_body);
                     self.particles.emit_fireball(hit_pos);
@@ -1093,9 +1090,7 @@ impl Engine {
                     let xp = progression::xp_for_kill(enemy_level);
                     if let Some(ref mut stats) = self.world.player_mut().stats {
                         let levels = progression::award_xp(stats, xp);
-                        println!("Enemy defeated! +{} XP", xp);
                         if levels > 0 {
-                            println!("Level up! Now level {}", stats.level);
                             let player_pos = self.physics.body_position(self.player_rb);
                             self.particles.emit_level_up(player_pos);
                         }
@@ -1113,13 +1108,9 @@ impl Engine {
                             if item_id == enemy_ai::LOOT_GOLD {
                                 if let Some(ref mut stats) = self.world.player_mut().stats {
                                     stats.gold += count as u32;
-                                    println!("+{} gold (total: {})", count, stats.gold);
                                 }
                             } else if let Some(ref mut inv) = self.world.player_mut().inventory {
-                                let overflow = inv.add(item_id, count);
-                                if overflow > 0 {
-                                    println!("Inventory full! {} items lost.", overflow);
-                                }
+                                inv.add(item_id, count);
                             }
                         }
                     }
@@ -1179,8 +1170,7 @@ impl Engine {
             for hit in self.enemy_hit_buf.iter().chain(self.arrow_hit_buf.iter()) {
                 if self.god_mode { continue; }
                 if let Some(ref mut stats) = self.world.player_mut().stats {
-                    let dealt = stats.take_damage(hit.damage);
-                    println!("Enemy hit you for {:.0} damage! HP: {:.0}", dealt, stats.health);
+                    stats.take_damage(hit.damage);
                 }
                 let player_rb = self.world.player().body.rigid_body;
                 let mass = self.physics.body_mass(player_rb);
@@ -1916,8 +1906,7 @@ impl Engine {
         self.ui.text(sw * 0.5 - sub_w * 0.5, sh * 0.25 + cell + 8.0, sub, sub_scale, [0.6, 0.6, 0.7, 1.0]);
 
         // Menu options.
-        let has_save = crate::save::load().is_ok();
-        let options: Vec<&str> = if has_save {
+        let options: Vec<&str> = if self.has_save_file {
             vec!["New Game", "Continue", "Quit"]
         } else {
             vec!["New Game", "Quit"]
