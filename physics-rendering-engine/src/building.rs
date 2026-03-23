@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use glam::Vec3;
-use rapier3d::prelude::{ColliderHandle, Isometry, RigidBodyHandle, SharedShape};
-
+use crate::physics::body::{ColliderHandle, Isometry, RigidBodyHandle, SharedShape};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::mesh::Vertex;
 

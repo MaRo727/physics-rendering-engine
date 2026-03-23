@@ -1,8 +1,7 @@
 use glam::Vec3;
-use rapier3d::prelude::RigidBodyHandle;
 
 use crate::game::entity::{Entity, EntityId};
-use crate::physics::body::PhysicsBody;
+use crate::physics::body::{PhysicsBody, RigidBodyHandle};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::MESH_ROCK;
 use crate::terrain::TerrainGrid;

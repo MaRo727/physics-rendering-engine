@@ -1,6 +1,9 @@
 use glam::Vec3;
 use rapier3d::prelude::*;
 
+// Re-export rapier types so code outside physics/ doesn't import rapier3d directly
+pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle, Isometry, SharedShape};
+
 use super::world::PhysicsWorld;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

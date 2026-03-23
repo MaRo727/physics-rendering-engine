@@ -1,8 +1,7 @@
 /// Spell definitions, cooldown tracking, projectile management, and casting.
 
 use glam::Vec3;
-use rapier3d::prelude::ColliderHandle;
-
+use crate::physics::body::ColliderHandle;
 use crate::renderer::{MESH_FIREBALL, MESH_ICESHARD};
 
 use crate::game::entity::{Entity, EntityId, EntityKind};

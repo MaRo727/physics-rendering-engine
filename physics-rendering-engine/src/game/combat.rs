@@ -1,10 +1,9 @@
 /// Combat state machine: handles melee attack timing, hit detection, and damage.
 
 use glam::Vec3;
-use rapier3d::prelude::ColliderHandle;
-
 use crate::game::entity::{Entity, EntityId, EntityKind};
 use crate::game::items::{WeaponData, WeaponType};
+use crate::physics::body::ColliderHandle;
 use crate::physics::world::PhysicsWorld;
 
 const BARE_FIST_DAMAGE: f32 = 5.0;

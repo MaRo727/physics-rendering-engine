@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
 use glam::Vec3;
-use rapier3d::prelude::RigidBodyHandle;
-
-use crate::physics::body::WeightClass;
+use crate::physics::body::{RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::game::entity::{Entity, EntityKind};
 
