@@ -33,6 +33,7 @@ const BUILDING_OBJECT_ID: u32 = 0xFFF0;
 const PLAYER_MODEL_OBJECT_ID: u32 = 0xFFE0;
 const WATER_OBJECT_ID: u32 = 0xFFD0;
 const PLAYER_SPEED: f32 = 5.0;
+const SPRINT_SPEED: f32 = 9.0;
 const FAST_SPEED: f32 = 40.0;
 const JUMP_VELOCITY: f32 = 6.0;
 const WATER_LEVEL: f32 = 5.0;
@@ -795,7 +796,7 @@ impl Engine {
         if input.backward { move_vel -= forward; }
         if input.right    { move_vel += right; }
         if input.left     { move_vel -= right; }
-        let speed = if self.fast_mode { FAST_SPEED } else { PLAYER_SPEED };
+        let speed = if self.fast_mode { FAST_SPEED } else if input.sprint { SPRINT_SPEED } else { PLAYER_SPEED };
         if move_vel.length_squared() > 0.0 {
             move_vel = move_vel.normalize() * speed;
         }

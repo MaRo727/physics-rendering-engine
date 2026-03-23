@@ -5,6 +5,7 @@ use crate::physics::body::PhysicsBody;
 use crate::physics::world::PhysicsWorld;
 
 const PLAYER_SPEED: f32 = 5.0;
+const SPRINT_SPEED: f32 = 9.0;
 const GHOST_SPEED: f32 = 12.0;
 const JUMP_VELOCITY: f32 = 6.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
@@ -57,7 +58,8 @@ impl Player {
         if input.right    { move_vel += right; }
         if input.left     { move_vel -= right; }
         if move_vel.length_squared() > 0.0 {
-            move_vel = move_vel.normalize() * PLAYER_SPEED;
+            let speed = if input.sprint { SPRINT_SPEED } else { PLAYER_SPEED };
+            move_vel = move_vel.normalize() * speed;
         }
 
         let mut vy = physics.body_linvel_y(self.body.rigid_body);

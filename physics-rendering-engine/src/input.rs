@@ -9,6 +9,7 @@ pub struct InputState {
     pub right: bool,
     pub jump: bool,
     pub descend: bool,     // Left Shift — ghost descend
+    pub sprint: bool,      // Left Shift — sprint
     pub interact: bool,    // E — pick up / drop
     pub throw: bool,       // Left mouse button — throw held object
     pub place: bool,       // Right mouse button — place held cube into grid
@@ -35,6 +36,7 @@ impl Default for InputState {
             right: false,
             jump: false,
             descend: false,
+            sprint: false,
             interact: false,
             throw: false,
             place: false,
