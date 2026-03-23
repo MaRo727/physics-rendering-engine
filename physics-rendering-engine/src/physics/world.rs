@@ -3,7 +3,10 @@ use rapier3d::prelude::*;
 use rapier3d::geometry::Ray;
 use smallvec::SmallVec;
 
-const FIXED_DT: f32 = 1.0 / 60.0;
+/// Maximum physics timestep — clamp to avoid instability on frame spikes
+/// while keeping exactly one step per frame (the game sets velocities
+/// directly each frame and expects a single integration step).
+const MAX_DT: f32 = 1.0 / 30.0;
 
 pub struct PhysicsWorld {
     pub rigid_body_set: RigidBodySet,
@@ -18,7 +21,6 @@ pub struct PhysicsWorld {
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
     query_pipeline: QueryPipeline,
-    accumulator: f32,
 }
 
 impl PhysicsWorld {
@@ -36,35 +38,26 @@ impl PhysicsWorld {
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
-            accumulator: 0.0,
         }
     }
 
     pub fn step(&mut self, dt: f32) {
-        self.accumulator += dt;
-        // Cap to avoid spiral-of-death if a frame takes too long.
-        if self.accumulator > FIXED_DT * 4.0 {
-            self.accumulator = FIXED_DT * 4.0;
-        }
-        self.integration_parameters.dt = FIXED_DT;
-        while self.accumulator >= FIXED_DT {
-            self.accumulator -= FIXED_DT;
-            self.physics_pipeline.step(
-                &self.gravity,
-                &self.integration_parameters,
-                &mut self.island_manager,
-                &mut self.broad_phase,
-                &mut self.narrow_phase,
-                &mut self.rigid_body_set,
-                &mut self.collider_set,
-                &mut self.impulse_joint_set,
-                &mut self.multibody_joint_set,
-                &mut self.ccd_solver,
-                None,
-                &(),
-                &(),
-            );
-        }
+        self.integration_parameters.dt = dt.min(MAX_DT);
+        self.physics_pipeline.step(
+            &self.gravity,
+            &self.integration_parameters,
+            &mut self.island_manager,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.rigid_body_set,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            &mut self.ccd_solver,
+            None,
+            &(),
+            &(),
+        );
         self.query_pipeline.update(&self.collider_set);
     }
 
