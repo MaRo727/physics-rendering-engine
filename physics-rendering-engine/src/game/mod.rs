@@ -7,3 +7,5 @@ pub mod entity;
 pub mod world;
 pub mod camera;
 pub mod player_model;
+pub mod combat;
+pub mod enemy_ai;

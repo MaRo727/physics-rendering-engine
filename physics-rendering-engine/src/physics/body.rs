@@ -122,6 +122,31 @@ impl PhysicsBody {
         Self { rigid_body, collider, weight_class }
     }
 
+    /// Dynamic rigid body with a ball collider and locked rotations — for enemies like slimes.
+    pub fn new_enemy_ball(
+        world: &mut PhysicsWorld,
+        position: Vec3,
+        radius: f32,
+        weight_class: WeightClass,
+    ) -> Self {
+        let rigid_body = RigidBodyBuilder::dynamic()
+            .translation(vector![position.x, position.y, position.z])
+            .additional_mass(weight_class.mass())
+            .locked_axes(LockedAxes::ROTATION_LOCKED)
+            .build();
+        let rigid_body = world.rigid_body_set.insert(rigid_body);
+
+        let collider = ColliderBuilder::ball(radius)
+            .restitution(0.3)
+            .build();
+        let collider =
+            world
+                .collider_set
+                .insert_with_parent(collider, rigid_body, &mut world.rigid_body_set);
+
+        Self { rigid_body, collider, weight_class }
+    }
+
     /// Dynamic rigid body with a convex hull collider — falls under gravity.
     pub fn new_dynamic_convex(
         world: &mut PhysicsWorld,

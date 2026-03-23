@@ -45,8 +45,10 @@ pub const MESH_FLOWER_YELLOW: u32 = 18;
 pub const MESH_FLOWER_BLUE: u32 = 19;
 pub const MESH_FLOWER_WHITE: u32 = 20;
 pub const MESH_FLOWER_PURPLE: u32 = 21;
-pub const MESH_TERRAIN_BASE: u32 = 22;
-const SHAPE_MESH_COUNT: usize = 22;
+pub const MESH_SLIME: u32 = 22;
+pub const MESH_FIST: u32 = 23;
+pub const MESH_TERRAIN_BASE: u32 = 24;
+const SHAPE_MESH_COUNT: usize = 24;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -265,6 +267,8 @@ impl Renderer {
             shapes::flower(Vec3::new(0.20, 0.30, 0.85)),  // MESH_FLOWER_BLUE = 19
             shapes::flower(Vec3::new(0.90, 0.90, 0.88)),  // MESH_FLOWER_WHITE = 20
             shapes::flower(Vec3::new(0.60, 0.20, 0.70)),  // MESH_FLOWER_PURPLE = 21
+            shapes::ball_colored(16, 24, Vec3::new(0.15, 0.75, 0.20)), // MESH_SLIME = 22
+            shapes::ball_colored(8, 12, Vec3::new(0.85, 0.70, 0.55)),  // MESH_FIST = 23
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

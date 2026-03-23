@@ -91,6 +91,22 @@ impl Entity {
         }
     }
 
+    /// Create an enemy entity with stats.
+    pub fn enemy(id: EntityId, body: PhysicsBody, mesh_type: u32, render_scale: Vec3, bounding_radius: f32, stats: StatBlock) -> Self {
+        Self {
+            id,
+            kind: EntityKind::Enemy,
+            body,
+            mesh_type,
+            render_scale,
+            bounding_radius,
+            stats: Some(stats),
+            inventory: None,
+            equipment: None,
+            drop_item: None,
+        }
+    }
+
     pub fn is_player(&self) -> bool {
         self.kind == EntityKind::Player
     }

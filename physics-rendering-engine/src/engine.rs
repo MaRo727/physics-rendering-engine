@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -7,16 +8,19 @@ use winit::window::Window;
 use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
 use crate::game::camera::ThirdPersonCamera;
+use crate::game::combat::{CombatSystem, PUNCH_KNOCKBACK};
+use crate::game::enemy_ai::{self, SlimeAi};
 use crate::game::entity::{Entity, EntityKind};
 use crate::game::player_model::{PlayerModel, BODY_PART_COUNT};
+use crate::game::stats::StatBlock;
 use crate::game::world::World;
 use crate::input::InputState;
-use crate::interaction::{Interaction, PickaxeHit, HammerHit};
+use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit};
 use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_CAPSULE, MESH_WATER, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_SLIME, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -87,6 +91,8 @@ pub struct Engine {
     surface_width: u32,
     surface_height: u32,
     audio: Option<AudioManager>,
+    combat: CombatSystem,
+    enemy_ais: HashMap<u32, SlimeAi>,
 }
 
 impl Engine {
@@ -186,10 +192,15 @@ impl Engine {
             surface_width,
             surface_height,
             audio: AudioManager::new(std::path::Path::new("../assets")),
+            combat: CombatSystem::new(),
+            enemy_ais: HashMap::new(),
         };
 
         // Spawn a few mining nodes scattered on the terrain.
         engine.spawn_mining_nodes();
+
+        // Spawn slime enemies on the terrain.
+        engine.spawn_slimes();
 
         Ok(engine)
     }
@@ -223,6 +234,40 @@ impl Engine {
                 },
             );
             self.world.entities.extend(new_entities);
+        }
+    }
+
+    fn spawn_slimes(&mut self) {
+        let positions = [
+            Vec3::new(12.0, 0.0, 8.0),
+            Vec3::new(-10.0, 0.0, 15.0),
+            Vec3::new(20.0, 0.0, -10.0),
+            Vec3::new(-18.0, 0.0, -12.0),
+            Vec3::new(8.0, 0.0, 25.0),
+            Vec3::new(-5.0, 0.0, -20.0),
+        ];
+        for (i, &pos) in positions.iter().enumerate() {
+            let terrain_y = self.terrain.height_at_world(pos.x, pos.z);
+            let spawn_pos = Vec3::new(pos.x, terrain_y + 1.0, pos.z);
+
+            let id = self.world.alloc_id();
+            let body = PhysicsBody::new_enemy_ball(
+                &mut self.physics,
+                spawn_pos,
+                0.5,
+                WeightClass::Light,
+            );
+            let stats = StatBlock::new_enemy(1, 5, 1, 3, 8, 3);
+            let entity = Entity::enemy(
+                id,
+                body,
+                MESH_SLIME,
+                Vec3::new(1.0, 0.7, 1.0),
+                0.5,
+                stats,
+            );
+            self.world.entities.push(entity);
+            self.enemy_ais.insert(id, SlimeAi::new(i as u32 * 7 + 13));
         }
     }
 
@@ -430,6 +475,59 @@ impl Engine {
                 ));
             }
 
+            // --- Combat: melee attack ---
+            if input.throw
+                && self.interaction.held_body.is_none()
+                && self.interaction.equipped_tool == ToolType::Hands
+            {
+                self.combat.try_attack();
+            }
+            if let Some(hit) = self.combat.update(
+                dt,
+                &self.physics,
+                &self.world.entities,
+                player_eye,
+                look_dir,
+                self.player_col,
+            ) {
+                // Apply damage to hit enemy.
+                if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == hit.entity_id) {
+                    if let Some(ref mut stats) = entity.stats {
+                        let dealt = stats.take_damage(hit.damage);
+                        println!("Hit enemy {} for {:.0} damage! HP: {:.0}", hit.entity_id, dealt, stats.health);
+                    }
+                    // Knockback.
+                    self.physics.apply_impulse(
+                        entity.body.rigid_body,
+                        hit.knockback_dir * PUNCH_KNOCKBACK * self.physics.body_mass(entity.body.rigid_body),
+                    );
+                }
+            }
+
+            // --- Remove dead enemies ---
+            let dead_ids: Vec<u32> = self.world.entities.iter()
+                .filter(|e| e.kind == EntityKind::Enemy)
+                .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
+                .map(|e| e.id)
+                .collect();
+            for dead_id in &dead_ids {
+                if let Some(idx) = self.world.entities.iter().position(|e| e.id == *dead_id) {
+                    let entity = self.world.entities.swap_remove(idx);
+                    self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                    self.enemy_ais.remove(dead_id);
+                    println!("Enemy {} defeated!", dead_id);
+                }
+            }
+
+            // --- Enemy AI ---
+            enemy_ai::update_all(
+                &mut self.enemy_ais,
+                &mut self.physics,
+                &self.world.entities,
+                player_pos,
+                dt,
+            );
+
             // --- Camera-relative player movement ---
             self.apply_player_movement(input);
 
@@ -439,6 +537,7 @@ impl Engine {
             self.physics.step(dt);
 
             // --- Update player model animation ---
+            self.player_model.set_attack_progress(self.combat.animation_progress());
             let vel = self.physics.body_linvel_xz(self.player_rb);
             let horiz_speed = Vec3::new(vel.x, 0.0, vel.z).length();
             self.player_model.update(dt, horiz_speed);
@@ -715,9 +814,10 @@ impl Engine {
         // Compute player yaw from movement direction or camera facing.
         let player_yaw = self.player_facing_yaw();
         let parts = self.player_model.compute_transforms(player_pos, player_yaw);
+        let part_meshes = PlayerModel::mesh_types();
         for (i, (transform, _scale)) in parts.iter().enumerate() {
             transforms.push(*transform);
-            instance_ids.push(pack_instance_id(MESH_CAPSULE, PLAYER_MODEL_OBJECT_ID + i as u32));
+            instance_ids.push(pack_instance_id(part_meshes[i], PLAYER_MODEL_OBJECT_ID + i as u32));
         }
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
@@ -875,11 +975,11 @@ impl Engine {
         let horiz = Vec3::new(vel.x, 0.0, vel.z);
         if horiz.length_squared() > 0.5 {
             // Face movement direction.
-            (-horiz.x).atan2(-horiz.z)
+            horiz.x.atan2(horiz.z)
         } else {
             // Face camera forward direction.
             let fwd = self.camera.forward_flat();
-            (-fwd.x).atan2(-fwd.z)
+            fwd.x.atan2(fwd.z)
         }
     }
 

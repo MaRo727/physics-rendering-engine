@@ -225,10 +225,11 @@ impl Interaction {
             } else {
                 match self.equipped_tool {
                     ToolType::Hands => {
-                        // Bare-fist punch.
+                        // Bare-fist punch — knock back props only (enemies handled by combat system).
                         let hit = physics.cast_ray(eye, look_dir, PUNCH_RANGE, player_collider);
                         if let Some(target_body) = hit {
-                            if physics.is_dynamic(target_body) {
+                            let is_enemy = entities.iter().any(|e| e.body.rigid_body == target_body && e.kind == EntityKind::Enemy);
+                            if physics.is_dynamic(target_body) && !is_enemy {
                                 let wc = weight_class_of(entities, target_body);
                                 let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
                                 physics.apply_impulse(target_body, force);

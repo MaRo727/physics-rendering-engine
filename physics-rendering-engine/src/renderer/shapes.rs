@@ -63,7 +63,12 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
 
 /// UV sphere centered at origin with radius 0.5.
 pub fn ball(stacks: u32, slices: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let color = Vec3::new(0.3, 0.6, 0.85);
+    ball_colored(stacks, slices, Vec3::new(0.3, 0.6, 0.85))
+}
+
+/// UV sphere with a custom vertex color.
+pub fn ball_colored(stacks: u32, slices: u32, color: Vec3) -> (Vec<Vertex>, Vec<u32>) {
+    let color = color;
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
