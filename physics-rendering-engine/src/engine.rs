@@ -22,7 +22,7 @@ use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_SLIME, MESH_WATER, MESH_SNOWFLAKE, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, pack_instance_id, MESH_CUBE, MESH_SLIME, MESH_WATER, MESH_TERRAIN_BASE};
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -44,95 +44,6 @@ const TERRAIN_REBUILD_INTERVAL: f32 = 0.1;
 const DEFORM_RADIUS: f32 = 3.0;
 /// Height lowered at the center of a pickaxe hit.
 const DEFORM_AMOUNT: f32 = 0.5;
-
-// ---------------------------------------------------------------------------
-// Snow particles
-// ---------------------------------------------------------------------------
-
-struct SnowParticle {
-    position: Vec3,
-    velocity: Vec3,
-    lifetime: f32,
-    scale: f32,
-}
-
-const SNOW_PARTICLE_MAX: usize = 400;
-const SNOW_SPAWN_RADIUS: f32 = 30.0;
-const SNOW_SPAWN_HEIGHT: f32 = 20.0;
-const SNOW_PARTICLE_LIFETIME: f32 = 4.0;
-const SNOW_OBJECT_ID_BASE: u32 = 0xFF00;
-
-struct SnowParticleSystem {
-    particles: Vec<SnowParticle>,
-    spawn_accum: f32,
-    rng_state: u32,
-}
-
-impl SnowParticleSystem {
-    fn new() -> Self {
-        Self {
-            particles: Vec::with_capacity(SNOW_PARTICLE_MAX),
-            spawn_accum: 0.0,
-            rng_state: 12345,
-        }
-    }
-
-    /// Simple xorshift RNG for particle randomization.
-    fn rand(&mut self) -> f32 {
-        self.rng_state ^= self.rng_state << 13;
-        self.rng_state ^= self.rng_state >> 17;
-        self.rng_state ^= self.rng_state << 5;
-        (self.rng_state as f32) / (u32::MAX as f32)
-    }
-
-    fn rand_range(&mut self, min: f32, max: f32) -> f32 {
-        min + self.rand() * (max - min)
-    }
-
-    fn update(&mut self, dt: f32, player_pos: Vec3, intensity: f32) {
-        // Update existing particles.
-        for p in &mut self.particles {
-            p.position += p.velocity * dt;
-            // Add some turbulence/swirl.
-            let t = p.lifetime;
-            p.position.x += (t * 2.3).sin() * 0.5 * dt;
-            p.position.z += (t * 1.7).cos() * 0.4 * dt;
-            p.lifetime -= dt;
-        }
-
-        // Remove dead particles or ones that have fallen too far below player.
-        self.particles.retain(|p| p.lifetime > 0.0 && p.position.y > player_pos.y - 10.0);
-
-        // Spawn new particles based on intensity.
-        if intensity <= 0.0 {
-            return;
-        }
-        let spawn_rate = intensity * (SNOW_PARTICLE_MAX as f32) / SNOW_PARTICLE_LIFETIME;
-        self.spawn_accum += spawn_rate * dt;
-
-        while self.spawn_accum >= 1.0 && self.particles.len() < SNOW_PARTICLE_MAX {
-            self.spawn_accum -= 1.0;
-
-            let angle = self.rand_range(0.0, std::f32::consts::TAU);
-            let dist = self.rand_range(0.0, SNOW_SPAWN_RADIUS);
-            let x = player_pos.x + angle.cos() * dist;
-            let z = player_pos.z + angle.sin() * dist;
-            let y = player_pos.y + self.rand_range(5.0, SNOW_SPAWN_HEIGHT);
-            let wind_x = self.rand_range(3.0, 7.0);
-            let wind_z = self.rand_range(-1.5, 1.5);
-            let fall = self.rand_range(-3.0, -1.5);
-            let scale = self.rand_range(0.04, 0.12);
-            let lifetime = SNOW_PARTICLE_LIFETIME + self.rand_range(-1.0, 1.0);
-
-            self.particles.push(SnowParticle {
-                position: Vec3::new(x, y, z),
-                velocity: Vec3::new(wind_x, fall, wind_z),
-                lifetime,
-                scale,
-            });
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -189,7 +100,6 @@ pub struct Engine {
     player_visual_yaw: f32,
     snow_intensity: f32,
     snow_time: f32,
-    snow_particles: SnowParticleSystem,
 }
 
 impl Engine {
@@ -296,7 +206,6 @@ impl Engine {
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
-            snow_particles: SnowParticleSystem::new(),
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -769,7 +678,6 @@ impl Engine {
                 self.snow_intensity = (self.snow_intensity - ramp_speed * dt).max(target);
             }
 
-            self.snow_particles.update(dt, player_pos, self.snow_intensity);
         }
 
         // --- Batched terrain rebuild (mesh + physics) ---
@@ -1059,13 +967,6 @@ impl Engine {
             let t = Mat4::from_translation(proj.position) * Mat4::from_scale(Vec3::splat(proj.scale));
             transforms.push(t);
             instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
-        }
-
-        // Snow particles.
-        for (i, p) in self.snow_particles.particles.iter().enumerate() {
-            let t = Mat4::from_translation(p.position) * Mat4::from_scale(Vec3::splat(p.scale));
-            transforms.push(t);
-            instance_ids.push(pack_instance_id(MESH_SNOWFLAKE, SNOW_OBJECT_ID_BASE + i as u32));
         }
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.

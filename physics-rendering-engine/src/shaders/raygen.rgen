@@ -250,6 +250,53 @@ void main() {
         0     // payload location
     );
 
+    // Volumetric 3D snowflakes — sample world-space positions along the ray.
+    float snowIntensity = scene.blizzardInfo.x;
+    if (snowIntensity > 0.0) {
+        float time = scene.blizzardInfo.y;
+        vec3 rayDir = normalize(direction.xyz);
+        vec3 rayOrig = origin.xyz;
+
+        float snowAccum = 0.0;
+
+        for (int i = 0; i < 40; i++) {
+            float depth = 0.8 + float(i) * 1.2;
+            vec3 samplePos = rayOrig + rayDir * depth;
+
+            // Animate: aggressive wind + falling.
+            samplePos.x -= time * 8.0;
+            samplePos.y += time * 2.5;
+            samplePos.z -= time * 3.0;
+
+            // Hash on a 3D grid.
+            float cellSize = 0.7;
+            vec3 cell = floor(samplePos / cellSize);
+            vec3 frac_pos = fract(samplePos / cellSize);
+
+            float h = fract(sin(dot(cell, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+
+            if (h > 0.82) {
+                vec3 flakeCenter = vec3(
+                    fract(sin(dot(cell, vec3(269.5, 183.3, 91.2))) * 76543.2109),
+                    fract(sin(dot(cell, vec3(419.2, 371.9, 128.6))) * 32145.7890),
+                    fract(sin(dot(cell, vec3(153.7, 287.4, 205.1))) * 54321.0987)
+                );
+
+                float d = length(frac_pos - flakeCenter);
+                float flakeRadius = 0.12 + h * 0.12;
+
+                if (d < flakeRadius) {
+                    float brightness = 1.0 - d / flakeRadius;
+                    float distFade = 1.0 - depth / 50.0;
+                    snowAccum += brightness * distFade * 0.25;
+                }
+            }
+        }
+
+        snowAccum = min(snowAccum, 1.0) * snowIntensity;
+        payload = mix(payload, vec3(0.92, 0.93, 0.96), snowAccum * 0.85);
+    }
+
     // Crosshair overlay.
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     ivec2 center = ivec2(gl_LaunchSizeEXT.xy) / 2;

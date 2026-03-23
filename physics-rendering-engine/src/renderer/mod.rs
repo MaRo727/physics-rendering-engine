@@ -49,9 +49,8 @@ pub const MESH_SLIME: u32 = 22;
 pub const MESH_FIST: u32 = 23;
 pub const MESH_FIREBALL: u32 = 24;
 pub const MESH_ICESHARD: u32 = 25;
-pub const MESH_SNOWFLAKE: u32 = 26;
-pub const MESH_TERRAIN_BASE: u32 = 27;
-const SHAPE_MESH_COUNT: usize = 27;
+pub const MESH_TERRAIN_BASE: u32 = 26;
+const SHAPE_MESH_COUNT: usize = 26;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -274,7 +273,6 @@ impl Renderer {
             shapes::ball_colored(8, 12, Vec3::new(0.85, 0.70, 0.55)),  // MESH_FIST = 23
             shapes::ball_colored(10, 16, Vec3::new(1.0, 0.45, 0.1)),   // MESH_FIREBALL = 24
             shapes::ball_colored(6, 8, Vec3::new(0.5, 0.8, 1.0)),     // MESH_ICESHARD = 25
-            shapes::ball_colored(4, 6, Vec3::new(0.92, 0.93, 0.96)),  // MESH_SNOWFLAKE = 26
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);
