@@ -752,10 +752,11 @@ impl Engine {
 
         // Debug overlay data.
         let biome_id = match self.terrain.biome_at_world(player_pos.x, player_pos.z) {
-            crate::terrain::Biome::Forest => 0.0,
-            crate::terrain::Biome::Desert => 1.0,
-            crate::terrain::Biome::Mountains => 2.0,
-            crate::terrain::Biome::Dungeon => 3.0,
+            crate::terrain::Biome::Plains => 0.0,
+            crate::terrain::Biome::Forest => 1.0,
+            crate::terrain::Biome::Desert => 2.0,
+            crate::terrain::Biome::Mountains => 3.0,
+            crate::terrain::Biome::Dungeon => 4.0,
         };
         let (hp_frac, mana_frac, stam_frac, level) = if let Some(stats) = &self.world.player().stats {
             let derived = stats.compute_derived(&crate::game::stats::StatBonuses::default());

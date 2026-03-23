@@ -63,6 +63,7 @@ impl AudioManager {
 
         // Register known biome tracks.
         let biome_files: &[(Biome, &str)] = &[
+            (Biome::Plains, "plains_forest.mp3"),
             (Biome::Forest, "plains_forest.mp3"),
             (Biome::Mountains, "mountain.mp3"),
             (Biome::Desert, "desert.mp3"),

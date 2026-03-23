@@ -316,31 +316,196 @@ pub fn triangle_prism() -> (Vec<Vertex>, Vec<u32>) {
 }
 
 // ---------------------------------------------------------------------------
-// Tree mesh data
+// Tree mesh data — recursive branching algorithm
 // ---------------------------------------------------------------------------
 
-/// Oak tree: brown rectangular trunk + green sphere foliage, baked into one mesh.
+/// Deterministic pseudo-random hash for branch variation.
+fn branch_hash(seed: u32) -> f32 {
+    let mut h = seed.wrapping_mul(2654435761);
+    h ^= h >> 16;
+    h = h.wrapping_mul(2246822519);
+    h ^= h >> 13;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+/// Configuration for procedural tree generation.
+struct TreeConfig {
+    max_depth: u32,
+    children_min: u32,
+    children_max: u32,
+    length_decay: f32,
+    radius_decay: f32,
+    spread_angle: f32,
+    upward_bias: f32,
+    has_leaves: bool,
+    bark_color: Vec3,
+    leaf_color: Vec3,
+    leaf_color_var: Vec3,
+    leaf_size: f32,
+    leaves_per_tip: u32,
+}
+
+/// Add a tapered cylinder between two arbitrary 3D points.
+fn add_branch_segment(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    base: Vec3, tip: Vec3, radius_base: f32, radius_tip: f32,
+    sides: u32, color: Vec3,
+) {
+    let dir = (tip - base).normalize();
+    let up = if dir.y.abs() > 0.95 { Vec3::Z } else { Vec3::Y };
+    let right = dir.cross(up).normalize();
+    let forward = right.cross(dir).normalize();
+
+    let base_idx = vertices.len() as u32;
+
+    for j in 0..sides {
+        let theta = 2.0 * PI * j as f32 / sides as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let offset = right * cos_t + forward * sin_t;
+        vertices.push(Vertex { position: base + offset * radius_base, normal: offset, color });
+    }
+
+    for j in 0..sides {
+        let theta = 2.0 * PI * j as f32 / sides as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let offset = right * cos_t + forward * sin_t;
+        vertices.push(Vertex { position: tip + offset * radius_tip, normal: offset, color });
+    }
+
+    for j in 0..sides {
+        let j_next = (j + 1) % sides;
+        let b0 = base_idx + j;
+        let b1 = base_idx + j_next;
+        let t0 = base_idx + sides + j;
+        let t1 = base_idx + sides + j_next;
+        indices.extend_from_slice(&[b0, b1, t1, b0, t1, t0]);
+    }
+}
+
+/// Add a small leaf quad (2 triangles).
+fn add_leaf_quad(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, size: f32, normal_dir: Vec3, color: Vec3,
+) {
+    let normal = if normal_dir.length_squared() < 0.001 { Vec3::Y } else { normal_dir.normalize() };
+    let up = if normal.y.abs() > 0.95 { Vec3::X } else { Vec3::Y };
+    let right = normal.cross(up).normalize() * size;
+    let fwd = right.cross(normal).normalize() * size;
+
+    let base = vertices.len() as u32;
+    vertices.push(Vertex { position: center - right - fwd, normal, color });
+    vertices.push(Vertex { position: center + right - fwd, normal, color });
+    vertices.push(Vertex { position: center + right + fwd, normal, color });
+    vertices.push(Vertex { position: center - right + fwd, normal, color });
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    // Back face (reversed winding)
+    indices.extend_from_slice(&[base + 2, base + 1, base, base + 3, base + 2, base]);
+}
+
+/// Recursively generate tree branches and optional leaf clusters.
+fn generate_branches(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    base: Vec3, direction: Vec3, length: f32, radius: f32,
+    depth: u32, config: &TreeConfig, seed: u32,
+) {
+    let tip = base + direction * length;
+    let tip_radius = radius * config.radius_decay;
+    let sides = if depth == 0 { 6 } else if depth == 1 { 5 } else { 4 };
+
+    add_branch_segment(vertices, indices, base, tip, radius, tip_radius, sides, config.bark_color);
+
+    if depth >= config.max_depth {
+        if config.has_leaves {
+            let n_leaves = config.leaves_per_tip + (branch_hash(seed + 100) * 3.0) as u32;
+            for i in 0..n_leaves {
+                let h1 = branch_hash(seed + 200 + i);
+                let h2 = branch_hash(seed + 300 + i);
+                let h3 = branch_hash(seed + 400 + i);
+
+                let spread = length * 0.7;
+                let offset = Vec3::new(
+                    (h1 - 0.5) * spread * 2.0,
+                    (h2 - 0.2) * spread * 1.5,
+                    (h3 - 0.5) * spread * 2.0,
+                );
+                let leaf_pos = tip + offset;
+                let leaf_normal = (offset + Vec3::Y * 0.5).normalize();
+                let t = h1;
+                let leaf_color = config.leaf_color * (1.0 - t) + config.leaf_color_var * t;
+                let leaf_sz = config.leaf_size * (0.7 + h2 * 0.6);
+
+                add_leaf_quad(vertices, indices, leaf_pos, leaf_sz, leaf_normal, leaf_color);
+            }
+        }
+        return;
+    }
+
+    // Spawn child branches
+    let range = config.children_max - config.children_min;
+    let n_children = config.children_min + (branch_hash(seed + 50) * (range as f32 + 0.99)) as u32;
+    let n_children = n_children.min(config.children_max);
+
+    // Local coordinate frame from parent direction
+    let up = if direction.y.abs() > 0.95 { Vec3::Z } else { Vec3::Y };
+    let right = direction.cross(up).normalize();
+    let forward = right.cross(direction).normalize();
+
+    for i in 0..n_children {
+        let h1 = branch_hash(seed.wrapping_mul(31).wrapping_add(i * 7 + 1));
+        let h2 = branch_hash(seed.wrapping_mul(31).wrapping_add(i * 7 + 2));
+        let h3 = branch_hash(seed.wrapping_mul(31).wrapping_add(i * 7 + 3));
+
+        let angle = 2.0 * PI * i as f32 / n_children as f32 + (h1 - 0.5) * 1.0;
+        let spread = config.spread_angle * (0.7 + h2 * 0.6);
+
+        let lateral = right * angle.cos() + forward * angle.sin();
+        let child_dir = (direction * spread.cos() + lateral * spread.sin()).normalize();
+        let child_dir = (child_dir + Vec3::Y * config.upward_bias).normalize();
+
+        let child_length = length * config.length_decay * (0.8 + h3 * 0.4);
+        let child_radius = tip_radius * (0.6 + h3 * 0.4);
+
+        generate_branches(
+            vertices, indices, tip, child_dir,
+            child_length, child_radius,
+            depth + 1, config,
+            seed.wrapping_mul(31).wrapping_add(i * 17 + 13),
+        );
+    }
+}
+
+/// Oak tree: recursive branching with leaf quad clusters.
 /// Base at y=0, total height ~6 units.
 pub fn tree_oak() -> (Vec<Vertex>, Vec<u32>) {
-    let bark = Vec3::new(0.4, 0.25, 0.12);
-    let leaf = Vec3::new(0.2, 0.5, 0.15);
-    let leaf_dark = Vec3::new(0.15, 0.4, 0.1);
-
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    // Trunk: box from y=0 to y=3, half-extents 0.3 x 1.5 x 0.3
-    let tw = 0.3;
-    let th = 3.0;
-    add_box(&mut vertices, &mut indices, Vec3::new(0.0, th * 0.5, 0.0), Vec3::new(tw, th * 0.5, tw), bark);
+    let config = TreeConfig {
+        max_depth: 3,
+        children_min: 2,
+        children_max: 3,
+        length_decay: 0.62,
+        radius_decay: 0.55,
+        spread_angle: 0.85,
+        upward_bias: 0.35,
+        has_leaves: true,
+        bark_color: Vec3::new(0.4, 0.25, 0.12),
+        leaf_color: Vec3::new(0.2, 0.5, 0.15),
+        leaf_color_var: Vec3::new(0.15, 0.4, 0.1),
+        leaf_size: 0.3,
+        leaves_per_tip: 4,
+    };
 
-    // Foliage: UV sphere at y=4.2, radius ~2.0
-    add_sphere(&mut vertices, &mut indices, Vec3::new(0.0, 4.2, 0.0), 2.0, 8, 12, leaf, leaf_dark);
+    generate_branches(
+        &mut vertices, &mut indices,
+        Vec3::ZERO, Vec3::Y,
+        2.8, 0.3, 0, &config, 42,
+    );
 
     (vertices, indices)
 }
 
-/// Pine tree: thin trunk + layered cone foliage.
+/// Pine tree: central trunk with tiered horizontal branches and needle clusters.
 /// Base at y=0, total height ~8 units.
 pub fn tree_pine() -> (Vec<Vertex>, Vec<u32>) {
     let bark = Vec3::new(0.35, 0.2, 0.1);
@@ -350,32 +515,111 @@ pub fn tree_pine() -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    // Trunk: thin box from y=0 to y=5
-    add_box(&mut vertices, &mut indices, Vec3::new(0.0, 2.5, 0.0), Vec3::new(0.2, 2.5, 0.2), bark);
+    let trunk_height = 7.0;
 
-    // Three stacked cones for foliage
-    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 3.0, 0.0), 2.0, 2.5, 8, needle, needle_dark);
-    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 4.5, 0.0), 1.5, 2.5, 8, needle, needle_dark);
-    add_cone(&mut vertices, &mut indices, Vec3::new(0.0, 6.0, 0.0), 1.0, 2.0, 8, needle, needle_dark);
+    // Tapered central trunk
+    add_branch_segment(
+        &mut vertices, &mut indices,
+        Vec3::ZERO, Vec3::new(0.0, trunk_height, 0.0),
+        0.2, 0.06, 6, bark,
+    );
+
+    // Tiered branches
+    let num_tiers: u32 = 6;
+    let start_height = 1.8;
+    let tier_spacing = (trunk_height - start_height - 0.5) / num_tiers as f32;
+
+    for tier in 0..num_tiers {
+        let y = start_height + tier as f32 * tier_spacing;
+        let t = tier as f32 / (num_tiers - 1) as f32;
+        let branch_length = (1.0 - t * 0.7) * 2.0;
+        let branches_in_tier: u32 = if tier % 2 == 0 { 4 } else { 5 };
+        let rotation_offset = tier as f32 * 0.7;
+
+        for i in 0..branches_in_tier {
+            let angle = 2.0 * PI * i as f32 / branches_in_tier as f32 + rotation_offset;
+            let h = branch_hash(tier * 100 + i);
+
+            // Slight droop
+            let droop = -0.2 + t * 0.1;
+            let branch_dir = Vec3::new(angle.cos(), droop, angle.sin()).normalize();
+            let branch_base = Vec3::new(0.0, y, 0.0);
+            let branch_tip = branch_base + branch_dir * branch_length;
+            let branch_radius = 0.07 * (1.0 - t * 0.5);
+
+            add_branch_segment(
+                &mut vertices, &mut indices,
+                branch_base, branch_tip,
+                branch_radius, branch_radius * 0.25, 4, bark,
+            );
+
+            // Needle clusters along branch
+            let num_needles = 3 + (h * 3.0) as u32;
+            for j in 0..num_needles {
+                let frac = (j as f32 + 0.4) / num_needles as f32;
+                let pos = branch_base + (branch_tip - branch_base) * frac;
+                let h3 = branch_hash(tier * 1000 + i * 100 + j);
+                let h4 = branch_hash(tier * 1000 + i * 100 + j + 50);
+                let needle_color = needle * (1.0 - h3 * 0.4) + needle_dark * (h3 * 0.4);
+                let needle_offset = Vec3::new(
+                    (h3 - 0.5) * 0.25,
+                    0.1 + h4 * 0.2,
+                    (h4 - 0.5) * 0.25,
+                );
+                let size = 0.35 * (1.0 - t * 0.4) * (0.6 + h3 * 0.8);
+                let needle_normal = (needle_offset + Vec3::Y * 0.4).normalize();
+                add_leaf_quad(
+                    &mut vertices, &mut indices,
+                    pos + needle_offset, size, needle_normal, needle_color,
+                );
+            }
+        }
+    }
+
+    // Top tuft of needles
+    for i in 0..6u32 {
+        let h = branch_hash(9000 + i);
+        let h2 = branch_hash(9100 + i);
+        let angle = 2.0 * PI * i as f32 / 6.0;
+        let pos = Vec3::new(
+            angle.cos() * 0.25 * h,
+            trunk_height + h2 * 0.4,
+            angle.sin() * 0.25 * h,
+        );
+        let color = needle * (1.0 - h * 0.3) + needle_dark * (h * 0.3);
+        add_leaf_quad(&mut vertices, &mut indices, pos, 0.3, Vec3::Y, color);
+    }
 
     (vertices, indices)
 }
 
-/// Dead tree: bare trunk with a few branches, no foliage.
-/// Base at y=0, height ~4 units.
+/// Dead tree: recursive bare branches, no foliage.
+/// Base at y=0, height ~4-5 units.
 pub fn tree_dead() -> (Vec<Vertex>, Vec<u32>) {
-    let bark = Vec3::new(0.3, 0.22, 0.15);
-
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    // Main trunk
-    add_box(&mut vertices, &mut indices, Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.25, 2.0, 0.25), bark);
+    let config = TreeConfig {
+        max_depth: 3,
+        children_min: 2,
+        children_max: 3,
+        length_decay: 0.55,
+        radius_decay: 0.5,
+        spread_angle: 1.0,
+        upward_bias: 0.15,
+        has_leaves: false,
+        bark_color: Vec3::new(0.3, 0.22, 0.15),
+        leaf_color: Vec3::ZERO,
+        leaf_color_var: Vec3::ZERO,
+        leaf_size: 0.0,
+        leaves_per_tip: 0,
+    };
 
-    // Branch stubs
-    add_box(&mut vertices, &mut indices, Vec3::new(0.6, 3.0, 0.0), Vec3::new(0.6, 0.12, 0.12), bark);
-    add_box(&mut vertices, &mut indices, Vec3::new(-0.4, 2.3, 0.2), Vec3::new(0.5, 0.1, 0.1), bark);
-    add_box(&mut vertices, &mut indices, Vec3::new(0.1, 3.5, -0.3), Vec3::new(0.1, 0.1, 0.4), bark);
+    generate_branches(
+        &mut vertices, &mut indices,
+        Vec3::ZERO, Vec3::Y,
+        3.0, 0.25, 0, &config, 77,
+    );
 
     (vertices, indices)
 }
@@ -499,6 +743,7 @@ fn add_diamond(
 }
 
 /// Helper: add an axis-aligned box to the mesh.
+#[allow(dead_code)]
 fn add_box(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: Vec3, half: Vec3, color: Vec3) {
     let faces: [(Vec3, Vec3, Vec3, Vec3, Vec3); 6] = [
         // (a, b, c, d, normal) — quad vertices in CCW order
@@ -520,6 +765,7 @@ fn add_box(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: Vec3, hal
 }
 
 /// Helper: add a UV sphere to the mesh.
+#[allow(dead_code)]
 fn add_sphere(
     vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
     center: Vec3, radius: f32, stacks: u32, slices: u32,
@@ -552,6 +798,7 @@ fn add_sphere(
 }
 
 /// Helper: add a cone to the mesh.
+#[allow(dead_code)]
 fn add_cone(
     vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
     base_center: Vec3, radius: f32, height: f32, slices: u32,

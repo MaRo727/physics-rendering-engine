@@ -59,67 +59,82 @@ impl StructureGrid {
         let half = TERRAIN_HALF as f32;
         let steps = ((half * 2.0) / PLACEMENT_STEP) as i32;
 
-        for gz in 0..steps {
-            for gx in 0..steps {
-                let base_x = -half + gx as f32 * PLACEMENT_STEP;
-                let base_z = -half + gz as f32 * PLACEMENT_STEP;
+        // Multiple placement passes: pass 0 is base grid, passes 1-2 are
+        // offset sub-grids that only place trees in forest biome (3x density).
+        for pass in 0u32..3 {
+            let pass_seed = seed.wrapping_add(pass * 7919);
+            // Offset sub-grids by 1/3 and 2/3 of step to avoid overlap.
+            let offset_x = pass as f32 * PLACEMENT_STEP / 3.0;
+            let offset_z = pass as f32 * PLACEMENT_STEP * 0.41; // non-aligned offset
 
-                let h = placement_hash(seed, gx, gz);
+            for gz in 0..steps {
+                for gx in 0..steps {
+                    let base_x = -half + gx as f32 * PLACEMENT_STEP + offset_x;
+                    let base_z = -half + gz as f32 * PLACEMENT_STEP + offset_z;
 
-                // Jitter position within the cell.
-                let jx = base_x + hash_f32(h) * PLACEMENT_STEP;
-                let jz = base_z + hash_f32(h.wrapping_mul(2654435761)) * PLACEMENT_STEP;
+                    let h = placement_hash(pass_seed, gx, gz);
 
-                let biome = terrain.biome_at_world(jx, jz);
-                let height = terrain.height_at_world(jx, jz);
+                    // Jitter position within the cell.
+                    let jx = base_x + hash_f32(h) * PLACEMENT_STEP;
+                    let jz = base_z + hash_f32(h.wrapping_mul(2654435761)) * PLACEMENT_STEP;
 
-                // Biome-specific placement rules.
-                let (density_threshold, mesh_type) = match biome {
-                    Biome::Forest => {
-                        if height <= 6.0 { continue; } // below water
-                        // Mix oak and pine.
-                        let mesh = if hash_f32(h.wrapping_add(1)) > 0.4 {
-                            MESH_TREE_OAK
-                        } else {
-                            MESH_TREE_PINE
-                        };
-                        (0.55, mesh) // ~55% of grid cells get a tree
+                    let biome = terrain.biome_at_world(jx, jz);
+                    let height = terrain.height_at_world(jx, jz);
+
+                    // Biome-specific placement rules.
+                    let (density_threshold, mesh_type) = match biome {
+                        Biome::Plains => {
+                            if pass > 0 { continue; } // only base pass for plains
+                            if height <= 6.0 { continue; }
+                            (0.12, MESH_TREE_OAK)
+                        }
+                        Biome::Forest => {
+                            if height <= 6.0 { continue; }
+                            let mesh = if hash_f32(h.wrapping_add(1)) > 0.35 {
+                                MESH_TREE_OAK
+                            } else {
+                                MESH_TREE_PINE
+                            };
+                            (0.75, mesh) // all 3 passes place in forest
+                        }
+                        Biome::Desert => {
+                            if pass > 0 { continue; }
+                            if height <= 4.0 { continue; }
+                            (0.05, MESH_TREE_DEAD)
+                        }
+                        Biome::Mountains => {
+                            if pass > 0 { continue; }
+                            if height <= 6.0 || height > 30.0 { continue; }
+                            (0.3, MESH_TREE_PINE)
+                        }
+                        Biome::Dungeon => continue,
+                    };
+
+                    // Density check.
+                    if hash_f32(h.wrapping_add(2)) > density_threshold {
+                        continue;
                     }
-                    Biome::Desert => {
-                        if height <= 4.0 { continue; }
-                        (0.05, MESH_TREE_DEAD) // very sparse
-                    }
-                    Biome::Mountains => {
-                        if height <= 6.0 || height > 30.0 { continue; } // below water or above treeline
-                        (0.3, MESH_TREE_PINE) // moderate density, pine only
-                    }
-                    Biome::Dungeon => continue, // no trees
-                };
 
-                // Density check.
-                if hash_f32(h.wrapping_add(2)) > density_threshold {
-                    continue;
+                    // Random scale and rotation.
+                    let scale_factor = 0.8 + hash_f32(h.wrapping_add(3)) * 0.6;
+                    let rotation_y = hash_f32(h.wrapping_add(4)) * std::f32::consts::TAU;
+
+                    let tree_idx = trees.len();
+                    trees.push(TreeInstance {
+                        position: Vec3::new(jx, height, jz),
+                        mesh_type,
+                        scale: Vec3::splat(scale_factor),
+                        rotation_y,
+                    });
+
+                    // Bucket by chunk.
+                    let cx = ((jx + half) / CHUNK_WORLD_SIZE) as usize;
+                    let cz = ((jz + half) / CHUNK_WORLD_SIZE) as usize;
+                    let cx = cx.min(CHUNKS_PER_SIDE as usize - 1);
+                    let cz = cz.min(CHUNKS_PER_SIDE as usize - 1);
+                    let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
+                    chunk_buckets[bucket].push(tree_idx);
                 }
-
-                // Random scale and rotation.
-                let scale_factor = 0.8 + hash_f32(h.wrapping_add(3)) * 0.6; // 0.8–1.4
-                let rotation_y = hash_f32(h.wrapping_add(4)) * std::f32::consts::TAU;
-
-                let tree_idx = trees.len();
-                trees.push(TreeInstance {
-                    position: Vec3::new(jx, height, jz),
-                    mesh_type,
-                    scale: Vec3::splat(scale_factor),
-                    rotation_y,
-                });
-
-                // Bucket by chunk.
-                let cx = ((jx + half) / CHUNK_WORLD_SIZE) as usize;
-                let cz = ((jz + half) / CHUNK_WORLD_SIZE) as usize;
-                let cx = cx.min(CHUNKS_PER_SIDE as usize - 1);
-                let cz = cz.min(CHUNKS_PER_SIDE as usize - 1);
-                let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
-                chunk_buckets[bucket].push(tree_idx);
             }
         }
 
@@ -298,9 +313,13 @@ impl GrassGrid {
 
                 // Only spawn patches in grassy biomes.
                 let patch_probability = match biome {
+                    Biome::Plains => {
+                        if center_height <= 6.0 || center_height > 20.0 { continue; }
+                        0.05 // more open meadows
+                    }
                     Biome::Forest => {
                         if center_height <= 6.0 || center_height > 22.0 { continue; }
-                        0.035 // rare large fields
+                        0.025 // less grass under dense canopy
                     }
                     Biome::Mountains => {
                         if center_height <= 6.0 || center_height > 15.0 { continue; }
@@ -373,6 +392,9 @@ impl GrassGrid {
                     let strand_biome = terrain.biome_at_world(strand_x, strand_z);
                     let strand_height = terrain.height_at_world(strand_x, strand_z);
                     match strand_biome {
+                        Biome::Plains => {
+                            if strand_height <= 6.0 || strand_height > 20.0 { continue; }
+                        }
                         Biome::Forest => {
                             if strand_height <= 6.0 || strand_height > 22.0 { continue; }
                         }

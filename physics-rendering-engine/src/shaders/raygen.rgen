@@ -167,14 +167,16 @@ vec3 drawDebugOverlay(ivec2 pixel, ivec2 screenSize, vec3 scene_color) {
 
     int bname[20];
     int blen = 0;
-    if (biome == 0) { bname = int[20](70,79,82,69,83,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
-    else if (biome == 1) { bname = int[20](68,69,83,69,82,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
-    else if (biome == 2) { bname = int[20](77,79,85,78,84,65,73,78, 0,0,0,0,0,0,0,0,0,0,0,0); blen = 8; }
+    if (biome == 0) { bname = int[20](80,76,65,73,78,83, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
+    else if (biome == 1) { bname = int[20](70,79,82,69,83,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
+    else if (biome == 2) { bname = int[20](68,69,83,69,82,84, 0,0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 6; }
+    else if (biome == 3) { bname = int[20](77,79,85,78,84,65,73,78, 0,0,0,0,0,0,0,0,0,0,0,0); blen = 8; }
     else { bname = int[20](68,85,78,71,69,79,78, 0,0,0,0,0,0,0,0,0,0,0,0,0); blen = 7; }
     hit = sampleString(pixel, ivec2(ox + 7 * cw, oy), scale, bname, blen);
-    vec3 biomeCol = biome == 0 ? vec3(0.3, 0.8, 0.3) :
-                    biome == 1 ? vec3(0.9, 0.8, 0.4) :
-                    biome == 2 ? vec3(0.7, 0.7, 0.9) :
+    vec3 biomeCol = biome == 0 ? vec3(0.5, 0.8, 0.3) :
+                    biome == 1 ? vec3(0.2, 0.6, 0.2) :
+                    biome == 2 ? vec3(0.9, 0.8, 0.4) :
+                    biome == 3 ? vec3(0.7, 0.7, 0.9) :
                                  vec3(0.6, 0.4, 0.7);
     if (hit > 0.0) return biomeCol;
 

@@ -16,6 +16,7 @@ const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 100
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Biome {
+    Plains,
     Forest,
     Desert,
     Mountains,
@@ -32,6 +33,12 @@ struct BiomeParams {
 impl Biome {
     fn params(self) -> BiomeParams {
         match self {
+            Biome::Plains => BiomeParams {
+                min_height: -8.0,
+                max_height: 22.0,
+                frequency: 0.005,
+                power: 1.3,
+            },
             Biome::Forest => BiomeParams {
                 min_height: -10.0,
                 max_height: 30.0,
@@ -61,6 +68,17 @@ impl Biome {
 
     fn color(self, y: f32) -> Vec3 {
         match self {
+            Biome::Plains => {
+                if y <= 2.0 {
+                    Vec3::new(0.4, 0.25, 0.1) // underwater bed
+                } else if y <= 6.0 {
+                    Vec3::new(0.76, 0.70, 0.50) // shore sand
+                } else if y <= 14.0 {
+                    Vec3::new(0.35, 0.60, 0.20) // bright open grass
+                } else {
+                    Vec3::new(0.40, 0.52, 0.25) // dry highland grass
+                }
+            }
             Biome::Forest => {
                 if y <= 2.0 {
                     Vec3::new(0.4, 0.25, 0.1) // underwater bed
@@ -138,8 +156,10 @@ fn pick_biome(temperature: f64, moisture: f64) -> Biome {
         Biome::Mountains
     } else if temperature < -0.1 && moisture < -0.2 {
         Biome::Dungeon
+    } else if moisture > 0.15 {
+        Biome::Forest // dense woodland in wetter areas
     } else {
-        Biome::Forest
+        Biome::Plains // open grassland in drier temperate areas
     }
 }
 
@@ -202,7 +222,7 @@ impl TerrainGrid {
 
         let total = GRID_SIZE * GRID_SIZE;
         let mut heights = vec![0.0f32; total];
-        let mut biomes = vec![Biome::Forest; total];
+        let mut biomes = vec![Biome::Plains; total];
 
         for gz in 0..GRID_SIZE {
             for gx in 0..GRID_SIZE {
