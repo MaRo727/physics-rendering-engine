@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
-use winit::window::Window;
 
 use crate::audio::AudioManager;
 use crate::building::{self, BuildingGrid};
@@ -24,6 +22,8 @@ use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, pack_instance_id, SHADOW_ONLY_BIT, MESH_CUBE, MESH_WATER, MESH_TERRAIN_BASE};
+use crate::renderer::context::VulkanContext;
+use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -117,90 +117,150 @@ pub struct Engine {
     despawn_ids: Vec<u32>,
 }
 
+/// Number of progress steps reported by `init_world`.
+pub const INIT_STEPS: u32 = 6;
+
+/// Data produced by the background init thread, consumed by `Engine::from_init_data`.
+pub struct InitData {
+    pub config: EngineConfig,
+    pub physics: PhysicsWorld,
+    pub world: World,
+    pub player_rb: rapier3d::prelude::RigidBodyHandle,
+    pub player_col: rapier3d::prelude::ColliderHandle,
+    pub camera: FirstPersonCamera,
+    pub player_model: PlayerModel,
+    pub terrain: TerrainGrid,
+    pub terrain_chunks: Vec<TerrainChunkInfo>,
+    pub terrain_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
+    pub terrain_chunk_cols: Vec<rapier3d::prelude::ColliderHandle>,
+    pub structures: StructureGrid,
+    pub grass: GrassGrid,
+    pub tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
+    pub chunk_meshes: Vec<(Vec<crate::renderer::mesh::Vertex>, Vec<u32>)>,
+    pub num_terrain_chunks: usize,
+}
+
+/// Run all heavy CPU-side initialisation on a background thread.
+/// Bumps `progress` (0 → INIT_STEPS) as each stage completes.
+pub fn init_world(
+    config: EngineConfig,
+    progress: std::sync::Arc<std::sync::atomic::AtomicU32>,
+) -> Result<InitData> {
+    use std::sync::atomic::Ordering;
+
+    let mut physics = PhysicsWorld::new(config.gravity);
+    let (entities, player_id, next_id) = scene::build_scene(&mut physics);
+    progress.store(1, Ordering::Relaxed);
+
+    // Generate terrain chunks.
+    let terrain = TerrainGrid::generate(42);
+    progress.store(2, Ordering::Relaxed);
+
+    let (chunk_meshes, terrain_chunks, _full_mesh) =
+        terrain.generate_chunks(MESH_TERRAIN_BASE);
+    let num_terrain_chunks = chunk_meshes.len();
+    progress.store(3, Ordering::Relaxed);
+
+    // Add per-chunk heightfield colliders for terrain.
+    let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
+    let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
+    let mut terrain_rbs = std::collections::HashSet::new();
+    let mut terrain_chunk_cols = Vec::with_capacity(terrain.chunk_count());
+    for i in 0..terrain.chunk_count() {
+        let (heights, nrows, ncols, cx, cz) = terrain.chunk_heightfield_data(i);
+        let (rb, col) = physics.add_heightfield_chunk(&heights, nrows, ncols, chunk_scale, cx, cz);
+        terrain_rbs.insert(rb);
+        terrain_chunk_cols.push(col);
+    }
+
+    // Build game world.
+    let world = World::new(entities, player_id, next_id);
+
+    // Extract player physics handles.
+    let player_rb = world.player().body.rigid_body;
+    let player_col = world.player().body.collider;
+
+    // Spawn player on terrain surface.
+    let spawn_h = terrain.get_height(0, 4) + 1.0 + 0.9;
+    physics.set_body_position(player_rb, Vec3::new(0.0, spawn_h, 4.0));
+
+    let camera = FirstPersonCamera::new();
+    let player_model = PlayerModel::new();
+    progress.store(4, Ordering::Relaxed);
+
+    // Generate structures (trees, ruins) and grass on terrain.
+    let structures = StructureGrid::generate(42, &terrain);
+    let grass = GrassGrid::generate(42, &terrain);
+    progress.store(5, Ordering::Relaxed);
+
+    // Add tree trunk colliders (compound collider per chunk).
+    let mut tree_rbs = std::collections::HashSet::new();
+    for (_, trunks) in structures.trunk_colliders() {
+        if !trunks.is_empty() {
+            let rb = physics.add_compound_static(&trunks);
+            tree_rbs.insert(rb);
+        }
+    }
+    progress.store(6, Ordering::Relaxed);
+
+    Ok(InitData {
+        config,
+        physics,
+        world,
+        player_rb,
+        player_col,
+        camera,
+        player_model,
+        terrain,
+        terrain_chunks,
+        terrain_rbs,
+        terrain_chunk_cols,
+        structures,
+        grass,
+        tree_rbs,
+        chunk_meshes,
+        num_terrain_chunks,
+    })
+}
+
 impl Engine {
-    pub fn new(config: EngineConfig, window: &Arc<Window>) -> Result<Self> {
-        let surface_width = config.window_width;
-        let surface_height = config.window_height;
+    /// Assemble the engine from pre-computed init data and Vulkan resources.
+    pub fn from_init_data(
+        data: InitData,
+        context: VulkanContext,
+        swapchain: Swapchain,
+    ) -> Result<Self> {
+        let surface_width = data.config.window_width;
+        let surface_height = data.config.window_height;
 
-        let mut physics = PhysicsWorld::new(config.gravity);
-        let (entities, player_id, next_id) = scene::build_scene(&mut physics);
-
-        // Generate terrain chunks.
-        let terrain = TerrainGrid::generate(42);
-        let (chunk_meshes, terrain_chunks, _full_mesh) =
-            terrain.generate_chunks(MESH_TERRAIN_BASE);
-        let num_terrain_chunks = chunk_meshes.len();
-
-        // Add per-chunk heightfield colliders for terrain.
-        let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
-        let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
-        let mut terrain_rbs = std::collections::HashSet::new();
-        let mut terrain_chunk_cols = Vec::with_capacity(terrain.chunk_count());
-        for i in 0..terrain.chunk_count() {
-            let (heights, nrows, ncols, cx, cz) = terrain.chunk_heightfield_data(i);
-            let (rb, col) = physics.add_heightfield_chunk(&heights, nrows, ncols, chunk_scale, cx, cz);
-            terrain_rbs.insert(rb);
-            terrain_chunk_cols.push(col);
-        }
-
-        // Build game world.
-        let world = World::new(entities, player_id, next_id);
-
-        // Extract player physics handles.
-        let player_rb = world.player().body.rigid_body;
-        let player_col = world.player().body.collider;
-
-        // Spawn player on terrain surface.
-        let spawn_h = terrain.get_height(0, 4) + 1.0 + 0.9;
-        physics.set_body_position(player_rb, Vec3::new(0.0, spawn_h, 4.0));
-
-        let camera = FirstPersonCamera::new();
-        let player_model = PlayerModel::new();
-
-        let terrain_object_id = 0xFFF1;
-
-        // Generate structures (trees, ruins) and grass on terrain.
-        let structures = StructureGrid::generate(42, &terrain);
-        let grass = GrassGrid::generate(42, &terrain);
-
-        // Add tree trunk colliders (compound collider per chunk).
-        let mut tree_rbs = std::collections::HashSet::new();
-        for (_, trunks) in structures.trunk_colliders() {
-            if !trunks.is_empty() {
-                let rb = physics.add_compound_static(&trunks);
-                tree_rbs.insert(rb);
-            }
-        }
-
-        // Extra headroom: base entities + terrain + building + player model parts + trees + grass + dynamic.
-        let max_instances = (world.entities.len() + num_terrain_chunks + 3 + FP_PART_COUNT + 32768 + 16384 + 512) as u32;
-        let renderer = Renderer::new(window, max_instances, chunk_meshes)?;
+        let max_instances = (data.world.entities.len() + data.num_terrain_chunks + 3
+            + FP_PART_COUNT + 32768 + 16384 + 512) as u32;
+        let renderer = Renderer::new(context, swapchain, max_instances, data.chunk_meshes)?;
         let mesh_building_id = renderer.mesh_building_id();
 
-        // Spawn initial mining nodes on terrain.
         let mining = MiningSystem::new();
         let mut engine = Self {
-            config,
-            physics,
-            world,
-            player_rb,
-            player_col,
-            camera,
-            player_model,
+            config: data.config,
+            physics: data.physics,
+            world: data.world,
+            player_rb: data.player_rb,
+            player_col: data.player_col,
+            camera: data.camera,
+            player_model: data.player_model,
             renderer,
             interaction: Interaction::default(),
             ghost: GhostCamera::default(),
-            terrain,
-            terrain_chunks,
-            terrain_object_id,
-            terrain_rbs,
-            terrain_chunk_cols,
+            terrain: data.terrain,
+            terrain_chunks: data.terrain_chunks,
+            terrain_object_id: 0xFFF1,
+            terrain_rbs: data.terrain_rbs,
+            terrain_chunk_cols: data.terrain_chunk_cols,
             terrain_rebuild_timer: 0.0,
             mesh_building_id,
             building: BuildingGrid::new(),
             mining,
-            structures,
-            grass,
+            structures: data.structures,
+            grass: data.grass,
             place_prev: false,
             spawn_prev: false,
             debug_stats_prev: false,
@@ -212,7 +272,7 @@ impl Engine {
             fast_time: false,
             fast_time_prev: false,
             water_time: 0.0,
-            time_of_day: 0.35, // start at mid-morning
+            time_of_day: 0.35,
             surface_width,
             surface_height,
             audio: AudioManager::new(std::path::Path::new("../assets")),
@@ -226,7 +286,7 @@ impl Engine {
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
-            tree_rbs,
+            tree_rbs: data.tree_rbs,
             tree_punch_seed: 12345,
             player_derived: StatBlock::new_player().compute_derived(&StatBonuses::default()),
             frame_transforms: Vec::new(),
@@ -236,10 +296,8 @@ impl Engine {
             despawn_ids: Vec::new(),
         };
 
-        // Spawn a few mining nodes scattered on the terrain.
         engine.spawn_mining_nodes();
 
-        // Equip player with starting weapon.
         {
             let player = engine.world.player_mut();
             if let Some(ref mut eq) = player.equipment {

@@ -1,6 +1,7 @@
 pub mod acceleration_structure;
 pub mod context;
 pub mod frame;
+pub mod loading;
 pub mod mesh;
 pub mod rt_pipeline;
 pub mod shapes;
@@ -9,9 +10,6 @@ pub mod swapchain;
 use anyhow::{Context, Result};
 use ash::vk;
 use glam::{Mat4, Vec3, Vec4};
-use std::sync::Arc;
-use winit::window::Window;
-
 use acceleration_structure::{Blas, Tlas, mat4_to_transform};
 use context::VulkanContext;
 use frame::{create_frame, FrameData, MAX_FRAMES_IN_FLIGHT};
@@ -241,14 +239,11 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(
-        window: &Arc<Window>,
+        context: VulkanContext,
+        swapchain: Swapchain,
         max_instances: u32,
         terrain_chunks: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
     ) -> Result<Self> {
-        let size = window.inner_size();
-        let context = VulkanContext::new(window.as_ref())?;
-
-        let swapchain = Swapchain::new(&context, size.width, size.height)?;
         let extent = swapchain.extent;
 
         let frames = [
@@ -407,8 +402,8 @@ impl Renderer {
             mesh_offsets_buf,
             current_frame: 0,
             extent,
-            surface_width: size.width,
-            surface_height: size.height,
+            surface_width: extent.width,
+            surface_height: extent.height,
             swapchain_dirty: false,
             tlas_instances: Vec::new(),
         };
