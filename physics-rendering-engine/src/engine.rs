@@ -97,6 +97,7 @@ pub struct Engine {
     spells: SpellSystem,
     cast_prev: bool,
     enemy_ais: HashMap<u32, SlimeAi>,
+    player_visual_yaw: f32,
 }
 
 impl Engine {
@@ -200,6 +201,7 @@ impl Engine {
             spells: SpellSystem::new(),
             cast_prev: false,
             enemy_ais: HashMap::new(),
+            player_visual_yaw: 0.0,
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -645,6 +647,16 @@ impl Engine {
             let vel = self.physics.body_linvel_xz(self.player_rb);
             let horiz_speed = Vec3::new(vel.x, 0.0, vel.z).length();
             self.player_model.update(dt, horiz_speed);
+
+            // --- Smooth player facing yaw ---
+            let target_yaw = self.player_facing_yaw();
+            let mut delta = target_yaw - self.player_visual_yaw;
+            // Wrap to [-PI, PI] for shortest-path rotation.
+            if delta > std::f32::consts::PI { delta -= std::f32::consts::TAU; }
+            if delta < -std::f32::consts::PI { delta += std::f32::consts::TAU; }
+            let turn_speed = 12.0; // radians per second
+            let max_step = turn_speed * dt;
+            self.player_visual_yaw += delta.clamp(-max_step, max_step);
         }
 
         // --- Batched terrain rebuild (mesh + physics) ---
@@ -915,8 +927,7 @@ impl Engine {
 
         // Player model body parts.
         let player_pos = self.physics.body_position(self.player_rb);
-        // Compute player yaw from movement direction or camera facing.
-        let player_yaw = self.player_facing_yaw();
+        let player_yaw = self.player_visual_yaw;
         let parts = self.player_model.compute_transforms(player_pos, player_yaw);
         let part_meshes = PlayerModel::mesh_types();
         for (i, (transform, _scale)) in parts.iter().enumerate() {
@@ -1086,12 +1097,10 @@ impl Engine {
         let vel = self.physics.body_linvel_xz(self.player_rb);
         let horiz = Vec3::new(vel.x, 0.0, vel.z);
         if horiz.length_squared() > 0.5 {
-            // Face movement direction.
             horiz.x.atan2(horiz.z)
         } else {
-            // Face camera forward direction.
-            let fwd = self.camera.forward_flat();
-            fwd.x.atan2(fwd.z)
+            // Keep current facing when stopped.
+            self.player_visual_yaw
         }
     }
 
