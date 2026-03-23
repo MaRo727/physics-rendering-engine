@@ -20,6 +20,7 @@ noise = "0.9"
 
 # Math
 glam = "0.29"
+smallvec = "1"
 
 # Error handling
 anyhow = "1"

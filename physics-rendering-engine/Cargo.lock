@@ -1536,6 +1536,7 @@ dependencies = [
  "rapier3d",
  "raw-window-handle",
  "rodio",
+ "smallvec",
  "winit",
 ]
 

@@ -112,6 +112,9 @@ pub struct Engine {
     // Reusable per-frame buffers (avoid heap allocs every frame).
     frame_transforms: Vec<Mat4>,
     frame_instance_ids: Vec<u32>,
+    buoyancy_bodies: Vec<(rapier3d::prelude::RigidBodyHandle, f32)>,
+    dead_ids: Vec<(u32, u32)>,
+    despawn_ids: Vec<u32>,
 }
 
 impl Engine {
@@ -228,6 +231,9 @@ impl Engine {
             player_derived: StatBlock::new_player().compute_derived(&StatBonuses::default()),
             frame_transforms: Vec::new(),
             frame_instance_ids: Vec::new(),
+            buoyancy_bodies: Vec::new(),
+            dead_ids: Vec::new(),
+            despawn_ids: Vec::new(),
         };
 
         // Spawn a few mining nodes scattered on the terrain.
@@ -647,15 +653,18 @@ impl Engine {
             }
 
             // --- Remove dead enemies + award XP + loot ---
-            let dead_ids: Vec<(u32, u32)> = self.world.entities.iter()
-                .filter(|e| e.kind == EntityKind::Enemy)
-                .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
-                .map(|e| {
-                    let level = e.stats.as_ref().map_or(1, |s| s.level);
-                    (e.id, level)
-                })
-                .collect();
-            for &(dead_id, enemy_level) in &dead_ids {
+            self.dead_ids.clear();
+            self.dead_ids.extend(
+                self.world.entities.iter()
+                    .filter(|e| e.kind == EntityKind::Enemy)
+                    .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
+                    .map(|e| {
+                        let level = e.stats.as_ref().map_or(1, |s| s.level);
+                        (e.id, level)
+                    }),
+            );
+            for i in 0..self.dead_ids.len() {
+                let (dead_id, enemy_level) = self.dead_ids[i];
                 // Grab enemy type before removing.
                 let enemy_type = self.enemy_ais.get(&dead_id).map(|ai| ai.enemy_type);
 
@@ -704,15 +713,18 @@ impl Engine {
                 }
             } else {
                 // Daytime: despawn enemies far from player.
-                let despawn_ids: Vec<u32> = self.world.entities.iter()
-                    .filter(|e| e.kind == EntityKind::Enemy)
-                    .filter(|e| {
-                        let epos = self.physics.body_position(e.body.rigid_body);
-                        (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5
-                    })
-                    .map(|e| e.id)
-                    .collect();
-                for id in despawn_ids {
+                self.despawn_ids.clear();
+                self.despawn_ids.extend(
+                    self.world.entities.iter()
+                        .filter(|e| e.kind == EntityKind::Enemy)
+                        .filter(|e| {
+                            let epos = self.physics.body_position(e.body.rigid_body);
+                            (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5
+                        })
+                        .map(|e| e.id),
+                );
+                for i in 0..self.despawn_ids.len() {
+                    let id = self.despawn_ids[i];
                     if let Some(idx) = self.world.entities.iter().position(|e| e.id == id) {
                         let entity = self.world.entities.swap_remove(idx);
                         self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
@@ -912,12 +924,15 @@ impl Engine {
     fn apply_buoyancy(&mut self, dt: f32) {
         self.apply_body_buoyancy(self.player_rb, 1.8, dt);
 
-        let bodies: Vec<_> = self.world.entities.iter()
-            .filter(|e| e.kind != EntityKind::Player && self.physics.is_dynamic(e.body.rigid_body))
-            .map(|e| (e.body.rigid_body, e.render_scale.max_element()))
-            .collect();
+        self.buoyancy_bodies.clear();
+        self.buoyancy_bodies.extend(
+            self.world.entities.iter()
+                .filter(|e| e.kind != EntityKind::Player && self.physics.is_dynamic(e.body.rigid_body))
+                .map(|e| (e.body.rigid_body, e.render_scale.max_element())),
+        );
 
-        for (rb, size) in bodies {
+        for i in 0..self.buoyancy_bodies.len() {
+            let (rb, size) = self.buoyancy_bodies[i];
             self.apply_body_buoyancy(rb, size, dt);
         }
     }
