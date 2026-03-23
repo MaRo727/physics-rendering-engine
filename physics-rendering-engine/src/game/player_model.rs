@@ -53,12 +53,12 @@ impl PlayerModel {
             * Mat4::from_rotation_y(yaw)
             * Mat4::from_scale(PLAYER_SCALE);
 
-        // Left fist: punches forward with a counter-clockwise arc.
-        // Right fist: stays at rest position.
-        let (left_offset_z, left_offset_x) = self.punch_offsets();
+        // Right fist: punches forward with a counter-clockwise arc.
+        // Left fist: stays at rest position.
+        let (punch_offset_z, punch_offset_x) = self.punch_offsets();
 
-        let left_pos = LEFT_FIST_REST + Vec3::new(-left_offset_x, 0.0, left_offset_z);
-        let right_pos = RIGHT_FIST_REST;
+        let left_pos = LEFT_FIST_REST;
+        let right_pos = RIGHT_FIST_REST + Vec3::new(punch_offset_x, 0.0, punch_offset_z);
 
         let left_transform = Mat4::from_translation(root_pos)
             * Mat4::from_rotation_y(yaw)
@@ -97,15 +97,15 @@ impl PlayerModel {
         let right = Vec3::new(-cos_yaw, 0.0, sin_yaw);
         let up = right.cross(forward);
 
-        // Base offset: lower center of screen, slightly forward.
-        let base = camera_eye + forward * 0.5 - up * 0.45;
+        // Base offset: lower center of screen, pushed forward so fists are visible.
+        let base = camera_eye + forward * 0.8 - up * 0.35;
 
-        let (left_offset_z, left_offset_x) = self.punch_offsets();
+        let (punch_offset_z, punch_offset_x) = self.punch_offsets();
 
-        let left_pos = base - right * 0.35 + forward * left_offset_z - right * left_offset_x;
-        let right_pos = base + right * 0.35;
+        let left_pos = base - right * 0.30;
+        let right_pos = base + right * 0.30 + forward * punch_offset_z + right * punch_offset_x;
 
-        let fp_scale = Vec3::splat(0.20);
+        let fp_scale = Vec3::splat(0.18);
 
         let left_transform = Mat4::from_translation(left_pos)
             * Mat4::from_rotation_y(yaw)
