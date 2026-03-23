@@ -194,6 +194,7 @@ pub struct Tlas {
     scratch_buffer: vk::Buffer,
     scratch_memory: vk::DeviceMemory,
     instance_count: u32,
+    prev_instance_count: u32,
 }
 
 // SAFETY: only accessed from the render thread.
@@ -234,7 +235,10 @@ impl Tlas {
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
+            .flags(
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            )
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(std::slice::from_ref(&geometry));
 
@@ -290,6 +294,7 @@ impl Tlas {
             scratch_buffer,
             scratch_memory,
             instance_count,
+            prev_instance_count: 0,
         })
     }
 
@@ -326,17 +331,34 @@ impl Tlas {
         let instance_address = mesh::get_device_address(&context.device, self.instance_buffer);
         let scratch_address = mesh::get_device_address(&context.device, self.scratch_buffer);
 
-        let geometry = make_instance_geometry(instance_address, instances.len() as u32);
+        let count = instances.len() as u32;
+        let geometry = make_instance_geometry(instance_address, count);
 
-        // Always full BUILD — instance count can change between frames due
-        // to frustum culling, and UPDATE requires the same primitive count.
-        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+        // UPDATE mode is faster but requires the same primitive count as the
+        // previous build.  Use it when the instance count is stable; fall back
+        // to a full BUILD when it changes (e.g. frustum culling variance).
+        let can_update = self.prev_instance_count == count && self.prev_instance_count > 0;
+        let mode = if can_update {
+            vk::BuildAccelerationStructureModeKHR::UPDATE
+        } else {
+            vk::BuildAccelerationStructureModeKHR::BUILD
+        };
+        self.prev_instance_count = count;
+
+        let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)
-            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .flags(
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+            )
+            .mode(mode)
             .dst_acceleration_structure(self.handle)
             .geometries(std::slice::from_ref(&geometry))
             .scratch_data(vk::DeviceOrHostAddressKHR { device_address: scratch_address });
+
+        if can_update {
+            build_info.src_acceleration_structure = self.handle;
+        }
 
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
             .primitive_count(instances.len() as u32);
