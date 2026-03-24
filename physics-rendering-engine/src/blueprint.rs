@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 pub struct Blueprint {
     pub name: String,
     pub blocks: Vec<BlockEntry>,
+    /// Baked groups — each group is a merged set of blocks rendered as one object.
+    #[serde(default)]
+    pub groups: Vec<Vec<BlockEntry>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BlockEntry {
     pub x: i32,
     pub y: i32,

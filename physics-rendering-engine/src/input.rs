@@ -33,6 +33,9 @@ pub struct InputState {
     pub toggle_editor: bool,        // F8 — toggle structure editor
     pub editor_save: bool,          // F9 — save blueprint (in editor)
     pub editor_load: bool,          // F10 — load blueprint (in editor)
+    pub editor_prev_group: bool,     // Left arrow — select prev baked group
+    pub editor_next_group: bool,     // Right arrow — select next baked group
+    pub editor_unbake: bool,         // U — unbake selected group back to cells
     pub editor_color_slot: Option<u8>, // 1-9 number keys
     pub scroll_delta: f32,           // Mouse wheel scroll
     pub mouse_dx: f32,
@@ -72,6 +75,9 @@ impl Default for InputState {
             toggle_editor: false,
             editor_save: false,
             editor_load: false,
+            editor_prev_group: false,
+            editor_next_group: false,
+            editor_unbake: false,
             editor_color_slot: None,
             scroll_delta: 0.0,
             mouse_dx: 0.0,

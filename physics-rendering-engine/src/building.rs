@@ -397,6 +397,18 @@ struct CellData {
 }
 
 // ---------------------------------------------------------------------------
+// Baked groups
+// ---------------------------------------------------------------------------
+
+/// A baked group — many blocks merged into a single object.
+/// One physics body, rendered as a ghost in the editor, destroyed as a unit.
+pub struct BakedGroup {
+    pub blocks: Vec<crate::blueprint::BlockEntry>,
+    rigid_body: Option<RigidBodyHandle>,
+    collider: Option<ColliderHandle>,
+}
+
+// ---------------------------------------------------------------------------
 // Building grid
 // ---------------------------------------------------------------------------
 
@@ -405,6 +417,7 @@ struct CellData {
 /// Each cell is subdivided into 4×4×4 sub-blocks that can be individually mined.
 pub struct BuildingGrid {
     cells: HashMap<(i32, i32, i32), CellData>,
+    groups: Vec<BakedGroup>,
     dirty: bool,
 }
 
@@ -412,12 +425,13 @@ impl BuildingGrid {
     pub fn new() -> Self {
         Self {
             cells: HashMap::new(),
+            groups: Vec::new(),
             dirty: false,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.cells.is_empty() && self.groups.is_empty()
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -543,9 +557,10 @@ impl BuildingGrid {
         }
     }
 
-    /// Check if a rigid body belongs to a building cell.
+    /// Check if a rigid body belongs to a building cell or baked group.
     pub fn has_body(&self, rb: RigidBodyHandle) -> bool {
         self.cells.values().any(|c| c.rigid_body == rb)
+            || self.groups.iter().any(|g| g.rigid_body == Some(rb))
     }
 
     /// Mine sub-blocks near `hit_pos`. Returns all affected cell coordinates
@@ -831,7 +846,18 @@ impl BuildingGrid {
 
     /// Generate an optimized mesh with only externally-visible faces.
     /// Pristine (unmined) blocks use clean geometric meshes; mined blocks iterate sub-blocks.
+    /// Baked groups are also included (with full color in world, ghost tint in editor).
     pub fn generate_mesh(&self) -> (Vec<Vertex>, Vec<u32>) {
+        self.generate_mesh_inner(false, None)
+    }
+
+    /// Generate mesh with ghost tint on baked groups (for editor).
+    /// The selected group (if any) is highlighted brighter.
+    pub fn generate_mesh_editor(&self, selected_group: Option<usize>) -> (Vec<Vertex>, Vec<u32>) {
+        self.generate_mesh_inner(true, selected_group)
+    }
+
+    fn generate_mesh_inner(&self, ghost_groups: bool, selected_group: Option<usize>) -> (Vec<Vertex>, Vec<u32>) {
         let estimate = self.cells.len() * 24;
         let mut vertices = Vec::with_capacity(estimate);
         let mut indices = Vec::with_capacity(estimate);
@@ -849,6 +875,9 @@ impl BuildingGrid {
                 self.emit_sub_block_mesh(cx, cy, cz, cell, &mut vertices, &mut indices);
             }
         }
+
+        // Append baked group meshes.
+        self.generate_group_meshes_with_selection(&mut vertices, &mut indices, ghost_groups, selected_group);
 
         (vertices, indices)
     }
@@ -999,7 +1028,177 @@ impl BuildingGrid {
                 physics.remove_body(cell.rigid_body, cell.collider);
             }
         }
+        self.clear_groups(physics);
         self.dirty = true;
+    }
+
+    // -------------------------------------------------------------------
+    // Baked group methods
+    // -------------------------------------------------------------------
+
+    /// Bake all current cells into a new group. Removes individual cell physics
+    /// bodies and creates one compound body for the group. Returns false if empty.
+    pub fn bake_group(&mut self, physics: &mut PhysicsWorld) -> bool {
+        if self.cells.is_empty() {
+            return false;
+        }
+
+        // Collect block entries from current cells.
+        let blocks: Vec<crate::blueprint::BlockEntry> = self.cells.keys().map(|&(x, y, z)| {
+            let c = &self.cells[&(x, y, z)];
+            crate::blueprint::BlockEntry {
+                x, y, z,
+                block_type: c.block_type as u8,
+                rotation: c.rotation,
+                sub_blocks: c.sub_blocks,
+                color: [c.color.x, c.color.y, c.color.z],
+            }
+        }).collect();
+
+        // Remove individual physics bodies.
+        let keys: Vec<_> = self.cells.keys().copied().collect();
+        for (x, y, z) in keys {
+            if let Some(cell) = self.cells.remove(&(x, y, z)) {
+                physics.remove_body(cell.rigid_body, cell.collider);
+            }
+        }
+
+        // Create compound physics body for the group.
+        let (rb, col) = build_group_physics(physics, &blocks);
+
+        self.groups.push(BakedGroup {
+            blocks,
+            rigid_body: Some(rb),
+            collider: Some(col),
+        });
+        self.dirty = true;
+        true
+    }
+
+    /// Add a pre-built group (from blueprint load). Creates compound physics.
+    pub fn load_group(&mut self, physics: &mut PhysicsWorld, blocks: Vec<crate::blueprint::BlockEntry>) {
+        let (rb, col) = build_group_physics(physics, &blocks);
+        self.groups.push(BakedGroup {
+            blocks,
+            rigid_body: Some(rb),
+            collider: Some(col),
+        });
+        self.dirty = true;
+    }
+
+    /// Add a pre-built group with a world offset applied to each block position.
+    pub fn load_group_offset(&mut self, physics: &mut PhysicsWorld,
+                              blocks: &[crate::blueprint::BlockEntry],
+                              ox: i32, oy: i32, oz: i32) {
+        let offset_blocks: Vec<crate::blueprint::BlockEntry> = blocks.iter().map(|b| {
+            crate::blueprint::BlockEntry {
+                x: b.x + ox,
+                y: b.y + oy,
+                z: b.z + oz,
+                block_type: b.block_type,
+                rotation: b.rotation,
+                sub_blocks: b.sub_blocks,
+                color: b.color,
+            }
+        }).collect();
+        self.load_group(physics, offset_blocks);
+    }
+
+    /// Check if a rigid body belongs to a baked group. Returns group index if found.
+    pub fn group_for_body(&self, rb: RigidBodyHandle) -> Option<usize> {
+        self.groups.iter().position(|g| g.rigid_body == Some(rb))
+    }
+
+    /// Unbake a group back into individual editable cells. Returns number of blocks restored.
+    pub fn unbake_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize) -> usize {
+        let group = self.groups.remove(group_idx);
+        // Remove the compound physics body.
+        if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+            physics.remove_body(rb, col);
+        }
+        // Restore blocks as individual cells.
+        let count = group.blocks.len();
+        for b in &group.blocks {
+            let bt = BlockType::from_u8(b.block_type);
+            let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
+            self.load_cell(physics, b.x, b.y, b.z, bt, b.rotation, b.sub_blocks, color);
+        }
+        self.dirty = true;
+        count
+    }
+
+    /// Destroy an entire baked group by index. Returns world centers of removed blocks.
+    pub fn destroy_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize) -> Vec<Vec3> {
+        let group = self.groups.remove(group_idx);
+        if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+            physics.remove_body(rb, col);
+        }
+        let centers: Vec<Vec3> = group.blocks.iter().map(|b| {
+            cell_center(b.x, b.y, b.z)
+        }).collect();
+        self.dirty = true;
+        centers
+    }
+
+    /// Number of baked groups.
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// Access baked groups (for save).
+    pub fn groups(&self) -> &[BakedGroup] {
+        &self.groups
+    }
+
+    /// Remove all baked groups and their physics.
+    fn clear_groups(&mut self, physics: &mut PhysicsWorld) {
+        for group in self.groups.drain(..) {
+            if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+                physics.remove_body(rb, col);
+            }
+        }
+    }
+
+    /// Generate mesh for baked groups. In ghost mode, groups are dimmed;
+    /// the selected group (if any) is highlighted brighter.
+    fn generate_group_meshes_with_selection(
+        &self, vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+        ghost: bool, selected: Option<usize>,
+    ) {
+        for (gi, group) in self.groups.iter().enumerate() {
+            // Determine tint: ghost mode dims groups, selected group is brighter.
+            let tint = if ghost {
+                if selected == Some(gi) { 0.85 } else { 0.45 }
+            } else {
+                1.0
+            };
+
+            // Build a temporary cell map for neighbor culling within the group.
+            let mut group_cells: HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)> = HashMap::new();
+            for b in &group.blocks {
+                let bt = BlockType::from_u8(b.block_type);
+                let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
+                group_cells.insert((b.x, b.y, b.z), (b.sub_blocks, bt, b.rotation, color));
+            }
+
+            for b in &group.blocks {
+                let bt = BlockType::from_u8(b.block_type);
+                let color = Vec3::new(b.color[0], b.color[1], b.color[2]) * tint;
+                let pristine = rotate_sub_blocks(initial_sub_blocks(bt, b.rotation), b.rotation);
+
+                if b.sub_blocks == pristine {
+                    emit_block_mesh_with_cells(
+                        bt, b.rotation, b.x, b.y, b.z,
+                        &group_cells, color, vertices, indices,
+                    );
+                } else {
+                    emit_sub_block_mesh_standalone(
+                        b.x, b.y, b.z, b.sub_blocks, bt, b.rotation, color,
+                        &group_cells, vertices, indices,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1012,6 +1211,223 @@ pub fn cell_center(cx: i32, cy: i32, cz: i32) -> Vec3 {
 /// The position should be slightly inside the target cell (offset by normal).
 pub fn snap_to_grid(pos: Vec3) -> (i32, i32, i32) {
     (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32)
+}
+
+/// Build a single compound physics body for a baked group.
+fn build_group_physics(physics: &mut PhysicsWorld, blocks: &[crate::blueprint::BlockEntry]) -> (RigidBodyHandle, ColliderHandle) {
+    // Compute centroid for the rigid body position.
+    let n = blocks.len() as f32;
+    let cx = blocks.iter().map(|b| b.x as f32 + 0.5).sum::<f32>() / n;
+    let cy = blocks.iter().map(|b| b.y as f32 + 0.5).sum::<f32>() / n;
+    let cz = blocks.iter().map(|b| b.z as f32 + 0.5).sum::<f32>() / n;
+    let center = Vec3::new(cx, cy, cz);
+
+    // Build compound shape with one sub-shape per block, offset from centroid.
+    let mut shapes = Vec::new();
+    for b in blocks {
+        let bx = b.x as f32 + 0.5 - cx;
+        let by = b.y as f32 + 0.5 - cy;
+        let bz = b.z as f32 + 0.5 - cz;
+
+        let bt = BlockType::from_u8(b.block_type);
+        let pristine = rotate_sub_blocks(initial_sub_blocks(bt, b.rotation), b.rotation);
+
+        if b.sub_blocks == pristine {
+            // Use optimized block shape.
+            let block_shape = build_block_shape(bt, b.rotation);
+            // The block shape may itself be compound — extract its children.
+            if let Some(compound) = block_shape.as_compound() {
+                for (child_iso, child_shape) in compound.shapes() {
+                    let mut iso = child_iso.clone();
+                    iso.translation.vector.x += bx;
+                    iso.translation.vector.y += by;
+                    iso.translation.vector.z += bz;
+                    shapes.push((iso, child_shape.clone()));
+                }
+            } else {
+                shapes.push((Isometry::translation(bx, by, bz), block_shape));
+            }
+        } else {
+            // Mined block — add remaining sub-blocks.
+            for sy in 0..SUBS {
+                for sz in 0..SUBS {
+                    for sx in 0..SUBS {
+                        if has_sub(b.sub_blocks, sx, sy, sz) {
+                            let iso = Isometry::translation(
+                                bx + (sx as f32 + 0.5) * SUB_SIZE - 0.5,
+                                by + (sy as f32 + 0.5) * SUB_SIZE - 0.5,
+                                bz + (sz as f32 + 0.5) * SUB_SIZE - 0.5,
+                            );
+                            shapes.push((iso, SharedShape::cuboid(SUB_HALF, SUB_HALF, SUB_HALF)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let compound = SharedShape::compound(shapes);
+    physics.add_static_shape(center, compound)
+}
+
+/// Emit block mesh using a group-local cell map for neighbor culling.
+fn emit_block_mesh_with_cells(
+    block_type: BlockType, rotation: u8,
+    cx: i32, cy: i32, cz: i32,
+    group_cells: &HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)>,
+    color: Vec3,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) {
+    // Helper: check if neighbor face is fully solid within the group.
+    let is_face_solid = |nx: i32, ny: i32, nz: i32, face_mask: u64| -> bool {
+        group_cells.get(&(nx, ny, nz))
+            .map_or(false, |(subs, _, _, _)| subs & face_mask == face_mask)
+    };
+
+    let bx = cx as f32;
+    let by = cy as f32;
+    let bz = cz as f32;
+
+    match block_type {
+        BlockType::Cube => {
+            if !is_face_solid(cx, cy + 1, cz, BOTTOM_LAYER_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx, by + 1.0, bz + 1.0), Vec3::new(bx + 1.0, by + 1.0, bz + 1.0),
+                    Vec3::new(bx + 1.0, by + 1.0, bz), Vec3::new(bx, by + 1.0, bz),
+                    Vec3::Y, color);
+            }
+            if !is_face_solid(cx, cy - 1, cz, TOP_LAYER_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx, by, bz), Vec3::new(bx + 1.0, by, bz),
+                    Vec3::new(bx + 1.0, by, bz + 1.0), Vec3::new(bx, by, bz + 1.0),
+                    Vec3::NEG_Y, color);
+            }
+            if !is_face_solid(cx + 1, cy, cz, NEG_X_FACE_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx + 1.0, by, bz + 1.0), Vec3::new(bx + 1.0, by + 1.0, bz + 1.0),
+                    Vec3::new(bx + 1.0, by + 1.0, bz), Vec3::new(bx + 1.0, by, bz),
+                    Vec3::X, color);
+            }
+            if !is_face_solid(cx - 1, cy, cz, POS_X_FACE_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx, by, bz), Vec3::new(bx, by + 1.0, bz),
+                    Vec3::new(bx, by + 1.0, bz + 1.0), Vec3::new(bx, by, bz + 1.0),
+                    Vec3::NEG_X, color);
+            }
+            if !is_face_solid(cx, cy, cz + 1, NEG_Z_FACE_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx, by, bz + 1.0), Vec3::new(bx + 1.0, by, bz + 1.0),
+                    Vec3::new(bx + 1.0, by + 1.0, bz + 1.0), Vec3::new(bx, by + 1.0, bz + 1.0),
+                    Vec3::Z, color);
+            }
+            if !is_face_solid(cx, cy, cz - 1, POS_Z_FACE_MASK) {
+                push_quad(vertices, indices,
+                    Vec3::new(bx + 1.0, by, bz), Vec3::new(bx, by, bz),
+                    Vec3::new(bx, by + 1.0, bz), Vec3::new(bx + 1.0, by + 1.0, bz),
+                    Vec3::NEG_Z, color);
+            }
+        }
+        _ => {
+            // For non-cube block types in groups, fall back to sub-block mesh
+            // to keep the implementation simple (slopes, slabs, etc. are rare in groups).
+            let subs = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
+            emit_sub_block_mesh_standalone(
+                cx, cy, cz, subs, block_type, rotation, color,
+                group_cells, vertices, indices,
+            );
+        }
+    }
+}
+
+/// Emit sub-block mesh for a single cell, using a group cell map for visibility.
+fn emit_sub_block_mesh_standalone(
+    cx: i32, cy: i32, cz: i32,
+    sub_blocks: u64,
+    block_type: BlockType, rotation: u8,
+    color: Vec3,
+    group_cells: &HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)>,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) {
+    let s = SUB_SIZE;
+    let pristine_mask = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
+    let is_interior = sub_blocks != pristine_mask;
+    let ext_color = color;
+    let int_color = color * 0.78;
+
+    // Check if a sub-block is solid, handling cross-cell boundaries within the group.
+    let is_solid_group = |cx: i32, cy: i32, cz: i32, sx: i32, sy: i32, sz: i32| -> bool {
+        let (cx, sx) = wrap(cx, sx);
+        let (cy, sy) = wrap(cy, sy);
+        let (cz, sz) = wrap(cz, sz);
+        match group_cells.get(&(cx, cy, cz)) {
+            Some((subs, _, _, _)) => has_sub(*subs, sx, sy, sz),
+            None => false,
+        }
+    };
+
+    for sy in 0..SUBS {
+        for sz in 0..SUBS {
+            for sx in 0..SUBS {
+                if !has_sub(sub_blocks, sx, sy, sz) {
+                    continue;
+                }
+                let x = cx as f32 + sx as f32 * s;
+                let y = cy as f32 + sy as f32 * s;
+                let z = cz as f32 + sz as f32 * s;
+
+                if !is_solid_group(cx, cy, cz, sx + 1, sy, sz) {
+                    let on_edge = sx == SUBS - 1;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x + s, y, z + s), Vec3::new(x + s, y + s, z + s),
+                        Vec3::new(x + s, y + s, z), Vec3::new(x + s, y, z),
+                        Vec3::X, c);
+                }
+                if !is_solid_group(cx, cy, cz, sx - 1, sy, sz) {
+                    let on_edge = sx == 0;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x, y, z), Vec3::new(x, y + s, z),
+                        Vec3::new(x, y + s, z + s), Vec3::new(x, y, z + s),
+                        Vec3::NEG_X, c);
+                }
+                if !is_solid_group(cx, cy, cz, sx, sy + 1, sz) {
+                    let on_edge = sy == SUBS - 1;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x, y + s, z + s), Vec3::new(x + s, y + s, z + s),
+                        Vec3::new(x + s, y + s, z), Vec3::new(x, y + s, z),
+                        Vec3::Y, c);
+                }
+                if !is_solid_group(cx, cy, cz, sx, sy - 1, sz) {
+                    let on_edge = sy == 0;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x, y, z), Vec3::new(x + s, y, z),
+                        Vec3::new(x + s, y, z + s), Vec3::new(x, y, z + s),
+                        Vec3::NEG_Y, c);
+                }
+                if !is_solid_group(cx, cy, cz, sx, sy, sz + 1) {
+                    let on_edge = sz == SUBS - 1;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x, y, z + s), Vec3::new(x + s, y, z + s),
+                        Vec3::new(x + s, y + s, z + s), Vec3::new(x, y + s, z + s),
+                        Vec3::Z, c);
+                }
+                if !is_solid_group(cx, cy, cz, sx, sy, sz - 1) {
+                    let on_edge = sz == 0;
+                    let c = if on_edge && !is_interior { ext_color } else { int_color };
+                    push_quad(vertices, indices,
+                        Vec3::new(x + s, y, z), Vec3::new(x, y, z),
+                        Vec3::new(x, y + s, z), Vec3::new(x + s, y + s, z),
+                        Vec3::NEG_Z, c);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn push_quad(

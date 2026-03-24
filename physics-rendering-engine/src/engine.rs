@@ -190,6 +190,11 @@ pub struct Engine {
     editor_status: Option<(String, f32)>, // (message, remaining_seconds)
     editor_ground_inited: bool,
     editor_throw_prev: bool,
+    editor_bake_prev: bool,
+    editor_selected_group: Option<usize>,
+    editor_prev_group_prev: bool,
+    editor_next_group_prev: bool,
+    editor_unbake_prev: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -410,6 +415,11 @@ impl Engine {
             editor_status: None,
             editor_ground_inited: false,
             editor_throw_prev: false,
+            editor_bake_prev: false,
+            editor_selected_group: None,
+            editor_prev_group_prev: false,
+            editor_next_group_prev: false,
+            editor_unbake_prev: false,
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -579,6 +589,7 @@ impl Engine {
             let oy = terrain_y.ceil() as i32; // sit on terrain surface
             let oz = wz.floor() as i32;
 
+            // Unbaked blocks — individual cells.
             for b in &bp.blocks {
                 let cx = ox + b.x;
                 let cy = oy + b.y;
@@ -589,6 +600,15 @@ impl Engine {
                     &mut self.physics,
                     cx, cy, cz,
                     bt, b.rotation, b.sub_blocks, color,
+                );
+            }
+
+            // Baked groups — single merged objects.
+            for group_blocks in &bp.groups {
+                self.building.load_group_offset(
+                    &mut self.physics,
+                    group_blocks,
+                    ox, oy, oz,
                 );
             }
         }
@@ -916,6 +936,64 @@ impl Engine {
         }
         self.editor_load_prev = input.editor_load;
 
+        // Bake group (G) — merge current cells into a single object.
+        if input.toggle_ghost && !self.editor_bake_prev {
+            let count = self.editor_grid.cell_count();
+            if self.editor_grid.bake_group(&mut self.editor_physics) {
+                self.editor_physics.step(0.0);
+                let groups = self.editor_grid.group_count();
+                self.editor_selected_group = None;
+                self.editor_status = Some((format!("Baked {} blocks into group ({})", count, groups), 3.0));
+            } else {
+                self.editor_status = Some(("Nothing to bake".to_string(), 2.0));
+            }
+        }
+        self.editor_bake_prev = input.toggle_ghost;
+
+        // Navigate baked groups (Left/Right arrows).
+        let group_count = self.editor_grid.group_count();
+        if input.editor_prev_group && !self.editor_prev_group_prev && group_count > 0 {
+            let cur = self.editor_selected_group.unwrap_or(0);
+            let new_idx = if cur == 0 { group_count - 1 } else { cur - 1 };
+            self.editor_selected_group = Some(new_idx);
+            self.editor_status = Some((format!("Group {}/{}", new_idx + 1, group_count), 2.0));
+            self.editor_grid.mark_dirty(); // redraw with highlight
+        }
+        self.editor_prev_group_prev = input.editor_prev_group;
+
+        if input.editor_next_group && !self.editor_next_group_prev && group_count > 0 {
+            let cur = self.editor_selected_group.unwrap_or(group_count.wrapping_sub(1));
+            let new_idx = (cur + 1) % group_count;
+            self.editor_selected_group = Some(new_idx);
+            self.editor_status = Some((format!("Group {}/{}", new_idx + 1, group_count), 2.0));
+            self.editor_grid.mark_dirty(); // redraw with highlight
+        }
+        self.editor_next_group_prev = input.editor_next_group;
+
+        // Clamp selection if groups were removed.
+        if group_count == 0 {
+            self.editor_selected_group = None;
+        } else if let Some(sel) = self.editor_selected_group {
+            if sel >= group_count {
+                self.editor_selected_group = Some(group_count - 1);
+            }
+        }
+
+        // Unbake selected group (U) — restore to editable cells.
+        if input.editor_unbake && !self.editor_unbake_prev {
+            if let Some(gi) = self.editor_selected_group {
+                let count = self.editor_grid.unbake_group(&mut self.editor_physics, gi);
+                self.editor_physics.step(0.0);
+                self.editor_selected_group = None;
+                self.editor_status = Some((format!("Unbaked {} blocks", count), 3.0));
+            } else if group_count > 0 {
+                self.editor_status = Some(("Use Left/Right to select a group first".to_string(), 2.0));
+            } else {
+                self.editor_status = Some(("No groups to unbake".to_string(), 2.0));
+            }
+        }
+        self.editor_unbake_prev = input.editor_unbake;
+
         // Status message timer.
         if let Some((_, ref mut timer)) = self.editor_status {
             *timer -= dt;
@@ -927,15 +1005,24 @@ impl Engine {
 
     fn editor_save_blueprint(&mut self) {
         let cells: Vec<_> = self.editor_grid.occupied_cells().copied().collect();
-        if cells.is_empty() {
+        let has_groups = self.editor_grid.group_count() > 0;
+        if cells.is_empty() && !has_groups {
             self.editor_status = Some(("Nothing to save".to_string(), 2.0));
             return;
         }
 
+        // Collect all block positions (cells + groups) for normalization.
+        let mut all_positions: Vec<(i32, i32, i32)> = cells.clone();
+        for group in self.editor_grid.groups() {
+            for b in &group.blocks {
+                all_positions.push((b.x, b.y, b.z));
+            }
+        }
+
         // Normalize to origin.
-        let min_x = cells.iter().map(|c| c.0).min().unwrap();
-        let min_y = cells.iter().map(|c| c.1).min().unwrap();
-        let min_z = cells.iter().map(|c| c.2).min().unwrap();
+        let min_x = all_positions.iter().map(|c| c.0).min().unwrap_or(0);
+        let min_y = all_positions.iter().map(|c| c.1).min().unwrap_or(0);
+        let min_z = all_positions.iter().map(|c| c.2).min().unwrap_or(0);
 
         let blocks: Vec<blueprint::BlockEntry> = cells.iter().filter_map(|&(x, y, z)| {
             self.editor_grid.cell_info(x, y, z).map(|(bt, rot, subs, col)| {
@@ -951,13 +1038,28 @@ impl Engine {
             })
         }).collect();
 
+        // Save baked groups with normalized positions.
+        let groups: Vec<Vec<blueprint::BlockEntry>> = self.editor_grid.groups().iter().map(|g| {
+            g.blocks.iter().map(|b| {
+                blueprint::BlockEntry {
+                    x: b.x - min_x,
+                    y: b.y - min_y,
+                    z: b.z - min_z,
+                    block_type: b.block_type,
+                    rotation: b.rotation,
+                    sub_blocks: b.sub_blocks,
+                    color: b.color,
+                }
+            }).collect()
+        }).collect();
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let name = format!("structure_{}", timestamp);
 
-        let bp = blueprint::Blueprint { name: name.clone(), blocks };
+        let bp = blueprint::Blueprint { name: name.clone(), blocks, groups };
         match blueprint::save_blueprint(&bp) {
             Ok(path) => {
                 let msg = format!("Saved: {}", path.display());
@@ -985,7 +1087,7 @@ impl Engine {
                 // Clear current editor grid.
                 self.editor_grid.clear(&mut self.editor_physics);
 
-                // Place all blocks from blueprint.
+                // Place all unbaked blocks from blueprint.
                 for b in &bp.blocks {
                     let bt = BlockType::from_u8(b.block_type);
                     let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
@@ -994,6 +1096,11 @@ impl Engine {
                         b.x, b.y, b.z,
                         bt, b.rotation, b.sub_blocks, color,
                     );
+                }
+
+                // Load baked groups.
+                for group_blocks in &bp.groups {
+                    self.editor_grid.load_group(&mut self.editor_physics, group_blocks.clone());
                 }
                 self.editor_physics.step(0.0);
 
@@ -1283,7 +1390,11 @@ impl Engine {
                         self.damage_mining_chunk(rb);
                     }
                     HammerHit::Static(rb, hit_pos) => {
-                        if self.building.has_body(rb) {
+                        // Check baked groups first — destroy entire group at once.
+                        if let Some(gi) = self.building.group_for_body(rb) {
+                            let fallen = self.building.destroy_group(&mut self.physics, gi);
+                            self.spawn_falling_cubes(&fallen);
+                        } else if self.building.has_body(rb) {
                             let destroyed = self.building.mine_at(&mut self.physics, hit_pos);
                             self.collapse_above(&destroyed);
                         } else if self.mining.is_mining_chunk(rb) {
@@ -1297,7 +1408,11 @@ impl Engine {
             if let Some(chisel_hit) = interaction_result.chisel_hit {
                 match chisel_hit {
                     ChiselHit::Static(rb, hit_pos) => {
-                        if self.building.has_body(rb) {
+                        // Chisel also destroys entire baked group (can't chisel merged objects).
+                        if let Some(gi) = self.building.group_for_body(rb) {
+                            let fallen = self.building.destroy_group(&mut self.physics, gi);
+                            self.spawn_falling_cubes(&fallen);
+                        } else if self.building.has_body(rb) {
                             let destroyed = self.building.chisel_at(&mut self.physics, hit_pos);
                             self.collapse_above(&destroyed);
                         }
@@ -2018,9 +2133,9 @@ impl Engine {
     }
 
     fn render_editor(&mut self) -> Result<()> {
-        // Upload editor grid mesh if dirty.
+        // Upload editor grid mesh if dirty (groups rendered as ghosts, selected highlighted).
         if self.editor_grid.is_dirty() {
-            let (verts, indices) = self.editor_grid.generate_mesh();
+            let (verts, indices) = self.editor_grid.generate_mesh_editor(self.editor_selected_group);
             self.renderer.update_building_mesh(&verts, &indices)?;
             self.editor_grid.clear_dirty();
         }
@@ -2467,13 +2582,18 @@ impl Engine {
         }
 
         // Help text.
-        let help = "1-0: Color  Scroll: Cycle  RMB: Place  LMB: Remove  B: Block  V: Rotate  F9: Save  F10: Load  F8: Exit";
+        let help = "1-0: Color  RMB: Place  LMB: Remove  B: Block  V: Rotate  G: Bake  U: Unbake  </>: Groups  F9: Save  F10: Load  F8: Exit";
         let help_w = help.len() as f32 * cell * 0.5;
         self.ui.text((sw - help_w) * 0.5, sh - 28.0, help, scale * 0.5, [0.7, 0.7, 0.7, 1.0]);
 
         // Block count and type.
         self.hud_buf.clear();
-        let _ = write!(self.hud_buf, "Blocks: {}  [{}] r:{}", self.editor_grid.cell_count(), self.selected_block_type.name(), self.selected_rotation);
+        let gc = self.editor_grid.group_count();
+        if let Some(sel) = self.editor_selected_group {
+            let _ = write!(self.hud_buf, "Blocks: {}  Group: {}/{}  [{}] r:{}", self.editor_grid.cell_count(), sel + 1, gc, self.selected_block_type.name(), self.selected_rotation);
+        } else {
+            let _ = write!(self.hud_buf, "Blocks: {}  Groups: {}  [{}] r:{}", self.editor_grid.cell_count(), gc, self.selected_block_type.name(), self.selected_rotation);
+        }
         self.ui.text(16.0, 16.0, &self.hud_buf, scale, white);
 
         // Status message.
