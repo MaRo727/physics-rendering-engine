@@ -566,6 +566,63 @@ impl BuildingGrid {
         affected
     }
 
+    /// Remove the single sub-block closest to `hit_pos`. Returns the affected
+    /// cell coordinate (if any) so the caller can check for collapse.
+    pub fn chisel_at(&mut self, physics: &mut PhysicsWorld, hit_pos: Vec3) -> Vec<(i32, i32, i32)> {
+        // Find which cell the hit landed in.
+        let cx = hit_pos.x.floor() as i32;
+        let cy = hit_pos.y.floor() as i32;
+        let cz = hit_pos.z.floor() as i32;
+
+        // Search the hit cell and its immediate neighbors (hit may land on a
+        // boundary) for the closest existing sub-block.
+        let mut best: Option<((i32, i32, i32), u64, f32)> = None; // (cell, bit, dist_sq)
+
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let key = (cx + dx, cy + dy, cz + dz);
+                    if let Some(cell) = self.cells.get(&key) {
+                        for sy in 0..SUBS {
+                            for sz in 0..SUBS {
+                                for sx in 0..SUBS {
+                                    let bit = sub_bit(sx, sy, sz);
+                                    if cell.sub_blocks & bit == 0 {
+                                        continue;
+                                    }
+                                    let center = sub_world_pos(key.0, key.1, key.2, sx, sy, sz);
+                                    let dist_sq = (center - hit_pos).length_squared();
+                                    if best.map_or(true, |(_, _, d)| dist_sq < d) {
+                                        best = Some((key, bit, dist_sq));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let (key, bit, _) = match best {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+
+        let cell = self.cells.get_mut(&key).unwrap();
+        cell.sub_blocks &= !bit;
+
+        if cell.sub_blocks == 0 {
+            let cell = self.cells.remove(&key).unwrap();
+            physics.remove_body(cell.rigid_body, cell.collider);
+        } else {
+            let shape = build_compound_shape(cell.sub_blocks);
+            cell.collider = physics.replace_collider(cell.rigid_body, cell.collider, shape);
+        }
+
+        self.dirty = true;
+        vec![key]
+    }
+
     /// Collect all cells reachable from `start` via face-connected neighbors.
     fn flood_connected(&self, start: (i32, i32, i32)) -> HashSet<(i32, i32, i32)> {
         let mut visited = HashSet::new();

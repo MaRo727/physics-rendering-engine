@@ -16,6 +16,7 @@ const AXE_RANGE: f32 = 4.0;
 const ITEM_PICKUP_RANGE: f32 = 3.0;
 const PICKAXE_RANGE: f32 = 5.0;
 const HAMMER_RANGE: f32 = 5.0;
+const CHISEL_RANGE: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Tool types
@@ -27,6 +28,7 @@ pub enum ToolType {
     Axe,
     Pickaxe,
     Hammer,
+    Chisel,
 }
 
 impl ToolType {
@@ -35,7 +37,8 @@ impl ToolType {
             ToolType::Hands => ToolType::Axe,
             ToolType::Axe => ToolType::Pickaxe,
             ToolType::Pickaxe => ToolType::Hammer,
-            ToolType::Hammer => ToolType::Hands,
+            ToolType::Hammer => ToolType::Chisel,
+            ToolType::Chisel => ToolType::Hands,
         }
     }
 
@@ -46,6 +49,7 @@ impl ToolType {
             ToolType::Axe => "Axe",
             ToolType::Pickaxe => "Pickaxe",
             ToolType::Hammer => "Hammer",
+            ToolType::Chisel => "Chisel",
         }
     }
 }
@@ -68,6 +72,12 @@ pub enum HammerHit {
     Static(RigidBodyHandle, Vec3),
 }
 
+/// What the chisel hit (structures only — single sub-block removal).
+pub enum ChiselHit {
+    /// Hit a static structure (building cell).
+    Static(RigidBodyHandle, Vec3),
+}
+
 pub struct InteractionResult {
     pub pried_cell: Option<(i32, i32, i32)>,
     /// Body handle of an object hit by the axe swing.
@@ -78,6 +88,8 @@ pub struct InteractionResult {
     pub pickaxe_hit: Option<PickaxeHit>,
     /// What the hammer hit this frame (structures only).
     pub hammer_hit: Option<HammerHit>,
+    /// What the chisel hit this frame (single sub-block removal).
+    pub chisel_hit: Option<ChiselHit>,
     /// Hit position on a tree trunk (for shake + leaf effect).
     pub tree_hit: Option<Vec3>,
 }
@@ -157,6 +169,7 @@ impl Interaction {
             picked_up_item: None,
             pickaxe_hit: None,
             hammer_hit: None,
+            chisel_hit: None,
             tree_hit: None,
         };
 
@@ -273,6 +286,16 @@ impl Interaction {
                                 result.hammer_hit = Some(HammerHit::Body(body));
                             } else {
                                 result.hammer_hit = Some(HammerHit::Static(body, hit_pos));
+                            }
+                        }
+                    }
+                    ToolType::Chisel => {
+                        // Chisel — remove a single sub-block for precise editing.
+                        if let Some((body, hit_pos, _normal)) =
+                            physics.cast_ray_full(eye, look_dir, CHISEL_RANGE, player_collider)
+                        {
+                            if !terrain_rbs.contains(&body) && !physics.is_dynamic(body) {
+                                result.chisel_hit = Some(ChiselHit::Static(body, hit_pos));
                             }
                         }
                     }

@@ -17,7 +17,7 @@ use crate::game::spells::{SpellSystem, SpellHit, CastResult};
 use crate::game::stats::{DerivedStats, StatBlock, StatBonuses};
 use crate::game::world::World;
 use crate::input::InputState;
-use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit};
+use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit, ChiselHit};
 use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
@@ -981,6 +981,18 @@ impl Engine {
                 }
             }
 
+            // --- Handle chisel hit (single sub-block removal) ---
+            if let Some(chisel_hit) = interaction_result.chisel_hit {
+                match chisel_hit {
+                    ChiselHit::Static(rb, hit_pos) => {
+                        if self.building.has_body(rb) {
+                            let destroyed = self.building.chisel_at(&mut self.physics, hit_pos);
+                            self.collapse_above(&destroyed);
+                        }
+                    }
+                }
+            }
+
             // --- Handle tree punch (shake + leaves) ---
             if let Some(hit_pos) = interaction_result.tree_hit {
                 self.tree_punch_seed = self.tree_punch_seed.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -1870,6 +1882,7 @@ impl Engine {
             crate::interaction::ToolType::Axe => 1.0,
             crate::interaction::ToolType::Pickaxe => 2.0,
             crate::interaction::ToolType::Hammer => 3.0,
+            crate::interaction::ToolType::Chisel => 4.0,
         };
 
         // Debug overlay data.
