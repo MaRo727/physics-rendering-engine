@@ -87,6 +87,7 @@ impl BlockType {
 
 // Face masks for the 4×4×4 sub-block grid.  Bit index = sy*16 + sz*4 + sx.
 const TOP_LAYER_MASK: u64    = 0xFFFF_0000_0000_0000; // sy = 3
+const THIRD_LAYER_MASK: u64  = 0x0000_FFFF_0000_0000; // sy = 2
 const BOTTOM_LAYER_MASK: u64 = 0x0000_0000_0000_FFFF; // sy = 0
 const POS_X_FACE_MASK: u64   = 0x8888_8888_8888_8888; // sx = 3
 const NEG_X_FACE_MASK: u64   = 0x1111_1111_1111_1111; // sx = 0
@@ -137,9 +138,13 @@ fn wrap(cell: i32, sub: i32) -> (i32, i32) {
 }
 
 /// Get the initial sub-block mask for a block type (before rotation).
-pub fn initial_sub_blocks(bt: BlockType) -> u64 {
+pub fn initial_sub_blocks(bt: BlockType, rotation: u8) -> u64 {
     match bt {
         BlockType::Cube => ALL_SUBS,
+        BlockType::Slab if rotation == 1 => {
+            // Top 2 layers (sy=2,3)
+            THIRD_LAYER_MASK | TOP_LAYER_MASK
+        }
         BlockType::Slab => {
             // Bottom 2 layers (sy=0,1): bits where sy*16 < 32
             BOTTOM_LAYER_MASK | SECOND_LAYER_MASK
@@ -275,7 +280,14 @@ fn rotate_xz(sx: i32, sz: i32, rotation: u8) -> (i32, i32) {
 pub fn build_block_shape(block_type: BlockType, rotation: u8) -> SharedShape {
     match block_type {
         BlockType::Cube => SharedShape::cuboid(0.5, 0.5, 0.5),
-        BlockType::Slab => SharedShape::cuboid(0.5, 0.25, 0.5),
+        BlockType::Slab => {
+            let y_off = if rotation == 1 { 0.25 } else { -0.25 };
+            let shapes = vec![(
+                Isometry::translation(0.0, y_off, 0.0),
+                SharedShape::cuboid(0.5, 0.25, 0.5),
+            )];
+            SharedShape::compound(shapes)
+        }
         BlockType::VerticalSlab => {
             // Half-depth wall at front, rotated
             let shapes = vec![(
@@ -302,7 +314,7 @@ pub fn build_block_shape(block_type: BlockType, rotation: u8) -> SharedShape {
         BlockType::InnerCornerSlope => {
             // Approximate with compound shapes — two wedges forming L
             // Use sub-block compound for accuracy
-            let subs = rotate_sub_blocks(initial_sub_blocks(block_type), rotation);
+            let subs = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
             build_compound_shape(subs)
         }
         BlockType::Stairs => {
@@ -428,7 +440,7 @@ impl BuildingGrid {
         // Sub-blocks of this cell (if it doesn't exist yet, use the block type's initial mask).
         let self_subs = match self.cells.get(&(cx, cy, cz)) {
             Some(cell) => cell.sub_blocks,
-            None => rotate_sub_blocks(initial_sub_blocks(block_type), rotation),
+            None => rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation),
         };
 
         // Check each neighbor: below + 4 horizontal sides.
@@ -463,7 +475,7 @@ impl BuildingGrid {
             return false;
         }
 
-        let sub_blocks = rotate_sub_blocks(initial_sub_blocks(block_type), rotation);
+        let sub_blocks = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
         let center = cell_center(cx, cy, cz);
         let shape = build_block_shape(block_type, rotation);
         let (rigid_body, collider) = physics.add_static_shape(center, shape);
@@ -787,7 +799,7 @@ impl BuildingGrid {
         let mut indices = Vec::with_capacity(estimate);
 
         for (&(cx, cy, cz), cell) in &self.cells {
-            let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type), cell.rotation);
+            let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type, cell.rotation), cell.rotation);
             if cell.sub_blocks == pristine_mask {
                 // Clean mesh path — emit the geometric shape with neighbor face culling.
                 emit_block_mesh(
@@ -809,7 +821,7 @@ impl BuildingGrid {
         vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
     ) {
         let s = SUB_SIZE;
-        let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type), cell.rotation);
+        let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type, cell.rotation), cell.rotation);
         for sy in 0..SUBS {
             for sz in 0..SUBS {
                 for sx in 0..SUBS {
@@ -921,7 +933,7 @@ impl BuildingGrid {
                      cx: i32, cy: i32, cz: i32,
                      block_type: BlockType, rotation: u8, sub_blocks: u64) {
         let center = cell_center(cx, cy, cz);
-        let pristine = rotate_sub_blocks(initial_sub_blocks(block_type), rotation);
+        let pristine = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
         let shape = if sub_blocks == pristine {
             build_block_shape(block_type, rotation)
         } else {
@@ -1084,54 +1096,75 @@ fn emit_block_mesh(
             }
         }
         BlockType::Slab => {
-            // Bottom half slab: y range [by, by+0.5]
+            // rotation 0 = bottom slab [by, by+0.5], rotation 1 = top slab [by+0.5, by+1.0]
             let h = 0.5;
-            let rv = |v: Vec3| rotate_vert(v, center, rotation);
-            let rn = |n: Vec3| rotate_normal(n, rotation);
-            // Top face (always visible — nothing above in this half)
-            push_quad(vertices, indices,
-                rv(Vec3::new(bx,     by + h, bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by + h, bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by + h, bz)),
-                rv(Vec3::new(bx,     by + h, bz)),
-                rn(Vec3::Y), color);
-            // Bottom face
-            if !neighbor_face_solid_check(grid, cx, cy, cz, 0, -1, 0, rotation) {
+            let y_lo = if rotation == 1 { by + h } else { by };
+            let y_hi = y_lo + h;
+            // Slab is horizontally symmetric so no XZ rotation needed
+            // Top face
+            if rotation == 1 {
+                if !neighbor_face_solid_check(grid, cx, cy, cz, 0, 1, 0, 0) {
+                    push_quad(vertices, indices,
+                        Vec3::new(bx,     y_hi, bz + 1.0),
+                        Vec3::new(bx + 1.0, y_hi, bz + 1.0),
+                        Vec3::new(bx + 1.0, y_hi, bz),
+                        Vec3::new(bx,     y_hi, bz),
+                        Vec3::Y, color);
+                }
+            } else {
                 push_quad(vertices, indices,
-                    rv(Vec3::new(bx,     by, bz)),
-                    rv(Vec3::new(bx + 1.0, by, bz)),
-                    rv(Vec3::new(bx + 1.0, by, bz + 1.0)),
-                    rv(Vec3::new(bx,     by, bz + 1.0)),
-                    rn(Vec3::NEG_Y), color);
+                    Vec3::new(bx,     y_hi, bz + 1.0),
+                    Vec3::new(bx + 1.0, y_hi, bz + 1.0),
+                    Vec3::new(bx + 1.0, y_hi, bz),
+                    Vec3::new(bx,     y_hi, bz),
+                    Vec3::Y, color);
+            }
+            // Bottom face
+            if rotation == 0 {
+                if !neighbor_face_solid_check(grid, cx, cy, cz, 0, -1, 0, 0) {
+                    push_quad(vertices, indices,
+                        Vec3::new(bx,     y_lo, bz),
+                        Vec3::new(bx + 1.0, y_lo, bz),
+                        Vec3::new(bx + 1.0, y_lo, bz + 1.0),
+                        Vec3::new(bx,     y_lo, bz + 1.0),
+                        Vec3::NEG_Y, color);
+                }
+            } else {
+                push_quad(vertices, indices,
+                    Vec3::new(bx,     y_lo, bz),
+                    Vec3::new(bx + 1.0, y_lo, bz),
+                    Vec3::new(bx + 1.0, y_lo, bz + 1.0),
+                    Vec3::new(bx,     y_lo, bz + 1.0),
+                    Vec3::NEG_Y, color);
             }
             // Front face (-Z)
             push_quad(vertices, indices,
-                rv(Vec3::new(bx + 1.0, by, bz)),
-                rv(Vec3::new(bx,     by, bz)),
-                rv(Vec3::new(bx,     by + h, bz)),
-                rv(Vec3::new(bx + 1.0, by + h, bz)),
-                rn(Vec3::NEG_Z), color);
+                Vec3::new(bx + 1.0, y_lo, bz),
+                Vec3::new(bx,     y_lo, bz),
+                Vec3::new(bx,     y_hi, bz),
+                Vec3::new(bx + 1.0, y_hi, bz),
+                Vec3::NEG_Z, color);
             // Back face (+Z)
             push_quad(vertices, indices,
-                rv(Vec3::new(bx,     by, bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by, bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by + h, bz + 1.0)),
-                rv(Vec3::new(bx,     by + h, bz + 1.0)),
-                rn(Vec3::Z), color);
+                Vec3::new(bx,     y_lo, bz + 1.0),
+                Vec3::new(bx + 1.0, y_lo, bz + 1.0),
+                Vec3::new(bx + 1.0, y_hi, bz + 1.0),
+                Vec3::new(bx,     y_hi, bz + 1.0),
+                Vec3::Z, color);
             // Left face (-X)
             push_quad(vertices, indices,
-                rv(Vec3::new(bx, by,     bz)),
-                rv(Vec3::new(bx, by + h, bz)),
-                rv(Vec3::new(bx, by + h, bz + 1.0)),
-                rv(Vec3::new(bx, by,     bz + 1.0)),
-                rn(Vec3::NEG_X), color);
+                Vec3::new(bx, y_lo,     bz),
+                Vec3::new(bx, y_hi, bz),
+                Vec3::new(bx, y_hi, bz + 1.0),
+                Vec3::new(bx, y_lo,     bz + 1.0),
+                Vec3::NEG_X, color);
             // Right face (+X)
             push_quad(vertices, indices,
-                rv(Vec3::new(bx + 1.0, by,     bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by + h, bz + 1.0)),
-                rv(Vec3::new(bx + 1.0, by + h, bz)),
-                rv(Vec3::new(bx + 1.0, by,     bz)),
-                rn(Vec3::X), color);
+                Vec3::new(bx + 1.0, y_lo,     bz + 1.0),
+                Vec3::new(bx + 1.0, y_hi, bz + 1.0),
+                Vec3::new(bx + 1.0, y_hi, bz),
+                Vec3::new(bx + 1.0, y_lo,     bz),
+                Vec3::X, color);
         }
         BlockType::VerticalSlab => {
             // Front half wall: z range [bz, bz+0.5], full height

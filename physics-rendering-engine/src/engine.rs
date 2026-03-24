@@ -589,8 +589,13 @@ impl Engine {
         if let Some(entity) = self.world.entity_by_rb_mut(rb) {
             entity.mesh_type = self.selected_block_type.mesh_id();
         }
-        let angle = self.selected_rotation as f32 * std::f32::consts::FRAC_PI_2;
-        let rot = glam::Quat::from_rotation_y(-angle);
+        let rot = if self.selected_block_type == BlockType::Slab && self.selected_rotation == 1 {
+            // Flip upside-down for top slab preview
+            glam::Quat::from_rotation_x(std::f32::consts::PI)
+        } else {
+            let angle = self.selected_rotation as f32 * std::f32::consts::FRAC_PI_2;
+            glam::Quat::from_rotation_y(-angle)
+        };
         self.physics.set_body_rotation(rb, rot);
     }
 
@@ -833,11 +838,15 @@ impl Engine {
             self.update_held_block_visual();
         }
 
-        // --- V: rotate block ---
+        // --- V: rotate block (slab toggles top/bottom) ---
         let rotate = input.rotate_block && !self.rotate_prev;
         self.rotate_prev = input.rotate_block;
         if rotate {
-            self.selected_rotation = (self.selected_rotation + 1) % 4;
+            if self.selected_block_type == BlockType::Slab {
+                self.selected_rotation = if self.selected_rotation == 0 { 1 } else { 0 };
+            } else {
+                self.selected_rotation = (self.selected_rotation + 1) % 4;
+            }
             self.update_held_block_visual();
         }
 
