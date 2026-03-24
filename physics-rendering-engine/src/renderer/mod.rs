@@ -856,6 +856,8 @@ impl Renderer {
         sun_moon: Vec4,
         moon_info: Vec4,
         blizzard_info: Vec4,
+        weather_info: Vec4,
+        wind_info: Vec4,
     ) -> Result<()> {
         if self.surface_width == 0 || self.surface_height == 0 {
             return Ok(());
@@ -882,6 +884,8 @@ impl Renderer {
                 sun_moon,
                 moon_info,
                 blizzard_info,
+                weather_info,
+                wind_info,
             };
         }
 

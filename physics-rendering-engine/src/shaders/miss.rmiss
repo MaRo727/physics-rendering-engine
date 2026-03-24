@@ -15,6 +15,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude (-1 to 1)
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude (-1 to 1)
     vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
+    vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
 
 void main() {
@@ -125,6 +127,48 @@ void main() {
             vec3 starColor = mix(vec3(0.8, 0.85, 1.0), vec3(1.0, 0.9, 0.7), h2);
             sky += starColor * brightness * nightness * 0.5;
         }
+    }
+
+    // Cloud coverage — overcast gray sky blended over base sky.
+    float cloudCoverage = scene.weatherInfo.w;
+    if (cloudCoverage > 0.0) {
+        // Overcast color: dark gray during day, darker at night.
+        vec3 overcastDay = vec3(0.45, 0.48, 0.52);
+        vec3 overcastNight = vec3(0.03, 0.04, 0.06);
+        vec3 overcastColor = mix(overcastNight, overcastDay, dayFactor);
+
+        // Procedural cloud-like noise variation using ray direction.
+        float wTime = scene.windInfo.w;
+        float cloudNoise = fract(sin(dot(dir.xz * 8.0 + vec2(wTime * 0.02), vec2(127.1, 311.7))) * 43758.5453);
+        float cloudVar = 0.85 + cloudNoise * 0.15;
+
+        // Blend: more clouds = more gray sky, mostly above horizon.
+        float aboveHorizon = smoothstep(-0.05, 0.3, y);
+        sky = mix(sky, overcastColor * cloudVar, cloudCoverage * 0.85 * aboveHorizon);
+
+        // Dim sun/moon disc behind clouds.
+        // (Already computed sun disc above, so this just darkens the overall result.)
+    }
+
+    // Rain — darken sky further, heavier fog.
+    float rainIntensity = scene.weatherInfo.x;
+    if (rainIntensity > 0.0) {
+        vec3 rainSkyColor = mix(vec3(0.02, 0.03, 0.04), vec3(0.3, 0.32, 0.36), dayFactor);
+        float aboveHorizon = smoothstep(-0.1, 0.2, y);
+        sky = mix(sky, rainSkyColor, rainIntensity * 0.5 * aboveHorizon);
+    }
+
+    // Fog weather — blend sky to uniform fog color.
+    float fogDensity = scene.weatherInfo.y;
+    if (fogDensity > 0.0) {
+        vec3 fogColor = vec3(0.55, 0.58, 0.62) * max(dayFactor * 1.2, 0.15);
+        sky = mix(sky, fogColor, fogDensity * 0.9);
+    }
+
+    // Lightning flash — brighten sky.
+    float lightningFlash = scene.weatherInfo.z;
+    if (lightningFlash > 0.0) {
+        sky = mix(sky, vec3(0.9, 0.92, 1.0), lightningFlash * 0.6);
     }
 
     // Blizzard: whiteout the sky.

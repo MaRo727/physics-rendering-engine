@@ -22,6 +22,8 @@ pub struct SceneUBO {
     pub sun_moon: glam::Vec4, // .xyz = sun direction, .w = sun altitude
     pub moon_info: glam::Vec4, // .xyz = moon direction, .w = moon altitude
     pub blizzard_info: glam::Vec4, // .x = snow intensity (0..1), .y = time, .z = unused, .w = unused
+    pub weather_info: glam::Vec4,  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
+    pub wind_info: glam::Vec4,     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 }
 
 // ---------------------------------------------------------------------------

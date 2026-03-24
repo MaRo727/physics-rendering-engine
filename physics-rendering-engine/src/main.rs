@@ -15,6 +15,7 @@ mod particles;
 mod save;
 mod terrain;
 mod ui;
+mod weather;
 
 use app::App;
 use winit::event_loop::EventLoop;

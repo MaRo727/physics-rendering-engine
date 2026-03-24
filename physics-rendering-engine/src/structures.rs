@@ -171,10 +171,14 @@ impl StructureGrid {
     }
 
     /// Collect transforms and instance IDs for trees near `player_pos` that pass frustum culling.
+    /// `wind_strength` (0..1), `wind_dir` is normalized (x, z), `time` is weather animation time.
     pub fn render_nearby(
         &self,
         player_pos: Vec3,
         frustum: &[Vec4; 6],
+        wind_strength: f32,
+        wind_dir: (f32, f32),
+        time: f32,
         transforms: &mut Vec<Mat4>,
         instance_ids: &mut Vec<u32>,
     ) {
@@ -218,8 +222,28 @@ impl StructureGrid {
                     };
 
                     let shake = self.shake_angle(tree_idx);
+
+                    // Wind sway: each tree has a unique phase from its position.
+                    let phase = tree.position.x * 0.13 + tree.position.z * 0.17;
+                    let sway_amount = wind_strength * 0.04; // max ~2.3 degrees in full wind
+                    let sway_x = (time * 1.2 + phase).sin() * sway_amount
+                        + (time * 2.7 + phase * 1.3).sin() * sway_amount * 0.3;
+                    let sway_z = (time * 0.9 + phase * 0.7).sin() * sway_amount * 0.6
+                        + (time * 2.1 + phase * 1.1).sin() * sway_amount * 0.2;
+
+                    // Bias sway toward wind direction.
+                    let wind_bias = wind_strength * 0.015;
+                    let total_sway_x = sway_x + wind_dir.0 * wind_bias;
+                    let total_sway_z = sway_z + wind_dir.1 * wind_bias;
+
                     let mut transform = Mat4::from_translation(tree.position)
                         * Mat4::from_rotation_y(tree.rotation_y);
+                    // Apply wind sway (tilt along X and Z axes).
+                    if total_sway_x.abs() > 0.0001 || total_sway_z.abs() > 0.0001 {
+                        transform = transform
+                            * Mat4::from_rotation_x(total_sway_z)
+                            * Mat4::from_rotation_z(total_sway_x);
+                    }
                     if shake != 0.0 {
                         transform = transform * Mat4::from_rotation_z(shake);
                     }
@@ -351,26 +375,141 @@ impl StructureGrid {
     }
 
     /// Update shake timers and leaf particles. Call once per frame.
-    pub fn update_effects(&mut self, dt: f32) {
+    /// `wind_strength` (0..1), `wind_dir` is (x, z) normalized direction.
+    pub fn update_effects(&mut self, dt: f32, wind_strength: f32, wind_dir: (f32, f32)) {
         // Update shakes.
         self.shakes.retain_mut(|s| {
             s.timer -= dt;
             s.timer > 0.0
         });
 
-        // Update leaf particles with gravity and slight drift.
+        // Wind force applied to leaf particles.
+        let wind_force_x = wind_dir.0 * wind_strength * 8.0;
+        let wind_force_z = wind_dir.1 * wind_strength * 8.0;
+
+        // Update leaf particles with gravity, wind drift, and air drag.
         self.leaf_particles.retain_mut(|p| {
             p.lifetime -= dt;
             if p.lifetime <= 0.0 {
                 return false;
             }
             p.velocity.y -= 2.0 * dt; // gravity
+            // Wind pushes leaves.
+            p.velocity.x += wind_force_x * dt;
+            p.velocity.z += wind_force_z * dt;
             p.velocity.x *= 1.0 - 0.5 * dt; // air drag
             p.velocity.z *= 1.0 - 0.5 * dt;
             p.position += p.velocity * dt;
-            p.rotation_y += 3.0 * dt; // spin
+            p.rotation_y += (3.0 + wind_strength * 5.0) * dt; // spin faster in wind
             true
         });
+    }
+
+    /// Spawn wind-blown leaves from trees near the player.
+    /// Call periodically (not every frame) when wind is strong enough.
+    pub fn emit_wind_leaves(
+        &mut self,
+        player_pos: Vec3,
+        wind_strength: f32,
+        wind_dir: (f32, f32),
+        seed: &mut u32,
+    ) {
+        // Only emit when wind is moderate or above.
+        if wind_strength < 0.2 {
+            return;
+        }
+        // Cap leaf particles to avoid flooding.
+        if self.leaf_particles.len() > 400 {
+            return;
+        }
+
+        let half = TERRAIN_HALF as f32;
+        let emit_range = 80.0; // only from nearby trees
+        let emit_range_sq = emit_range * emit_range;
+
+        // Number of leaves scales with wind strength.
+        let max_leaves = (wind_strength * 6.0) as usize;
+
+        let min_cx = ((player_pos.x - emit_range + half) / CHUNK_WORLD_SIZE)
+            .floor().max(0.0) as usize;
+        let max_cx = ((player_pos.x + emit_range + half) / CHUNK_WORLD_SIZE)
+            .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
+        let min_cz = ((player_pos.z - emit_range + half) / CHUNK_WORLD_SIZE)
+            .floor().max(0.0) as usize;
+        let max_cz = ((player_pos.z + emit_range + half) / CHUNK_WORLD_SIZE)
+            .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
+
+        let mut h = *seed;
+        let mut emitted = 0usize;
+        for cx in min_cx..max_cx {
+            for cz in min_cz..max_cz {
+                let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
+                for &tree_idx in &self.chunk_buckets[bucket] {
+                    if emitted >= max_leaves {
+                        *seed = h;
+                        return;
+                    }
+                    let tree = &self.trees[tree_idx];
+                    // Skip dead trees (no foliage to blow off).
+                    if tree.mesh_type == MESH_TREE_DEAD {
+                        continue;
+                    }
+                    let dx = tree.position.x - player_pos.x;
+                    let dz = tree.position.z - player_pos.z;
+                    if dx * dx + dz * dz > emit_range_sq {
+                        continue;
+                    }
+                    // Random chance per tree per call — higher wind = more likely.
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let roll = hash_f32(h);
+                    if roll > wind_strength * 0.04 {
+                        continue;
+                    }
+
+                    let canopy_height = match tree.mesh_type {
+                        MESH_TREE_OAK => 5.0 * tree.scale.y,
+                        MESH_TREE_PINE => 6.0 * tree.scale.y,
+                        _ => 5.0 * tree.scale.y,
+                    };
+                    let canopy_center = tree.position + Vec3::new(0.0, canopy_height, 0.0);
+                    let canopy_radius = 3.0 * tree.scale.x;
+
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let angle = hash_f32(h) * std::f32::consts::TAU;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let r = hash_f32(h) * canopy_radius;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let pos = canopy_center + Vec3::new(angle.cos() * r, (hash_f32(h) - 0.5) * 1.0, angle.sin() * r);
+
+                    // Velocity: mostly wind-driven with some random spread.
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let vx = wind_dir.0 * wind_strength * 4.0 + (hash_f32(h) - 0.5) * 2.0;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let vy = -0.5 - hash_f32(h) * 1.0;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let vz = wind_dir.1 * wind_strength * 4.0 + (hash_f32(h) - 0.5) * 2.0;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let rot = hash_f32(h) * std::f32::consts::TAU;
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let life_extra = hash_f32(h);
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let mesh_roll = hash_f32(h);
+                    h = h.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let scale_extra = hash_f32(h);
+
+                    self.leaf_particles.push(LeafParticle {
+                        position: pos,
+                        velocity: Vec3::new(vx, vy, vz),
+                        lifetime: LEAF_LIFETIME + life_extra * 1.0,
+                        mesh_type: if mesh_roll > 0.5 { MESH_GRASS_A } else { MESH_GRASS_B },
+                        scale: 0.12 + scale_extra * 0.08,
+                        rotation_y: rot,
+                    });
+                    emitted += 1;
+                }
+            }
+        }
+        *seed = h;
     }
 
     /// Get the current shake angle for a tree index (0.0 if not shaking).
@@ -626,10 +765,15 @@ impl GrassGrid {
         Self { strands, patches, chunk_buckets }
     }
 
+    /// Render grass strands near the player with wind-based sway animation.
+    /// `wind_strength` (0..1), `wind_dir` is normalized (x, z), `time` is weather animation time.
     pub fn render_nearby(
         &self,
         player_pos: Vec3,
         frustum: &[Vec4; 6],
+        wind_strength: f32,
+        wind_dir: (f32, f32),
+        time: f32,
         transforms: &mut Vec<Mat4>,
         instance_ids: &mut Vec<u32>,
     ) {
@@ -645,6 +789,10 @@ impl GrassGrid {
             .floor().max(0.0) as usize;
         let max_cz = ((player_pos.z + render_dist + half) / CHUNK_WORLD_SIZE)
             .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
+
+        // Wind sway is applied as a small tilt (rotation about a horizontal axis perpendicular
+        // to wind direction). Each strand gets a unique phase offset from its position hash.
+        let sway_enabled = wind_strength > 0.01;
 
         for cx in min_cx..max_cx {
             for cz in min_cz..max_cz {
@@ -675,9 +823,29 @@ impl GrassGrid {
                             continue;
                         }
 
-                        let transform = Mat4::from_translation(strand.position)
-                            * Mat4::from_rotation_y(strand.rotation_y)
-                            * Mat4::from_scale(strand.scale);
+                        let mut transform = Mat4::from_translation(strand.position)
+                            * Mat4::from_rotation_y(strand.rotation_y);
+
+                        if sway_enabled {
+                            // Per-strand phase offset from position for natural variation.
+                            let phase = strand.position.x * 0.37 + strand.position.z * 0.53;
+                            // Multi-frequency sway for organic motion.
+                            let sway = wind_strength * 0.15
+                                * ((time * 2.5 + phase).sin()
+                                   + 0.4 * (time * 5.3 + phase * 1.7).sin()
+                                   + 0.15 * (time * 9.1 + phase * 2.3).sin());
+                            // Constant lean in wind direction.
+                            let lean = wind_strength * 0.06;
+                            // Tilt toward wind: rotate about the axis perpendicular to wind.
+                            // Wind blows along (wind_dir.0, wind_dir.1), so tilt axis is (-wind_dir.1, 0, wind_dir.0).
+                            let tilt = sway + lean;
+                            // Apply as rotations around X and Z (approximation for small angles).
+                            transform = transform
+                                * Mat4::from_rotation_x(tilt * wind_dir.1)
+                                * Mat4::from_rotation_z(-tilt * wind_dir.0);
+                        }
+
+                        transform = transform * Mat4::from_scale(strand.scale);
                         transforms.push(transform);
                         instance_ids.push(pack_instance_id(strand.mesh_type, GRASS_OBJECT_ID));
                     }

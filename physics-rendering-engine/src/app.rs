@@ -139,6 +139,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F6) => self.input.toggle_god = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
                     PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
+                    PhysicalKey::Code(KeyCode::F7) => self.input.toggle_weather = pressed,
                     _ => {}
                 }
             }

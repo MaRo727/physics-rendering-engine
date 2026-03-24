@@ -18,6 +18,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude
     vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
+    vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
 
 layout(set = 0, binding = 3) readonly buffer VertexBuf { float verts[]; };
@@ -129,6 +131,50 @@ void main() {
                 lit = mix(lit, lit * vec3(0.7, 1.3, 0.7), 0.4);
             }
         }
+    }
+
+    // Rain — wet surface darkening + distance fog.
+    float rainIntensity = scene.weatherInfo.x;
+    if (rainIntensity > 0.0 && mesh_type != WATER_MESH_TYPE) {
+        // Wet surfaces: darken and slightly increase saturation.
+        float wetness = rainIntensity * 0.3;
+        lit *= (1.0 - wetness);
+    }
+
+    // Rain distance fog — gray-blue atmospheric scattering.
+    if (rainIntensity > 0.0) {
+        float dist = gl_HitTEXT;
+        float fogNear = mix(200.0, 40.0, rainIntensity);
+        float fogFar = mix(600.0, 120.0, rainIntensity);
+        float fogFactor = clamp((dist - fogNear) / (fogFar - fogNear), 0.0, 1.0);
+        vec3 rainFogColor = vec3(0.35, 0.38, 0.45) * scene.lightColor.w * 1.5;
+        rainFogColor = max(rainFogColor, vec3(0.04, 0.05, 0.07));
+        lit = mix(lit, rainFogColor, fogFactor * rainIntensity * 0.8);
+    }
+
+    // Fog weather — dense gray-blue fog.
+    float fogDensity = scene.weatherInfo.y;
+    if (fogDensity > 0.0) {
+        float dist = gl_HitTEXT;
+        float fogNear = mix(100.0, 10.0, fogDensity);
+        float fogFar = mix(400.0, 60.0, fogDensity);
+        float fogFactor = clamp((dist - fogNear) / (fogFar - fogNear), 0.0, 1.0);
+        vec3 fogColor = vec3(0.55, 0.58, 0.62) * scene.lightColor.w * 1.2;
+        fogColor = max(fogColor, vec3(0.06, 0.07, 0.09));
+        lit = mix(lit, fogColor, fogFactor * fogDensity);
+    }
+
+    // Lightning flash — bright illumination.
+    float lightningFlash = scene.weatherInfo.z;
+    if (lightningFlash > 0.0) {
+        float extraLight = lightningFlash * 2.0;
+        lit += color * extraLight * max(0.0, normal.y * 0.5 + 0.5);
+    }
+
+    // Cloud coverage — dim overall lighting slightly.
+    float cloudCoverage = scene.weatherInfo.w;
+    if (cloudCoverage > 0.0) {
+        lit *= mix(1.0, 0.7, cloudCoverage * 0.5);
     }
 
     // Blizzard distance fog — white fog that reduces visibility.

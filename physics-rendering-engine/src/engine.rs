@@ -30,6 +30,7 @@ use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{Biome, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
 use crate::particles::ParticleSystem;
 use crate::ui::Ui;
+use crate::weather::Weather;
 use crate::game::items::item_by_id;
 use crate::game::npc::{self, ActiveDialogue};
 use crate::game::quest::{self, Quest, QuestState};
@@ -128,6 +129,10 @@ pub struct Engine {
     player_visual_yaw: f32,
     snow_intensity: f32,
     snow_time: f32,
+    weather: Weather,
+    weather_debug_active: bool,
+    weather_prev: bool,
+    wind_leaf_timer: f32,
     tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     tree_punch_seed: u32,
     // Cached per-frame player derived stats (computed once in update, reused in render).
@@ -337,6 +342,10 @@ impl Engine {
             player_visual_yaw: 0.0,
             snow_intensity: 0.0,
             snow_time: 0.0,
+            weather: Weather::new(42),
+            weather_debug_active: false,
+            weather_prev: false,
+            wind_leaf_timer: 0.0,
             tree_rbs: data.tree_rbs,
             tree_punch_seed: 12345,
             player_derived: StatBlock::new_player().compute_derived(&StatBonuses::default()),
@@ -747,6 +756,21 @@ impl Engine {
             self.god_mode = !self.god_mode;
         }
         self.god_prev = input.toggle_god;
+
+        // --- Weather debug toggle (F7) ---
+        if input.toggle_weather && !self.weather_prev {
+            if self.weather_debug_active {
+                // Deactivate: return to clear
+                self.weather.force_clear();
+                self.weather_debug_active = false;
+            } else {
+                // Activate: pick a random weather
+                self.weather.force_random();
+                self.weather_debug_active = true;
+            }
+            log::info!("Weather debug: {:?} (active={})", self.weather.kind, self.weather_debug_active);
+        }
+        self.weather_prev = input.toggle_weather;
 
         // --- Debug UI toggle (F3) ---
         if input.toggle_debug_ui && !self.debug_ui_prev {
@@ -1289,8 +1313,27 @@ impl Engine {
         // --- Update particles ---
         self.particles.update(dt);
 
-        // --- Update tree shake + leaf particles ---
-        self.structures.update_effects(dt);
+        // --- Update weather system ---
+        {
+            let player_pos = self.physics.body_position(self.player_rb);
+            let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
+            self.weather.update(dt, biome);
+        }
+
+        // --- Update tree shake + leaf particles (wind-affected) ---
+        let wind_dir = self.weather.wind_dir();
+        let wind_strength = self.weather.wind_strength;
+        self.structures.update_effects(dt, wind_strength, wind_dir);
+
+        // --- Wind-blown leaves from nearby trees ---
+        self.wind_leaf_timer += dt;
+        if self.wind_leaf_timer >= 0.3 {
+            self.wind_leaf_timer = 0.0;
+            let player_pos = self.physics.body_position(self.player_rb);
+            self.structures.emit_wind_leaves(
+                player_pos, wind_strength, wind_dir, &mut self.tree_punch_seed,
+            );
+        }
 
         // --- Blizzard intensity + snow particles ---
         self.snow_time += dt;
@@ -1772,7 +1815,14 @@ impl Engine {
         // Trees near the player, frustum-culled to the player camera
         // (in ghost mode, use the frozen player frustum like terrain chunks).
         let tree_frustum = extract_frustum_planes(cull_proj * cull_view);
-        self.structures.render_nearby(player_pos, &tree_frustum, &mut self.frame_transforms, &mut self.frame_instance_ids);
+        let wind_dir = self.weather.wind_dir();
+        let wind_strength = self.weather.wind_strength;
+        let weather_time = self.weather.weather_time;
+        self.structures.render_nearby(
+            player_pos, &tree_frustum,
+            wind_strength, wind_dir, weather_time,
+            &mut self.frame_transforms, &mut self.frame_instance_ids,
+        );
 
         // Leaf particles from tree punches.
         let leaf_object_base: u32 = 0xFF80;
@@ -1788,7 +1838,11 @@ impl Engine {
         }
 
         // Grass patches near the player, frustum-culled.
-        self.grass.render_nearby(player_pos, &tree_frustum, &mut self.frame_transforms, &mut self.frame_instance_ids);
+        self.grass.render_nearby(
+            player_pos, &tree_frustum,
+            wind_strength, wind_dir, weather_time,
+            &mut self.frame_transforms, &mut self.frame_instance_ids,
+        );
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
         // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.
@@ -1910,6 +1964,20 @@ impl Engine {
 
         let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, 0.0, 0.0);
 
+        let (wd_x, wd_z) = self.weather.wind_dir();
+        let weather_info = Vec4::new(
+            self.weather.rain_intensity,
+            self.weather.fog_density,
+            self.weather.lightning_flash,
+            self.weather.cloud_coverage,
+        );
+        let wind_info = Vec4::new(
+            self.weather.wind_strength,
+            wd_x,
+            wd_z,
+            self.weather.weather_time,
+        );
+
         // Build UI for this frame.
         if self.game_state == GameState::MainMenu {
             self.build_menu_ui();
@@ -1938,6 +2006,8 @@ impl Engine {
             sun_moon,
             moon_info,
             blizzard_info,
+            weather_info,
+            wind_info,
         )
     }
 
@@ -2117,7 +2187,7 @@ impl Engine {
             let line_h = cell + 2.0;
 
             let panel_w = 22.0 * cell + 16.0;
-            let panel_h = 6.0 * line_h + 12.0;
+            let panel_h = 7.0 * line_h + 12.0;
             self.ui.panel(ox - 6.0, oy - 6.0, panel_w, panel_h);
 
             let white = [0.9, 0.9, 0.9, 1.0];
@@ -2171,6 +2241,25 @@ impl Engine {
             self.hud_buf.clear();
             let _ = write!(self.hud_buf, "POS: {} {}", player_pos.x as i32, player_pos.z as i32);
             self.ui.text(ox, oy + 5.0 * line_h, &self.hud_buf, scale, [0.8, 0.8, 0.8, 1.0]);
+
+            let weather_name = match self.weather.kind {
+                crate::weather::WeatherKind::Clear => "CLEAR",
+                crate::weather::WeatherKind::Cloudy => "CLOUDY",
+                crate::weather::WeatherKind::Rain => "RAIN",
+                crate::weather::WeatherKind::Thunderstorm => "STORM",
+                crate::weather::WeatherKind::Fog => "FOG",
+                crate::weather::WeatherKind::Windy => "WINDY",
+            };
+            let weather_color = match self.weather.kind {
+                crate::weather::WeatherKind::Clear => [0.9, 0.9, 0.5, 1.0],
+                crate::weather::WeatherKind::Cloudy => [0.7, 0.7, 0.7, 1.0],
+                crate::weather::WeatherKind::Rain => [0.4, 0.6, 0.9, 1.0],
+                crate::weather::WeatherKind::Thunderstorm => [0.9, 0.4, 0.9, 1.0],
+                crate::weather::WeatherKind::Fog => [0.6, 0.65, 0.7, 1.0],
+                crate::weather::WeatherKind::Windy => [0.5, 0.9, 0.7, 1.0],
+            };
+            self.ui.text(ox, oy + 6.0 * line_h, "WEATHER: ", scale, white);
+            self.ui.text(ox + 9.0 * cell, oy + 6.0 * line_h, weather_name, scale, weather_color);
         }
 
         // -- Minimap (top-right corner) --

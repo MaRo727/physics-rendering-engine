@@ -15,6 +15,8 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 sunMoon;     // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo;    // .xyz = moon direction, .w = moon altitude
     vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
+    vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
 
 // ---------------------------------------------------------------------------
@@ -180,6 +182,68 @@ void main() {
 
         snowAccum = min(snowAccum, 1.0) * snowIntensity;
         payload = mix(payload, vec3(0.92, 0.93, 0.96), snowAccum * 0.85);
+    }
+
+    // Volumetric rain streaks — thin vertical lines sampling world-space positions.
+    float rainIntensity = scene.weatherInfo.x;
+    if (rainIntensity > 0.0) {
+        float wTime = scene.windInfo.w;
+        float windStr = scene.windInfo.x;
+        float windDirX = scene.windInfo.y;
+        float windDirZ = scene.windInfo.z;
+        vec3 rayDir = normalize(direction.xyz);
+        vec3 rayOrig = origin.xyz;
+
+        float rainAccum = 0.0;
+
+        for (int i = 0; i < 48; i++) {
+            float depth = 0.5 + float(i) * 0.9;
+            vec3 samplePos = rayOrig + rayDir * depth;
+
+            // Animate: fast falling + wind drift.
+            samplePos.y += wTime * 12.0;
+            samplePos.x -= wTime * windDirX * windStr * 6.0;
+            samplePos.z -= wTime * windDirZ * windStr * 6.0;
+
+            // Hash on a 3D grid — taller cells for vertical streaks.
+            vec3 cellSize = vec3(0.4, 1.2, 0.4);
+            vec3 cell = floor(samplePos / cellSize);
+            vec3 frac_pos = fract(samplePos / cellSize);
+
+            float h = fract(sin(dot(cell, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+
+            // Threshold: more rain = more streaks.
+            float threshold = 1.0 - rainIntensity * 0.25;
+            if (h > threshold) {
+                // Streak center in XZ, full Y extent.
+                vec2 streakCenter = vec2(
+                    fract(sin(dot(cell, vec3(269.5, 183.3, 91.2))) * 76543.2109),
+                    fract(sin(dot(cell, vec3(153.7, 287.4, 205.1))) * 54321.0987)
+                );
+
+                float dx = frac_pos.x - streakCenter.x;
+                float dz = frac_pos.z - streakCenter.y;
+                float distXZ = sqrt(dx * dx + dz * dz);
+                float streakRadius = 0.06;
+
+                if (distXZ < streakRadius) {
+                    float brightness = (1.0 - distXZ / streakRadius) * 0.7;
+                    float distFade = 1.0 - depth / 45.0;
+                    rainAccum += brightness * max(distFade, 0.0) * 0.12;
+                }
+            }
+        }
+
+        rainAccum = min(rainAccum, 1.0) * rainIntensity;
+        // Rain is a subtle blue-white tint.
+        vec3 rainColor = vec3(0.7, 0.75, 0.85);
+        payload = mix(payload, rainColor, rainAccum * 0.5);
+    }
+
+    // Lightning flash — bright white overlay.
+    float lightningFlash = scene.weatherInfo.z;
+    if (lightningFlash > 0.0) {
+        payload = mix(payload, vec3(1.0, 0.98, 0.95), lightningFlash * 0.3);
     }
 
     // Crosshair overlay.
