@@ -4,6 +4,7 @@ use glam::Vec3;
 use crate::physics::body::{RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::game::entity::{Entity, EntityKind};
+use crate::game::world::World;
 
 
 const PICKUP_RANGE: f32 = 5.0;
@@ -149,7 +150,7 @@ impl Interaction {
     pub fn update(
         &mut self,
         physics: &mut PhysicsWorld,
-        entities: &[Entity],
+        world: &World,
         eye: Vec3,
         look_dir: Vec3,
         interact_pressed: bool,
@@ -182,7 +183,7 @@ impl Interaction {
                 self.pry_target = None;
             } else {
                 // Check for nearby item drops first.
-                if let Some(drop_id) = find_nearest_item_drop(physics, entities, eye, ITEM_PICKUP_RANGE) {
+                if let Some(drop_id) = find_nearest_item_drop(physics, &world.entities, eye, ITEM_PICKUP_RANGE) {
                     result.picked_up_item = Some(drop_id);
                 } else {
                     // Try to pick up a dynamic object.
@@ -234,7 +235,7 @@ impl Interaction {
 
         if lmb_edge {
             if let Some(held) = self.held_body.take() {
-                let throw_speed = weight_class_of(entities, held).throw_speed();
+                let throw_speed = weight_class_of(world, held).throw_speed();
                 physics.set_gravity_enabled(held, true);
                 physics.set_body_linvel(held, look_dir * throw_speed);
             } else {
@@ -247,9 +248,9 @@ impl Interaction {
                             if tree_rbs.contains(&target_body) {
                                 result.tree_hit = Some(hit_pos);
                             } else {
-                                let is_enemy = entities.iter().any(|e| e.body.rigid_body == target_body && e.kind == EntityKind::Enemy);
+                                let is_enemy = world.entity_by_rb(target_body).map_or(false, |e| e.kind == EntityKind::Enemy);
                                 if physics.is_dynamic(target_body) && !is_enemy {
-                                    let wc = weight_class_of(entities, target_body);
+                                    let wc = weight_class_of(world, target_body);
                                     let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
                                     physics.apply_impulse(target_body, force);
                                 }
@@ -324,13 +325,8 @@ impl Interaction {
     }
 }
 
-fn weight_class_of(entities: &[Entity], handle: RigidBodyHandle) -> WeightClass {
-    for e in entities {
-        if e.body.rigid_body == handle {
-            return e.body.weight_class;
-        }
-    }
-    WeightClass::Medium
+fn weight_class_of(world: &World, handle: RigidBodyHandle) -> WeightClass {
+    world.entity_by_rb(handle).map_or(WeightClass::Medium, |e| e.body.weight_class)
 }
 
 /// Find the nearest item drop entity within range of the eye position.

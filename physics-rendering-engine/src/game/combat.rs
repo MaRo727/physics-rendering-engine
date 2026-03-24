@@ -1,8 +1,9 @@
 /// Combat state machine: handles melee attack timing, hit detection, and damage.
 
 use glam::Vec3;
-use crate::game::entity::{Entity, EntityId, EntityKind};
+use crate::game::entity::{EntityId, EntityKind};
 use crate::game::items::{WeaponData, WeaponType};
+use crate::game::world::World;
 use crate::physics::body::ColliderHandle;
 use crate::physics::world::PhysicsWorld;
 
@@ -97,7 +98,7 @@ impl CombatSystem {
         &mut self,
         dt: f32,
         physics: &PhysicsWorld,
-        entities: &[Entity],
+        world: &World,
         eye: Vec3,
         look_dir: Vec3,
         player_col: ColliderHandle,
@@ -134,7 +135,7 @@ impl CombatSystem {
                             if let Some((body_handle, hit_pos, _normal)) =
                                 physics.cast_ray_full(eye, look_dir, *range, player_col)
                             {
-                                if let Some(entity) = entities.iter().find(|e| e.body.rigid_body == body_handle) {
+                                if let Some(entity) = world.entity_by_rb(body_handle) {
                                     if entity.kind == EntityKind::Enemy {
                                         let damage = *base_damage * melee_mult;
                                         let knockback_dir = (hit_pos - eye).normalize_or_zero();

@@ -30,7 +30,7 @@ use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
 use crate::terrain::{Biome, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
 use crate::particles::ParticleSystem;
-use crate::ui::Ui;
+use crate::ui::{Ui, UiPrimitive};
 use crate::weather::Weather;
 use crate::game::items::item_by_id;
 use crate::game::npc::{self, ActiveDialogue};
@@ -175,6 +175,8 @@ pub struct Engine {
     // Minimap biome cache: 20x20 grid, recomputed only when player moves a cell.
     minimap_biome_cache: [u8; 400],
     minimap_last_cell: (i32, i32),
+    minimap_prims: Vec<UiPrimitive>,
+    minimap_screen_w: f32,
     // Reusable string buffer for HUD text (avoids format! heap allocs each frame).
     hud_buf: String,
     // Structure editor state.
@@ -402,6 +404,8 @@ impl Engine {
             has_save_file: crate::save::load().is_ok(),
             minimap_biome_cache: [0; 400],
             minimap_last_cell: (i32::MIN, i32::MIN),
+            minimap_prims: Vec::with_capacity(400),
+            minimap_screen_w: 0.0,
             hud_buf: String::with_capacity(64),
             editor_mode: false,
             editor_prev: false,
@@ -1296,7 +1300,7 @@ impl Engine {
 
             let interaction_result = self.interaction.update(
                 &mut self.physics,
-                &self.world.entities,
+                &self.world,
                 player_eye,
                 look_dir,
                 input.interact,
@@ -1484,7 +1488,7 @@ impl Engine {
             if let Some(hit) = self.combat.update(
                 dt,
                 &self.physics,
-                &self.world.entities,
+                &self.world,
                 player_eye,
                 look_dir,
                 self.player_col,
@@ -1522,7 +1526,7 @@ impl Engine {
                     player_eye,
                     look_dir,
                     &self.physics,
-                    &self.world.entities,
+                    &self.world,
                     self.player_col,
                 ) {
                     // Deduct mana.
@@ -1550,7 +1554,6 @@ impl Engine {
                             if let Some(ref mut stats) = self.world.player_mut().stats {
                                 stats.health = (stats.health + amount).min(derived.max_health);
                             }
-                            let player_pos = self.physics.body_position(self.player_rb);
                             self.particles.emit_heal(player_pos);
                         }
                         CastResult::Projectile | CastResult::Miss => {}
@@ -1562,7 +1565,7 @@ impl Engine {
             self.spells.update(
                 dt,
                 &self.physics,
-                &self.world.entities,
+                &self.world,
                 self.player_col,
                 &mut self.spell_hit_buf,
             );
@@ -1616,7 +1619,6 @@ impl Engine {
                     if let Some(ref mut stats) = self.world.player_mut().stats {
                         let levels = progression::award_xp(stats, xp);
                         if levels > 0 {
-                            let player_pos = self.physics.body_position(self.player_rb);
                             self.particles.emit_level_up(player_pos);
                         }
                     }
@@ -1687,7 +1689,7 @@ impl Engine {
             enemy_ai::update_projectiles(
                 &mut self.enemy_projectiles,
                 &self.physics,
-                &self.world.entities,
+                self.player_rb,
                 dt,
                 &mut self.arrow_hit_buf,
             );
@@ -1730,12 +1732,14 @@ impl Engine {
             self.player_visual_yaw += delta.clamp(-max_step, max_step);
         }
 
+        // Player position after physics step — used by weather, quests, audio, minimap, etc.
+        let player_pos = self.physics.body_position(self.player_rb);
+
         // --- Update particles ---
         self.particles.update(dt);
 
         // --- Update weather system ---
         {
-            let player_pos = self.physics.body_position(self.player_rb);
             let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
             self.weather.update(dt, biome);
         }
@@ -1749,7 +1753,6 @@ impl Engine {
         self.wind_leaf_timer += dt;
         if self.wind_leaf_timer >= 0.3 {
             self.wind_leaf_timer = 0.0;
-            let player_pos = self.physics.body_position(self.player_rb);
             self.structures.emit_wind_leaves(
                 player_pos, wind_strength, wind_dir, &mut self.tree_punch_seed,
             );
@@ -1758,7 +1761,6 @@ impl Engine {
         // --- Blizzard intensity + snow particles ---
         self.snow_time += dt;
         {
-            let player_pos = self.physics.body_position(self.player_rb);
             let in_snow = self.terrain.is_snow_zone(player_pos.x, player_pos.z);
 
             // Smooth snow intensity transition.
@@ -1797,7 +1799,6 @@ impl Engine {
                     }
                 } else {
                     // Check proximity to NPCs.
-                    let player_pos = self.physics.body_position(self.player_rb);
                     let npc_defs = npc::npc_defs();
                     let mut closest: Option<(u32, u8, f32)> = None;
                     for e in self.world.entities.iter() {
@@ -1830,7 +1831,6 @@ impl Engine {
             if let Some(ref inv) = self.world.player().inventory {
                 quest::check_collect_quests(&mut self.quests, inv);
             }
-            let player_pos = self.physics.body_position(self.player_rb);
             quest::check_reach_quests(&mut self.quests, player_pos.x, player_pos.z);
         }
 
@@ -1839,7 +1839,6 @@ impl Engine {
 
         // --- Audio: update music and footsteps based on player biome ---
         if let Some(audio) = &mut self.audio {
-            let player_pos = self.physics.body_position(self.player_rb);
             let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
             audio.update(dt, biome, None);
 
@@ -2767,33 +2766,40 @@ impl Engine {
             let world_scale = 20.0; // each map cell = 20 world units
             let cell_x = (player_pos.x / world_scale).floor() as i32;
             let cell_z = (player_pos.z / world_scale).floor() as i32;
-            if (cell_x, cell_z) != self.minimap_last_cell {
+            let minimap_dirty = (cell_x, cell_z) != self.minimap_last_cell
+                || sw != self.minimap_screen_w;
+            if minimap_dirty {
                 self.minimap_last_cell = (cell_x, cell_z);
+                self.minimap_screen_w = sw;
+                self.minimap_prims.clear();
                 for cy in 0..map_cells {
                     for cx in 0..map_cells {
                         let wx = player_pos.x + (cx as f32 - half) * world_scale;
                         let wz = player_pos.z + (cy as f32 - half) * world_scale;
                         let biome = self.terrain.biome_at_world(wx, wz);
                         self.minimap_biome_cache[cy * map_cells + cx] = biome as u8;
+                        let color = match biome as u8 {
+                            0 => [0.35, 0.55, 0.25, 0.8], // Plains
+                            1 => [0.15, 0.35, 0.12, 0.8], // Forest
+                            2 => [0.7, 0.6, 0.35, 0.8],   // Desert
+                            3 => [0.5, 0.5, 0.55, 0.8],   // Mountains
+                            _ => [0.3, 0.2, 0.35, 0.8],   // Dungeon
+                        };
+                        self.minimap_prims.push(UiPrimitive {
+                            rect: [
+                                map_x + cx as f32 * map_pixel,
+                                map_y + cy as f32 * map_pixel,
+                                map_pixel, map_pixel,
+                            ],
+                            color,
+                            glyph: 0,
+                            flags: 0,
+                            _pad: [0; 2],
+                        });
                     }
                 }
             }
-            for cy in 0..map_cells {
-                for cx in 0..map_cells {
-                    let color = match self.minimap_biome_cache[cy * map_cells + cx] {
-                        0 => [0.35, 0.55, 0.25, 0.8], // Plains
-                        1 => [0.15, 0.35, 0.12, 0.8], // Forest
-                        2 => [0.7, 0.6, 0.35, 0.8],   // Desert
-                        3 => [0.5, 0.5, 0.55, 0.8],   // Mountains
-                        _ => [0.3, 0.2, 0.35, 0.8],   // Dungeon
-                    };
-                    self.ui.rect(
-                        map_x + cx as f32 * map_pixel,
-                        map_y + cy as f32 * map_pixel,
-                        map_pixel, map_pixel, color,
-                    );
-                }
-            }
+            self.ui.extend_prims(&self.minimap_prims);
 
             // Player dot (center).
             let pc = map_x + half * map_pixel;
@@ -2825,15 +2831,16 @@ impl Engine {
             let line_h_qt = cell + 2.0;
             let mut y = qt_y;
 
-            let active_quests: Vec<_> = self.quests.iter()
-                .filter(|q| q.state == QuestState::Active || q.state == QuestState::Complete)
-                .collect();
+            let has_active = self.quests.iter()
+                .any(|q| q.state == QuestState::Active || q.state == QuestState::Complete);
 
-            if !active_quests.is_empty() {
+            if has_active {
                 self.ui.text(qt_x, y, "QUESTS", scale, [1.0, 0.85, 0.3, 1.0]);
                 y += line_h_qt;
 
-                for q in &active_quests {
+                for q in self.quests.iter()
+                    .filter(|q| q.state == QuestState::Active || q.state == QuestState::Complete)
+                {
                     let status = if q.state == QuestState::Complete { "[DONE] " } else { "" };
                     self.hud_buf.clear();
                     match &q.objective {
@@ -2952,11 +2959,9 @@ impl Engine {
         // Stats summary.
         if let Some(stats) = &player.stats {
             let stats_y = eq_y + 9.0 * line_h;
-            let stat_str = format!(
-                "STR:{} INT:{} DEX:{}",
-                stats.strength, stats.intelligence, stats.dexterity,
-            );
-            self.ui.text(eq_x, stats_y, &stat_str, scale, [0.7, 0.8, 0.9, 1.0]);
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "STR:{} INT:{} DEX:{}", stats.strength, stats.intelligence, stats.dexterity);
+            self.ui.text(eq_x, stats_y, &self.hud_buf, scale, [0.7, 0.8, 0.9, 1.0]);
         }
 
         // -- Inventory grid (right half) --
@@ -2979,34 +2984,30 @@ impl Engine {
             let sx = inv_x + col as f32 * slot_w;
             let sy = inv_y + (row as f32 + 1.5) * slot_h;
 
-            let item_str = if let Some(inv) = inv {
-                if let Some(stack) = inv.slot(slot_idx) {
-                    if let Some(def) = item_by_id(stack.item_id) {
-                        if stack.count > 1 {
-                            format!("{}x{}", def.name, stack.count)
-                        } else {
-                            def.name.to_string()
-                        }
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-
             // Draw slot background.
             self.ui.rect_border(sx, sy, slot_w - 2.0, slot_h - 2.0, [0.1, 0.1, 0.1, 0.6]);
 
-            if !item_str.is_empty() {
+            // Build item text into hud_buf to avoid per-slot heap allocations.
+            self.hud_buf.clear();
+            if let Some(inv) = inv {
+                if let Some(stack) = inv.slot(slot_idx) {
+                    if let Some(def) = item_by_id(stack.item_id) {
+                        if stack.count > 1 {
+                            let _ = write!(self.hud_buf, "{}x{}", def.name, stack.count);
+                        } else {
+                            self.hud_buf.push_str(def.name);
+                        }
+                    }
+                }
+            }
+
+            if !self.hud_buf.is_empty() {
                 // Truncate long names to fit slot.
                 let max_chars = (slot_w / cell) as usize;
-                let display: &str = if item_str.len() > max_chars {
-                    &item_str[..max_chars]
+                let display: &str = if self.hud_buf.len() > max_chars {
+                    &self.hud_buf[..max_chars]
                 } else {
-                    &item_str
+                    &self.hud_buf
                 };
                 self.ui.text(sx + 2.0, sy + 1.0, display, scale, white);
             }

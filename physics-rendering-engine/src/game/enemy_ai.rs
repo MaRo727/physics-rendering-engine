@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 use crate::game::entity::{Entity, EntityId, EntityKind};
-use crate::physics::body::{ColliderHandle, WeightClass};
+use crate::physics::body::{ColliderHandle, RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_SLIME, MESH_SKELETON, MESH_GOBLIN, MESH_GOLEM, MESH_ARROW};
 use crate::terrain::Biome;
@@ -482,7 +482,7 @@ pub fn update_all(
 pub fn update_projectiles(
     projectiles: &mut Vec<EnemyProjectile>,
     physics: &PhysicsWorld,
-    entities: &[Entity],
+    player_rb: RigidBodyHandle,
     dt: f32,
     hits: &mut Vec<EnemyAttackHit>,
 ) {
@@ -506,10 +506,7 @@ pub fn update_projectiles(
                 physics.cast_ray_unfiltered(proj.position, dir, step_len + 0.15)
             {
                 // Check if we hit the player.
-                let hit_player = entities.iter().any(|e| {
-                    e.kind == EntityKind::Player && e.body.rigid_body == body_handle
-                });
-                if hit_player {
+                if body_handle == player_rb {
                     hits.push(EnemyAttackHit {
                         damage: proj.damage,
                         knockback_dir: dir,

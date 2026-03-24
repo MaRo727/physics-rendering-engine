@@ -190,6 +190,11 @@ impl Ui {
         (self.screen_w, self.screen_h)
     }
 
+    /// Bulk-append pre-built primitives (e.g. cached minimap rects).
+    pub fn extend_prims(&mut self, prims: &[UiPrimitive]) {
+        self.prims.extend_from_slice(prims);
+    }
+
     /// Solid coloured rectangle.
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         self.prims.push(UiPrimitive {

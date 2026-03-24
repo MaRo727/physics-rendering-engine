@@ -258,6 +258,29 @@ impl PhysicsWorld {
         (rb_handle, col_handle)
     }
 
+    /// Add a dynamic rigid body with an arbitrary shared shape. Returns handles.
+    pub fn add_dynamic_shape(
+        &mut self,
+        position: Vec3,
+        shape: SharedShape,
+        mass: f32,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let rb = RigidBodyBuilder::dynamic()
+            .translation(vector![position.x, position.y, position.z])
+            .additional_mass(mass)
+            .build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+
+        let col = ColliderBuilder::new(shape)
+            .restitution(0.2)
+            .build();
+        let col_handle =
+            self.collider_set
+                .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+
+        (rb_handle, col_handle)
+    }
+
     /// Add a compound static collider made of multiple cuboids on a single fixed body.
     /// Returns the rigid body handle so callers can identify hits on this body.
     pub fn add_compound_static(&mut self, boxes: &[(Vec3, Vec3)]) -> RigidBodyHandle {

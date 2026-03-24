@@ -4,8 +4,9 @@ use glam::Vec3;
 use crate::physics::body::ColliderHandle;
 use crate::renderer::{MESH_FIREBALL, MESH_ICESHARD};
 
-use crate::game::entity::{Entity, EntityId, EntityKind};
+use crate::game::entity::{EntityId, EntityKind};
 use crate::game::stats::{self, DerivedStats};
+use crate::game::world::World;
 use crate::physics::world::PhysicsWorld;
 
 // ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ impl SpellSystem {
         eye: Vec3,
         look_dir: Vec3,
         physics: &PhysicsWorld,
-        entities: &[Entity],
+        world: &World,
         player_col: ColliderHandle,
     ) -> Option<(CastResult, f32)> {
         let spell = self.active_spell;
@@ -209,7 +210,7 @@ impl SpellSystem {
                 if let Some((body_handle, hit_pos, _)) =
                     physics.cast_ray_full(eye, look_dir, def.range, player_col)
                 {
-                    if let Some(entity) = entities.iter().find(|e| e.body.rigid_body == body_handle) {
+                    if let Some(entity) = world.entity_by_rb(body_handle) {
                         if entity.kind == EntityKind::Enemy {
                             let dir = (hit_pos - eye).normalize_or_zero();
                             println!("Ice Shard hits enemy {} for {:.0}!", entity.id, damage);
@@ -237,7 +238,7 @@ impl SpellSystem {
         &mut self,
         dt: f32,
         physics: &PhysicsWorld,
-        entities: &[Entity],
+        world: &World,
         player_col: ColliderHandle,
         hits: &mut Vec<SpellHit>,
     ) {
@@ -262,7 +263,7 @@ impl SpellSystem {
                     physics.cast_ray_full(proj.position, dir, step_len + FIREBALL_RADIUS, player_col)
                 {
                     // Direct hit — check if enemy.
-                    if let Some(entity) = entities.iter().find(|e| e.body.rigid_body == body_handle) {
+                    if let Some(entity) = world.entity_by_rb(body_handle) {
                         if entity.kind == EntityKind::Enemy {
                             hits.push(SpellHit {
                                 entity_id: entity.id,
@@ -272,7 +273,7 @@ impl SpellSystem {
                         }
                     }
                     // AoE: damage nearby enemies.
-                    for entity in entities.iter().filter(|e| e.kind == EntityKind::Enemy) {
+                    for entity in world.entities.iter().filter(|e| e.kind == EntityKind::Enemy) {
                         let epos = physics.body_position(entity.body.rigid_body);
                         let dist = (epos - hit_pos).length();
                         if dist < FIREBALL_AOE_RADIUS && dist > 0.1 {
