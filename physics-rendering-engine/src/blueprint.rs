@@ -20,7 +20,7 @@ pub struct BlockEntry {
     pub color: [f32; 3],
 }
 
-fn blueprints_dir() -> PathBuf {
+pub fn blueprints_dir() -> PathBuf {
     let mut p = if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push(".config");

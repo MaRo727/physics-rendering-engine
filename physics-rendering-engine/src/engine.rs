@@ -413,6 +413,7 @@ impl Engine {
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
+        engine.stamp_world_blueprints();
         engine.spawn_mining_nodes();
 
         {
@@ -551,6 +552,49 @@ impl Engine {
         spawn(&mut self.physics, &mut self.world, &self.terrain,
             647.5, 902.0, 0.0, MESH_ROCK, Vec3::new(0.8, 0.6, 0.8));
 
+    }
+
+    /// Stamp saved blueprints into the world as pre-built structures.
+    fn stamp_world_blueprints(&mut self) {
+        let bp_path = blueprint::blueprints_dir().join("test_default_building.json");
+        let bp = match blueprint::load_blueprint(&bp_path) {
+            Ok(bp) => bp,
+            Err(e) => {
+                log::warn!("Failed to load world blueprint: {}", e);
+                return;
+            }
+        };
+
+        // Placement positions (world XZ) near spawn — player starts at ~(0, h, 4).
+        let placements: &[(f32, f32)] = &[
+            (25.0, 35.0),
+            (-20.0, 50.0),
+        ];
+
+        for &(wx, wz) in placements {
+            // Find terrain height at the structure's center to ground it.
+            let terrain_y = self.terrain.height_at_world(wx, wz);
+            // World grid offset: blueprint block (0,0,0) maps to (ox, oy, oz).
+            let ox = wx.floor() as i32;
+            let oy = terrain_y.ceil() as i32; // sit on terrain surface
+            let oz = wz.floor() as i32;
+
+            for b in &bp.blocks {
+                let cx = ox + b.x;
+                let cy = oy + b.y;
+                let cz = oz + b.z;
+                let bt = BlockType::from_u8(b.block_type);
+                let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
+                self.building.load_cell(
+                    &mut self.physics,
+                    cx, cy, cz,
+                    bt, b.rotation, b.sub_blocks, color,
+                );
+            }
+        }
+
+        self.building.mark_dirty();
+        log::info!("Stamped {} blueprint(s) into world", placements.len());
     }
 
     /// Try to turn in complete quests and accept available quests from an NPC.
