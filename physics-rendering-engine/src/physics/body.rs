@@ -3,6 +3,7 @@ use rapier3d::prelude::*;
 
 // Re-export rapier types so code outside physics/ doesn't import rapier3d directly
 pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle, Isometry, SharedShape};
+pub use rapier3d::na::Point3 as NaPoint3;
 
 use super::world::PhysicsWorld;
 

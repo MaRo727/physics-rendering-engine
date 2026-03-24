@@ -84,6 +84,15 @@ impl PhysicsWorld {
         }
     }
 
+    pub fn set_body_rotation(&mut self, handle: RigidBodyHandle, rotation: Quat) {
+        if let Some(body) = self.rigid_body_set.get_mut(handle) {
+            let r = rapier3d::na::UnitQuaternion::new_normalize(
+                rapier3d::na::Quaternion::new(rotation.w, rotation.x, rotation.y, rotation.z),
+            );
+            body.set_rotation(r, true);
+        }
+    }
+
     pub fn body_linvel_y(&self, handle: RigidBodyHandle) -> f32 {
         self.rigid_body_set[handle].linvel().y
     }
@@ -223,6 +232,25 @@ impl PhysicsWorld {
 
         let col = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .build();
+        let col_handle =
+            self.collider_set
+                .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
+
+        (rb_handle, col_handle)
+    }
+
+    /// Add a fixed rigid body with an arbitrary shared shape. Returns handles.
+    pub fn add_static_shape(
+        &mut self,
+        position: Vec3,
+        shape: SharedShape,
+    ) -> (RigidBodyHandle, ColliderHandle) {
+        let rb = RigidBodyBuilder::fixed()
+            .translation(vector![position.x, position.y, position.z])
+            .build();
+        let rb_handle = self.rigid_body_set.insert(rb);
+
+        let col = ColliderBuilder::new(shape).build();
         let col_handle =
             self.collider_set
                 .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);

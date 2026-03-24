@@ -137,6 +137,8 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F5) => self.input.quick_save = pressed,
                     PhysicalKey::Code(KeyCode::F9) => self.input.quick_load = pressed,
                     PhysicalKey::Code(KeyCode::F6) => self.input.toggle_god = pressed,
+                    PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
+                    PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
                     _ => {}
                 }
             }

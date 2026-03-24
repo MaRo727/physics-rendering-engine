@@ -5,7 +5,7 @@ use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::audio::AudioManager;
-use crate::building::{self, BuildingGrid};
+use crate::building::{self, BlockType, BuildingGrid};
 use crate::game::camera::FirstPersonCamera;
 use crate::game::combat::CombatSystem;
 use crate::game::enemy_ai::{self, EnemyAi, EnemyAttackHit, EnemyProjectile};
@@ -97,6 +97,10 @@ pub struct Engine {
     grass: GrassGrid,
     place_prev: bool,
     spawn_prev: bool,
+    selected_block_type: BlockType,
+    selected_rotation: u8,
+    cycle_block_prev: bool,
+    rotate_prev: bool,
     debug_stats_prev: bool,
     fast_prev: bool,
     fast_mode: bool,
@@ -302,6 +306,10 @@ impl Engine {
             grass: data.grass,
             place_prev: false,
             spawn_prev: false,
+            selected_block_type: BlockType::Cube,
+            selected_rotation: 0,
+            cycle_block_prev: false,
+            rotate_prev: false,
             debug_stats_prev: false,
             fast_prev: false,
             fast_mode: false,
@@ -563,6 +571,20 @@ impl Engine {
         }
     }
 
+    /// Update the held block's mesh and rotation to match selected_block_type/selected_rotation.
+    fn update_held_block_visual(&mut self) {
+        let rb = match self.interaction.held_body {
+            Some(rb) => rb,
+            None => return,
+        };
+        if let Some(entity) = self.world.entity_by_rb_mut(rb) {
+            entity.mesh_type = self.selected_block_type.mesh_id();
+        }
+        let angle = self.selected_rotation as f32 * std::f32::consts::FRAC_PI_2;
+        let rot = glam::Quat::from_rotation_y(-angle);
+        self.physics.set_body_rotation(rb, rot);
+    }
+
     fn do_save(&mut self) {
         let player_pos = self.physics.body_position(self.player_rb);
         let stats = match self.world.player().stats.clone() {
@@ -571,6 +593,20 @@ impl Engine {
         };
         let inventory = self.world.player().inventory.clone().unwrap_or_default();
         let equipment = self.world.player().equipment.clone().unwrap_or_default();
+
+        // Save building grid.
+        let buildings: Vec<crate::save::BuildingSave> = self.building.occupied_cells()
+            .filter_map(|&(x, y, z)| {
+                self.building.cell_info(x, y, z).map(|(bt, rot, subs)| {
+                    crate::save::BuildingSave {
+                        x, y, z,
+                        block_type: bt as u8,
+                        rotation: rot,
+                        sub_blocks: subs,
+                    }
+                })
+            })
+            .collect();
 
         let data = crate::save::SaveData {
             player_x: player_pos.x,
@@ -583,6 +619,7 @@ impl Engine {
             equipment,
             quest_states: crate::save::quests_to_save(&self.quests),
             time_of_day: self.time_of_day,
+            buildings,
         };
         match crate::save::save(&data) {
             Ok(()) => { self.has_save_file = true; }
@@ -614,6 +651,17 @@ impl Engine {
         crate::save::apply_quest_saves(&mut self.quests, &data.quest_states);
 
         self.time_of_day = data.time_of_day;
+
+        // Restore buildings — clear existing and load from save.
+        let old_cells: Vec<_> = self.building.occupied_cells().copied().collect();
+        for (x, y, z) in old_cells {
+            self.building.remove(&mut self.physics, x, y, z);
+        }
+        for b in &data.buildings {
+            let bt = building::BlockType::from_u8(b.block_type);
+            self.building.load_cell(&mut self.physics, b.x, b.y, b.z, bt, b.rotation, b.sub_blocks);
+        }
+
         println!("Game loaded.");
     }
 
@@ -751,6 +799,23 @@ impl Engine {
 
         // --- Tool cycling (Tab) ---
         self.interaction.cycle_tool(input.cycle_tool);
+
+        // --- B: cycle block type ---
+        let cycle_block = input.cycle_block_type && !self.cycle_block_prev;
+        self.cycle_block_prev = input.cycle_block_type;
+        if cycle_block {
+            self.selected_block_type = self.selected_block_type.next();
+            self.selected_rotation = 0;
+            self.update_held_block_visual();
+        }
+
+        // --- V: rotate block ---
+        let rotate = input.rotate_block && !self.rotate_prev;
+        self.rotate_prev = input.rotate_block;
+        if rotate {
+            self.selected_rotation = (self.selected_rotation + 1) % 4;
+            self.update_held_block_visual();
+        }
 
         if self.ghost.active {
             self.ghost.update(dt, input);
@@ -906,7 +971,8 @@ impl Engine {
                         cx as f32 + 0.5,
                         cz as f32 + 0.5,
                     );
-                    if self.building.place(&mut self.physics, cx, cy, cz, terrain_h) {
+                    if self.building.place(&mut self.physics, cx, cy, cz, terrain_h,
+                                           self.selected_block_type, self.selected_rotation) {
                         if let Some(entity) = self.world.remove_by_rb(held_handle) {
                             self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
                         }
@@ -924,6 +990,7 @@ impl Engine {
                 let spawn_pos = player_pos + Vec3::new(0.0, 1.5, 0.0) + look_dir * 3.0;
                 let obj_id = self.world.alloc_id();
 
+                let mesh_id = self.selected_block_type.mesh_id();
                 let body = PhysicsBody::new_dynamic_box(
                     &mut self.physics,
                     spawn_pos,
@@ -931,12 +998,17 @@ impl Engine {
                     WeightClass::Medium,
                 );
                 self.physics.set_gravity_enabled(body.rigid_body, false);
+                // Apply initial rotation so the preview matches selected_rotation.
+                if self.selected_rotation != 0 {
+                    let angle = self.selected_rotation as f32 * std::f32::consts::FRAC_PI_2;
+                    self.physics.set_body_rotation(body.rigid_body, glam::Quat::from_rotation_y(-angle));
+                }
                 self.interaction.held_body = Some(body.rigid_body);
 
                 self.world.add_entity(Entity::prop(
                     obj_id,
                     body,
-                    MESH_CUBE,
+                    mesh_id,
                     Vec3::ONE,
                     UNIT_BOUNDING_RADIUS,
                 ));
@@ -1485,7 +1557,10 @@ impl Engine {
                 continue;
             }
             let th = self.terrain.height_at_world(cx as f32 + 0.5, cz as f32 + 0.5);
-            if !self.building.is_supported(cx, cy, cz, th) {
+            let (bt, rot) = self.building.cell_info(cx, cy, cz)
+                .map(|(bt, rot, _)| (bt, rot))
+                .unwrap_or((building::BlockType::Cube, 0));
+            if !self.building.is_supported_with(cx, cy, cz, th, bt, rot) {
                 self.building.remove(&mut self.physics, cx, cy, cz);
                 self.spawn_falling_cubes(&[building::cell_center(cx, cy, cz)]);
                 removed.push((cx, cy, cz));
@@ -2027,6 +2102,13 @@ impl Engine {
         self.hud_buf.clear();
         let _ = write!(self.hud_buf, "Lv.{}  {}g", level as u32, gold);
         self.ui.text(hud_x, hud_y + 4.0 * (cell + 2.0), &self.hud_buf, scale, [1.0, 1.0, 0.5, 1.0]);
+
+        // Block type + rotation (shown when not default Cube/0).
+        if self.selected_block_type != BlockType::Cube || self.selected_rotation != 0 {
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "[{}] r:{}", self.selected_block_type.name(), self.selected_rotation);
+            self.ui.text(hud_x, hud_y + 5.0 * (cell + 2.0), &self.hud_buf, scale, [0.8, 0.9, 1.0, 1.0]);
+        }
 
         // -- Debug overlay (F3) --
         if self.show_debug_ui {

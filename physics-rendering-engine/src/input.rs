@@ -27,6 +27,8 @@ pub struct InputState {
     pub quick_save: bool,         // F5 — quick save
     pub quick_load: bool,         // F9 — quick load
     pub toggle_god: bool,         // F6 — toggle god mode (oneshot + invulnerable)
+    pub cycle_block_type: bool,    // B — cycle selected block type
+    pub rotate_block: bool,        // V — rotate selected block
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -58,6 +60,8 @@ impl Default for InputState {
             quick_save: false,
             quick_load: false,
             toggle_god: false,
+            cycle_block_type: false,
+            rotate_block: false,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

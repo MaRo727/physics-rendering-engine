@@ -53,8 +53,14 @@ pub const MESH_SKELETON: u32 = 26;
 pub const MESH_GOBLIN: u32 = 27;
 pub const MESH_GOLEM: u32 = 28;
 pub const MESH_ARROW: u32 = 29;
-pub const MESH_TERRAIN_BASE: u32 = 30;
-const SHAPE_MESH_COUNT: usize = 30;
+pub const MESH_BLOCK_SLAB: u32 = 30;
+pub const MESH_BLOCK_VSLAB: u32 = 31;
+pub const MESH_BLOCK_SLOPE: u32 = 32;
+pub const MESH_BLOCK_INNER_CORNER: u32 = 33;
+pub const MESH_BLOCK_STAIRS: u32 = 34;
+pub const MESH_BLOCK_FENCE: u32 = 35;
+pub const MESH_TERRAIN_BASE: u32 = 36;
+const SHAPE_MESH_COUNT: usize = 36;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -320,6 +326,12 @@ impl Renderer {
             shapes::goblin(),                                             // MESH_GOBLIN = 27
             shapes::golem(),                                              // MESH_GOLEM = 28
             shapes::arrow(),                                              // MESH_ARROW = 29
+            shapes::block_slab(),                                             // MESH_BLOCK_SLAB = 30
+            shapes::block_vertical_slab(),                                    // MESH_BLOCK_VSLAB = 31
+            shapes::block_slope(),                                            // MESH_BLOCK_SLOPE = 32
+            shapes::block_inner_corner_slope(),                               // MESH_BLOCK_INNER_CORNER = 33
+            shapes::block_stairs(),                                           // MESH_BLOCK_STAIRS = 34
+            shapes::block_fence(),                                            // MESH_BLOCK_FENCE = 35
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

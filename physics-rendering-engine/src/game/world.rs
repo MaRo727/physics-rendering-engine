@@ -68,6 +68,10 @@ impl World {
         self.rb_to_index.get(&rb).map(|&idx| &self.entities[idx])
     }
 
+    pub fn entity_by_rb_mut(&mut self, rb: RigidBodyHandle) -> Option<&mut Entity> {
+        self.rb_to_index.get(&rb).copied().map(move |idx| &mut self.entities[idx])
+    }
+
     /// Add an entity, maintaining lookup indices.
     pub fn add_entity(&mut self, entity: Entity) {
         let idx = self.entities.len();

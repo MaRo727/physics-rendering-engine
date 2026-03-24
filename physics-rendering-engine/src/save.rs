@@ -20,6 +20,19 @@ pub struct SaveData {
     pub equipment: EquipmentSlots,
     pub quest_states: Vec<QuestSave>,
     pub time_of_day: f32,
+    #[serde(default)]
+    pub buildings: Vec<BuildingSave>,
+}
+
+/// Serializable building cell.
+#[derive(Serialize, Deserialize)]
+pub struct BuildingSave {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub block_type: u8,
+    pub rotation: u8,
+    pub sub_blocks: u64,
 }
 
 /// Minimal quest save — just mutable state per quest ID.
