@@ -6,7 +6,6 @@ use crate::physics::world::PhysicsWorld;
 use crate::renderer::mesh::Vertex;
 
 const BUILDING_COLOR: Vec3 = Vec3::new(0.7, 0.7, 0.65);
-const INTERIOR_COLOR: Vec3 = Vec3::new(0.55, 0.52, 0.48);
 
 /// Sub-blocks per axis within each cell (4×4×4 = 64 bits = u64).
 const SUBS: i32 = 4;
@@ -394,6 +393,7 @@ struct CellData {
     sub_blocks: u64,
     block_type: BlockType,
     rotation: u8,
+    color: Vec3,
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +426,10 @@ impl BuildingGrid {
 
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     pub fn is_occupied(&self, x: i32, y: i32, z: i32) -> bool {
@@ -468,6 +472,12 @@ impl BuildingGrid {
     /// The block must be supported from below (another block or terrain).
     pub fn place(&mut self, physics: &mut PhysicsWorld, cx: i32, cy: i32, cz: i32,
                  terrain_height: f32, block_type: BlockType, rotation: u8) -> bool {
+        self.place_colored(physics, cx, cy, cz, terrain_height, block_type, rotation, BUILDING_COLOR)
+    }
+
+    /// Place a block with a specific color. Returns true if placed.
+    pub fn place_colored(&mut self, physics: &mut PhysicsWorld, cx: i32, cy: i32, cz: i32,
+                         terrain_height: f32, block_type: BlockType, rotation: u8, color: Vec3) -> bool {
         if self.is_occupied(cx, cy, cz) {
             return false;
         }
@@ -488,6 +498,34 @@ impl BuildingGrid {
                 sub_blocks,
                 block_type,
                 rotation,
+                color,
+            },
+        );
+        self.dirty = true;
+        true
+    }
+
+    /// Place a block without support checks (for editor mode).
+    pub fn place_unsupported(&mut self, physics: &mut PhysicsWorld, cx: i32, cy: i32, cz: i32,
+                              block_type: BlockType, rotation: u8, color: Vec3) -> bool {
+        if self.is_occupied(cx, cy, cz) {
+            return false;
+        }
+
+        let sub_blocks = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
+        let center = cell_center(cx, cy, cz);
+        let shape = build_block_shape(block_type, rotation);
+        let (rigid_body, collider) = physics.add_static_shape(center, shape);
+
+        self.cells.insert(
+            (cx, cy, cz),
+            CellData {
+                rigid_body,
+                collider,
+                sub_blocks,
+                block_type,
+                rotation,
+                color,
             },
         );
         self.dirty = true;
@@ -804,7 +842,7 @@ impl BuildingGrid {
                 // Clean mesh path — emit the geometric shape with neighbor face culling.
                 emit_block_mesh(
                     cell.block_type, cell.rotation, cx, cy, cz,
-                    &self.cells, self, &mut vertices, &mut indices,
+                    &self.cells, self, cell.color, &mut vertices, &mut indices,
                 );
             } else {
                 // Mined — fall back to sub-block iteration.
@@ -821,6 +859,8 @@ impl BuildingGrid {
         vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
     ) {
         let s = SUB_SIZE;
+        let ext_color = cell.color;
+        let int_color = cell.color * 0.78;
         let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type, cell.rotation), cell.rotation);
         for sy in 0..SUBS {
             for sz in 0..SUBS {
@@ -838,7 +878,7 @@ impl BuildingGrid {
                     // +X face
                     if !self.is_solid(cx, cy, cz, sx + 1, sy, sz) {
                         let on_edge = sx == SUBS - 1;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x + s, y,     z + s),
@@ -851,7 +891,7 @@ impl BuildingGrid {
                     // -X face
                     if !self.is_solid(cx, cy, cz, sx - 1, sy, sz) {
                         let on_edge = sx == 0;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x, y,     z),
@@ -864,7 +904,7 @@ impl BuildingGrid {
                     // +Y face
                     if !self.is_solid(cx, cy, cz, sx, sy + 1, sz) {
                         let on_edge = sy == SUBS - 1;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x,     y + s, z + s),
@@ -877,7 +917,7 @@ impl BuildingGrid {
                     // -Y face
                     if !self.is_solid(cx, cy, cz, sx, sy - 1, sz) {
                         let on_edge = sy == 0;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x,     y, z),
@@ -890,7 +930,7 @@ impl BuildingGrid {
                     // +Z face
                     if !self.is_solid(cx, cy, cz, sx, sy, sz + 1) {
                         let on_edge = sz == SUBS - 1;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x,     y,     z + s),
@@ -903,7 +943,7 @@ impl BuildingGrid {
                     // -Z face
                     if !self.is_solid(cx, cy, cz, sx, sy, sz - 1) {
                         let on_edge = sz == 0;
-                        let color = if on_edge && !is_interior { BUILDING_COLOR } else { INTERIOR_COLOR };
+                        let color = if on_edge && !is_interior { ext_color } else { int_color };
                         push_quad(
                             vertices, indices,
                             Vec3::new(x + s, y,     z),
@@ -918,9 +958,9 @@ impl BuildingGrid {
         }
     }
 
-    /// Get block type and rotation for a cell (used by save).
-    pub fn cell_info(&self, cx: i32, cy: i32, cz: i32) -> Option<(BlockType, u8, u64)> {
-        self.cells.get(&(cx, cy, cz)).map(|c| (c.block_type, c.rotation, c.sub_blocks))
+    /// Get block type, rotation, sub_blocks, and color for a cell (used by save).
+    pub fn cell_info(&self, cx: i32, cy: i32, cz: i32) -> Option<(BlockType, u8, u64, Vec3)> {
+        self.cells.get(&(cx, cy, cz)).map(|c| (c.block_type, c.rotation, c.sub_blocks, c.color))
     }
 
     /// Return iterator over all occupied cell coordinates.
@@ -928,10 +968,15 @@ impl BuildingGrid {
         self.cells.keys()
     }
 
+    /// Number of occupied cells.
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+
     /// Load a cell with full data (used by save/load).
     pub fn load_cell(&mut self, physics: &mut PhysicsWorld,
                      cx: i32, cy: i32, cz: i32,
-                     block_type: BlockType, rotation: u8, sub_blocks: u64) {
+                     block_type: BlockType, rotation: u8, sub_blocks: u64, color: Vec3) {
         let center = cell_center(cx, cy, cz);
         let pristine = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
         let shape = if sub_blocks == pristine {
@@ -941,8 +986,19 @@ impl BuildingGrid {
         };
         let (rigid_body, collider) = physics.add_static_shape(center, shape);
         self.cells.insert((cx, cy, cz), CellData {
-            rigid_body, collider, sub_blocks, block_type, rotation,
+            rigid_body, collider, sub_blocks, block_type, rotation, color,
         });
+        self.dirty = true;
+    }
+
+    /// Remove all cells and physics bodies.
+    pub fn clear(&mut self, physics: &mut PhysicsWorld) {
+        let keys: Vec<_> = self.cells.keys().copied().collect();
+        for (x, y, z) in keys {
+            if let Some(cell) = self.cells.remove(&(x, y, z)) {
+                physics.remove_body(cell.rigid_body, cell.collider);
+            }
+        }
         self.dirty = true;
     }
 }
@@ -1028,6 +1084,7 @@ fn emit_block_mesh(
     cx: i32, cy: i32, cz: i32,
     cells: &HashMap<(i32, i32, i32), CellData>,
     grid: &BuildingGrid,
+    color: Vec3,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
 ) {
@@ -1035,7 +1092,6 @@ fn emit_block_mesh(
     let by = cy as f32;
     let bz = cz as f32;
     let center = Vec3::new(bx + 0.5, by + 0.5, bz + 0.5);
-    let color = BUILDING_COLOR;
 
     match block_type {
         BlockType::Cube => {

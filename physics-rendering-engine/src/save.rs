@@ -33,6 +33,7 @@ pub struct BuildingSave {
     pub block_type: u8,
     pub rotation: u8,
     pub sub_blocks: u64,
+    pub color: [f32; 3],
 }
 
 /// Minimal quest save — just mutable state per quest ID.

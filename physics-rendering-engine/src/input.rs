@@ -30,6 +30,11 @@ pub struct InputState {
     pub cycle_block_type: bool,    // B — cycle selected block type
     pub rotate_block: bool,        // V — rotate selected block
     pub toggle_weather: bool,       // F7 — debug: cycle random weather / clear
+    pub toggle_editor: bool,        // F8 — toggle structure editor
+    pub editor_save: bool,          // F9 — save blueprint (in editor)
+    pub editor_load: bool,          // F10 — load blueprint (in editor)
+    pub editor_color_slot: Option<u8>, // 1-9 number keys
+    pub scroll_delta: f32,           // Mouse wheel scroll
     pub mouse_dx: f32,
     pub mouse_dy: f32,
 }
@@ -64,6 +69,11 @@ impl Default for InputState {
             cycle_block_type: false,
             rotate_block: false,
             toggle_weather: false,
+            toggle_editor: false,
+            editor_save: false,
+            editor_load: false,
+            editor_color_slot: None,
+            scroll_delta: 0.0,
             mouse_dx: 0.0,
             mouse_dy: 0.0,
         }

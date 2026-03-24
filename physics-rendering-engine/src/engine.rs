@@ -5,6 +5,7 @@ use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::audio::AudioManager;
+use crate::blueprint;
 use crate::building::{self, BlockType, BuildingGrid};
 use crate::game::camera::FirstPersonCamera;
 use crate::game::combat::CombatSystem;
@@ -36,6 +37,22 @@ use crate::game::npc::{self, ActiveDialogue};
 use crate::game::quest::{self, Quest, QuestState};
 
 const PLACE_RANGE: f32 = 8.0;
+
+/// Editor color palette (12 colors).
+const EDITOR_PALETTE: [Vec3; 12] = [
+    Vec3::new(0.9, 0.9, 0.9),   // 0: white
+    Vec3::new(0.3, 0.3, 0.3),   // 1: dark gray
+    Vec3::new(0.85, 0.2, 0.2),  // 2: red
+    Vec3::new(0.2, 0.7, 0.2),   // 3: green
+    Vec3::new(0.2, 0.3, 0.85),  // 4: blue
+    Vec3::new(0.9, 0.85, 0.2),  // 5: yellow
+    Vec3::new(0.55, 0.35, 0.15),// 6: brown
+    Vec3::new(0.6, 0.2, 0.7),   // 7: purple
+    Vec3::new(0.9, 0.5, 0.1),   // 8: orange
+    Vec3::new(0.2, 0.8, 0.8),   // 9: cyan
+    Vec3::new(0.7, 0.7, 0.65),  // 10: building tan (default)
+    Vec3::new(0.5, 0.5, 0.5),   // 11: medium gray
+];
 const BUILDING_OBJECT_ID: u32 = 0xFFF0;
 const PLAYER_MODEL_OBJECT_ID: u32 = 0xFFE0;
 const WATER_OBJECT_ID: u32 = 0xFFD0;
@@ -160,6 +177,19 @@ pub struct Engine {
     minimap_last_cell: (i32, i32),
     // Reusable string buffer for HUD text (avoids format! heap allocs each frame).
     hud_buf: String,
+    // Structure editor state.
+    editor_mode: bool,
+    editor_prev: bool,
+    editor_grid: BuildingGrid,
+    editor_physics: PhysicsWorld,
+    editor_camera: GhostCamera,
+    editor_color_idx: usize,
+    editor_save_prev: bool,
+    editor_load_prev: bool,
+    editor_blueprint_idx: usize,
+    editor_status: Option<(String, f32)>, // (message, remaining_seconds)
+    editor_ground_inited: bool,
+    editor_throw_prev: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -368,8 +398,19 @@ impl Engine {
             minimap_biome_cache: [0; 400],
             minimap_last_cell: (i32::MIN, i32::MIN),
             hud_buf: String::with_capacity(64),
+            editor_mode: false,
+            editor_prev: false,
+            editor_grid: BuildingGrid::new(),
+            editor_physics: PhysicsWorld::new(Vec3::ZERO),
+            editor_camera: GhostCamera::default(),
+            editor_color_idx: 10, // default building tan
+            editor_save_prev: false,
+            editor_load_prev: false,
+            editor_blueprint_idx: 0,
+            editor_status: None,
+            editor_ground_inited: false,
+            editor_throw_prev: false,
         };
-
         engine.spawn_npcs();
         engine.spawn_world_structures();
         engine.spawn_mining_nodes();
@@ -611,12 +652,13 @@ impl Engine {
         // Save building grid.
         let buildings: Vec<crate::save::BuildingSave> = self.building.occupied_cells()
             .filter_map(|&(x, y, z)| {
-                self.building.cell_info(x, y, z).map(|(bt, rot, subs)| {
+                self.building.cell_info(x, y, z).map(|(bt, rot, subs, col)| {
                     crate::save::BuildingSave {
                         x, y, z,
                         block_type: bt as u8,
                         rotation: rot,
                         sub_blocks: subs,
+                        color: [col.x, col.y, col.z],
                     }
                 })
             })
@@ -673,7 +715,8 @@ impl Engine {
         }
         for b in &data.buildings {
             let bt = building::BlockType::from_u8(b.block_type);
-            self.building.load_cell(&mut self.physics, b.x, b.y, b.z, bt, b.rotation, b.sub_blocks);
+            let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
+            self.building.load_cell(&mut self.physics, b.x, b.y, b.z, bt, b.rotation, b.sub_blocks, color);
         }
 
         println!("Game loaded.");
@@ -727,6 +770,200 @@ impl Engine {
         self.enemy_ais.insert(id, EnemyAi::new(enemy_type, spawn_pos, self.spawn_seed));
     }
 
+    // -----------------------------------------------------------------------
+    // Structure editor
+    // -----------------------------------------------------------------------
+
+    fn update_editor(&mut self, dt: f32, input: &InputState) {
+        // Ensure editor physics has a ground plane (lazy init).
+        if !self.editor_ground_inited {
+            self.editor_ground_inited = true;
+            use crate::physics::body::SharedShape;
+            let half_ext = Vec3::new(200.0, 0.5, 200.0);
+            self.editor_physics.add_static_shape(
+                Vec3::new(0.0, -0.5, 0.0),
+                SharedShape::cuboid(half_ext.x, half_ext.y, half_ext.z),
+            );
+            self.editor_physics.step(0.0); // build query pipeline
+        }
+
+        // Camera movement.
+        self.editor_camera.update(dt, input);
+
+        // Color selection via number keys.
+        if let Some(slot) = input.editor_color_slot {
+            let idx = slot as usize;
+            if idx < EDITOR_PALETTE.len() {
+                self.editor_color_idx = idx;
+            }
+        }
+
+        // Scroll wheel cycles through palette.
+        if input.scroll_delta.abs() > 0.1 {
+            let len = EDITOR_PALETTE.len() as i32;
+            let dir = if input.scroll_delta > 0.0 { 1 } else { -1 };
+            self.editor_color_idx = ((self.editor_color_idx as i32 + dir).rem_euclid(len)) as usize;
+        }
+
+        // Block type cycling (B).
+        let cycle_block = input.cycle_block_type && !self.cycle_block_prev;
+        self.cycle_block_prev = input.cycle_block_type;
+        if cycle_block {
+            self.selected_block_type = self.selected_block_type.next();
+            self.selected_rotation = 0;
+        }
+
+        // Block rotation (V).
+        let rotate = input.rotate_block && !self.rotate_prev;
+        self.rotate_prev = input.rotate_block;
+        if rotate {
+            if self.selected_block_type == BlockType::Slab {
+                self.selected_rotation = if self.selected_rotation == 0 { 1 } else { 0 };
+            } else {
+                self.selected_rotation = (self.selected_rotation + 1) % 4;
+            }
+        }
+
+        let cam_eye = self.editor_camera.eye;
+        let (sy, cy_cos) = self.editor_camera.yaw.sin_cos();
+        let (sp, cp) = self.editor_camera.pitch.sin_cos();
+        let look_dir = Vec3::new(-sy * cp, sp, -cy_cos * cp);
+
+        // Place block (RMB).
+        let place_edge = input.place && !self.place_prev;
+        self.place_prev = input.place;
+        if place_edge {
+            if let Some((_rb, hit_pos, normal)) = self.editor_physics.cast_ray_unfiltered(cam_eye, look_dir, 50.0) {
+                let target = hit_pos + normal * 0.01;
+                let (cx, cy, cz) = building::snap_to_grid(target);
+                let color = EDITOR_PALETTE[self.editor_color_idx];
+                self.editor_grid.place_unsupported(
+                    &mut self.editor_physics, cx, cy, cz,
+                    self.selected_block_type, self.selected_rotation, color,
+                );
+                self.editor_physics.step(0.0); // rebuild query pipeline
+            }
+        }
+
+        // Remove block (LMB — edge triggered).
+        let throw_edge = input.throw && !self.editor_throw_prev;
+        self.editor_throw_prev = input.throw;
+        if throw_edge {
+            if let Some((_rb, hit_pos, normal)) = self.editor_physics.cast_ray_unfiltered(cam_eye, look_dir, 50.0) {
+                let target = hit_pos - normal * 0.01;
+                let (cx, cy, cz) = building::snap_to_grid(target);
+                if cy >= 0 { // don't remove ground
+                    if self.editor_grid.remove(&mut self.editor_physics, cx, cy, cz) {
+                        self.editor_physics.step(0.0);
+                    }
+                }
+            }
+        }
+
+        // Save (F8).
+        if input.editor_save && !self.editor_save_prev {
+            self.editor_save_blueprint();
+        }
+        self.editor_save_prev = input.editor_save;
+
+        // Load (F9).
+        if input.editor_load && !self.editor_load_prev {
+            self.editor_load_blueprint();
+        }
+        self.editor_load_prev = input.editor_load;
+
+        // Status message timer.
+        if let Some((_, ref mut timer)) = self.editor_status {
+            *timer -= dt;
+            if *timer <= 0.0 {
+                self.editor_status = None;
+            }
+        }
+    }
+
+    fn editor_save_blueprint(&mut self) {
+        let cells: Vec<_> = self.editor_grid.occupied_cells().copied().collect();
+        if cells.is_empty() {
+            self.editor_status = Some(("Nothing to save".to_string(), 2.0));
+            return;
+        }
+
+        // Normalize to origin.
+        let min_x = cells.iter().map(|c| c.0).min().unwrap();
+        let min_y = cells.iter().map(|c| c.1).min().unwrap();
+        let min_z = cells.iter().map(|c| c.2).min().unwrap();
+
+        let blocks: Vec<blueprint::BlockEntry> = cells.iter().filter_map(|&(x, y, z)| {
+            self.editor_grid.cell_info(x, y, z).map(|(bt, rot, subs, col)| {
+                blueprint::BlockEntry {
+                    x: x - min_x,
+                    y: y - min_y,
+                    z: z - min_z,
+                    block_type: bt as u8,
+                    rotation: rot,
+                    sub_blocks: subs,
+                    color: [col.x, col.y, col.z],
+                }
+            })
+        }).collect();
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = format!("structure_{}", timestamp);
+
+        let bp = blueprint::Blueprint { name: name.clone(), blocks };
+        match blueprint::save_blueprint(&bp) {
+            Ok(path) => {
+                let msg = format!("Saved: {}", path.display());
+                self.editor_status = Some((msg, 3.0));
+            }
+            Err(e) => {
+                self.editor_status = Some((format!("Save failed: {}", e), 3.0));
+            }
+        }
+    }
+
+    fn editor_load_blueprint(&mut self) {
+        let files = blueprint::list_blueprints();
+        if files.is_empty() {
+            self.editor_status = Some(("No blueprints found".to_string(), 2.0));
+            return;
+        }
+
+        // Cycle through available blueprints.
+        let idx = self.editor_blueprint_idx % files.len();
+        self.editor_blueprint_idx = idx + 1;
+
+        match blueprint::load_blueprint(&files[idx]) {
+            Ok(bp) => {
+                // Clear current editor grid.
+                self.editor_grid.clear(&mut self.editor_physics);
+
+                // Place all blocks from blueprint.
+                for b in &bp.blocks {
+                    let bt = BlockType::from_u8(b.block_type);
+                    let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
+                    self.editor_grid.load_cell(
+                        &mut self.editor_physics,
+                        b.x, b.y, b.z,
+                        bt, b.rotation, b.sub_blocks, color,
+                    );
+                }
+                self.editor_physics.step(0.0);
+
+                let name = files[idx].file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.editor_status = Some((format!("Loaded: {}", name), 3.0));
+            }
+            Err(e) => {
+                self.editor_status = Some((format!("Load failed: {}", e), 3.0));
+            }
+        }
+    }
+
     /// Returns true if the game should quit.
     pub fn should_quit(&self) -> bool {
         self.game_state == GameState::MainMenu && self.menu_selection == 255
@@ -736,6 +973,28 @@ impl Engine {
         // --- Main menu ---
         if self.game_state == GameState::MainMenu {
             self.update_menu(input);
+            return;
+        }
+
+        // --- Structure editor toggle (F7) ---
+        if input.toggle_editor && !self.editor_prev {
+            self.editor_mode = !self.editor_mode;
+            if self.editor_mode {
+                // Enter editor: initialize camera.
+                self.editor_camera.active = true;
+                self.editor_camera.eye = Vec3::new(5.0, 8.0, 15.0);
+                self.editor_camera.yaw = 0.0;
+                self.editor_camera.pitch = -0.4;
+            } else {
+                // Exit editor: restore main building mesh.
+                self.editor_camera.active = false;
+                self.building.mark_dirty();
+            }
+        }
+        self.editor_prev = input.toggle_editor;
+
+        if self.editor_mode {
+            self.update_editor(dt, input);
             return;
         }
 
@@ -1627,7 +1886,7 @@ impl Engine {
             }
             let th = self.terrain.height_at_world(cx as f32 + 0.5, cz as f32 + 0.5);
             let (bt, rot) = self.building.cell_info(cx, cy, cz)
-                .map(|(bt, rot, _)| (bt, rot))
+                .map(|(bt, rot, _, _)| (bt, rot))
                 .unwrap_or((building::BlockType::Cube, 0));
             if !self.building.is_supported_with(cx, cy, cz, th, bt, rot) {
                 self.building.remove(&mut self.physics, cx, cy, cz);
@@ -1714,7 +1973,80 @@ impl Engine {
         }
     }
 
+    fn render_editor(&mut self) -> Result<()> {
+        // Upload editor grid mesh if dirty.
+        if self.editor_grid.is_dirty() {
+            let (verts, indices) = self.editor_grid.generate_mesh();
+            self.renderer.update_building_mesh(&verts, &indices)?;
+            self.editor_grid.clear_dirty();
+        }
+
+        let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
+        let (render_view, render_proj) = self.editor_camera.camera_matrices(aspect);
+
+        self.frame_transforms.clear();
+        self.frame_instance_ids.clear();
+
+        // Ground plane — large flat cube at y = -0.01.
+        let ground_transform = Mat4::from_translation(Vec3::new(0.0, -0.01, 0.0))
+            * Mat4::from_scale(Vec3::new(200.0, 0.02, 200.0));
+        self.frame_transforms.push(ground_transform);
+        // Use a muted green for the ground plane.
+        // Pack with terrain object ID to reuse an existing mesh slot.
+        self.frame_instance_ids.push(pack_instance_id(MESH_CUBE, 0xFFF2));
+
+        // Building mesh (editor grid).
+        if !self.editor_grid.is_empty() && self.renderer.has_building_blas() {
+            self.frame_transforms.push(Mat4::IDENTITY);
+            self.frame_instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
+        }
+
+        // Editor UI.
+        self.build_editor_ui();
+        self.renderer.upload_ui(
+            self.ui.primitives(),
+            self.surface_width,
+            self.surface_height,
+        );
+
+        // Neutral lighting for editor.
+        let light_dir = Vec4::new(0.3, 0.8, 0.2, 0.0);
+        let light_color = Vec4::new(1.0, 0.98, 0.95, 1.0);
+        let sun_moon = Vec4::new(0.3, 0.8, 0.2, 0.8);
+        let moon_info = Vec4::new(-0.3, -0.8, -0.2, -0.8);
+        let player_vp = render_proj * render_view;
+        let debug_info = Vec4::ZERO;
+        let debug_info2 = Vec4::ZERO;
+        let blizzard_info = Vec4::ZERO;
+        let weather_info = Vec4::ZERO;
+        let wind_info = Vec4::ZERO;
+
+        self.renderer.draw_frame(
+            &self.frame_transforms,
+            &self.frame_instance_ids,
+            render_view,
+            render_proj,
+            light_dir,
+            light_color,
+            player_vp,
+            false,
+            0.0,
+            0.0,
+            debug_info,
+            debug_info2,
+            sun_moon,
+            moon_info,
+            blizzard_info,
+            weather_info,
+            wind_info,
+        )
+    }
+
     pub fn render(&mut self) -> Result<()> {
+        if self.editor_mode {
+            return self.render_editor();
+        }
+
         // Rebuild building mesh on GPU if grid changed.
         if self.building.is_dirty() {
             let (verts, indices) = self.building.generate_mesh();
@@ -2060,6 +2392,58 @@ impl Engine {
     // -----------------------------------------------------------------------
     // UI building — immediate-mode, runs each frame
     // -----------------------------------------------------------------------
+
+    fn build_editor_ui(&mut self) {
+        let sw = self.surface_width as f32;
+        let sh = self.surface_height as f32;
+        self.ui.begin_frame(sw, sh);
+
+        let scale = 2.0;
+        let cell = 8.0 * scale;
+        let white = [0.9, 0.9, 0.9, 1.0];
+
+        // Title.
+        let title = "STRUCTURE EDITOR";
+        let title_w = title.len() as f32 * cell;
+        self.ui.text((sw - title_w) * 0.5, 16.0, title, scale, white);
+
+        // Color palette at bottom.
+        let swatch = 24.0;
+        let gap = 4.0;
+        let palette_w = EDITOR_PALETTE.len() as f32 * (swatch + gap) - gap;
+        let palette_x = (sw - palette_w) * 0.5;
+        let palette_y = sh - swatch - 60.0;
+
+        for (i, color) in EDITOR_PALETTE.iter().enumerate() {
+            let x = palette_x + i as f32 * (swatch + gap);
+            self.ui.rect(x, palette_y, swatch, swatch, [color.x, color.y, color.z, 1.0]);
+            if i == self.editor_color_idx {
+                self.ui.rect_border(x - 2.0, palette_y - 2.0, swatch + 4.0, swatch + 4.0, white);
+            }
+        }
+
+        // Help text.
+        let help = "1-0: Color  Scroll: Cycle  RMB: Place  LMB: Remove  B: Block  V: Rotate  F9: Save  F10: Load  F8: Exit";
+        let help_w = help.len() as f32 * cell * 0.5;
+        self.ui.text((sw - help_w) * 0.5, sh - 28.0, help, scale * 0.5, [0.7, 0.7, 0.7, 1.0]);
+
+        // Block count and type.
+        self.hud_buf.clear();
+        let _ = write!(self.hud_buf, "Blocks: {}  [{}] r:{}", self.editor_grid.cell_count(), self.selected_block_type.name(), self.selected_rotation);
+        self.ui.text(16.0, 16.0, &self.hud_buf, scale, white);
+
+        // Status message.
+        if let Some((ref msg, _)) = self.editor_status {
+            let msg_w = msg.len() as f32 * cell;
+            self.ui.text((sw - msg_w) * 0.5, 50.0, msg, scale, [0.3, 1.0, 0.3, 1.0]);
+        }
+
+        // Crosshair.
+        let cx = sw * 0.5;
+        let cy = sh * 0.5;
+        self.ui.rect(cx - 1.0, cy - 8.0, 2.0, 16.0, [1.0, 1.0, 1.0, 0.6]);
+        self.ui.rect(cx - 8.0, cy - 1.0, 16.0, 2.0, [1.0, 1.0, 1.0, 0.6]);
+    }
 
     fn build_menu_ui(&mut self) {
         let sw = self.surface_width as f32;

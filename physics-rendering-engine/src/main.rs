@@ -1,5 +1,6 @@
 mod app;
 mod audio;
+mod blueprint;
 mod building;
 mod engine;
 mod game;

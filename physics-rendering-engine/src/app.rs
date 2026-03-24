@@ -135,11 +135,46 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyR) => self.input.cast_spell = pressed,
                     PhysicalKey::Code(KeyCode::KeyI) => self.input.toggle_inventory = pressed,
                     PhysicalKey::Code(KeyCode::F5) => self.input.quick_save = pressed,
-                    PhysicalKey::Code(KeyCode::F9) => self.input.quick_load = pressed,
                     PhysicalKey::Code(KeyCode::F6) => self.input.toggle_god = pressed,
+                    PhysicalKey::Code(KeyCode::F7) => self.input.toggle_weather = pressed,
+                    PhysicalKey::Code(KeyCode::F8) => self.input.toggle_editor = pressed,
+                    PhysicalKey::Code(KeyCode::F9) => {
+                        self.input.quick_load = pressed;
+                        self.input.editor_save = pressed;
+                    }
+                    PhysicalKey::Code(KeyCode::F10) => self.input.editor_load = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
                     PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
-                    PhysicalKey::Code(KeyCode::F7) => self.input.toggle_weather = pressed,
+                    PhysicalKey::Code(KeyCode::Digit1) => {
+                        if pressed { self.input.editor_color_slot = Some(0); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit2) => {
+                        if pressed { self.input.editor_color_slot = Some(1); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit3) => {
+                        if pressed { self.input.editor_color_slot = Some(2); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit4) => {
+                        if pressed { self.input.editor_color_slot = Some(3); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit5) => {
+                        if pressed { self.input.editor_color_slot = Some(4); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit6) => {
+                        if pressed { self.input.editor_color_slot = Some(5); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit7) => {
+                        if pressed { self.input.editor_color_slot = Some(6); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit8) => {
+                        if pressed { self.input.editor_color_slot = Some(7); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit9) => {
+                        if pressed { self.input.editor_color_slot = Some(8); }
+                    }
+                    PhysicalKey::Code(KeyCode::Digit0) => {
+                        if pressed { self.input.editor_color_slot = Some(9); }
+                    }
                     _ => {}
                 }
             }
@@ -156,6 +191,13 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 self.input.place = state == ElementState::Pressed;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let y = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 40.0,
+                };
+                self.input.scroll_delta += y;
             }
             WindowEvent::Resized(size) => {
                 if let Some(engine) = self.engine.as_mut() {
@@ -231,6 +273,8 @@ impl ApplicationHandler for App {
 
                     self.input.mouse_dx = 0.0;
                     self.input.mouse_dy = 0.0;
+                    self.input.scroll_delta = 0.0;
+                    self.input.editor_color_slot = None;
 
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
