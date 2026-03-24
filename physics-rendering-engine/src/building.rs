@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use glam::Vec3;
 use crate::physics::body::{ColliderHandle, Isometry, NaPoint3, RigidBodyHandle, SharedShape};
@@ -450,6 +450,18 @@ impl BuildingGrid {
         self.cells.contains_key(&(x, y, z))
     }
 
+    /// Return the sub_blocks mask of a baked group block at the given cell, or 0.
+    fn group_sub_blocks_at(&self, cx: i32, cy: i32, cz: i32) -> u64 {
+        for group in &self.groups {
+            for b in &group.blocks {
+                if b.x == cx && b.y == cy && b.z == cz {
+                    return b.sub_blocks;
+                }
+            }
+        }
+        0
+    }
+
     /// Check if a cell is supported by any neighbor (below or sideways) or terrain.
     /// `terrain_height` is the terrain surface height at the cell's center XZ.
     /// For cells that don't exist yet (placement check), uses the given block type's mask.
@@ -467,10 +479,18 @@ impl BuildingGrid {
             if self_subs & self_face == 0 {
                 continue;
             }
-            if let Some(neighbor) = self.cells.get(&(cx + dx, cy + dy, cz + dz)) {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            let nz = cz + dz;
+            // Check loose cells.
+            if let Some(neighbor) = self.cells.get(&(nx, ny, nz)) {
                 if neighbor.sub_blocks & neighbor_face != 0 {
                     return true;
                 }
+            }
+            // Check baked group blocks.
+            if self.group_sub_blocks_at(nx, ny, nz) & neighbor_face != 0 {
+                return true;
             }
         }
 
@@ -686,143 +706,6 @@ impl BuildingGrid {
 
         self.dirty = true;
         vec![key]
-    }
-
-    /// Collect all cells reachable from `start` via face-connected neighbors.
-    fn flood_connected(&self, start: (i32, i32, i32)) -> HashSet<(i32, i32, i32)> {
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        visited.insert(start);
-        queue.push_back(start);
-
-        while let Some((cx, cy, cz)) = queue.pop_front() {
-            let self_subs = match self.cells.get(&(cx, cy, cz)) {
-                Some(cell) => cell.sub_blocks,
-                None => continue,
-            };
-
-            // Check all 6 neighbors (including below for downward connectivity).
-            const DIRS: [((i32, i32, i32), u64, u64); 6] = [
-                ((0,  1, 0), TOP_LAYER_MASK,    BOTTOM_LAYER_MASK),
-                ((0, -1, 0), BOTTOM_LAYER_MASK,  TOP_LAYER_MASK),
-                ((1,  0, 0), POS_X_FACE_MASK,    NEG_X_FACE_MASK),
-                ((-1, 0, 0), NEG_X_FACE_MASK,    POS_X_FACE_MASK),
-                ((0,  0, 1), POS_Z_FACE_MASK,    NEG_Z_FACE_MASK),
-                ((0,  0,-1), NEG_Z_FACE_MASK,    POS_Z_FACE_MASK),
-            ];
-
-            for &((dx, dy, dz), self_face, neighbor_face) in &DIRS {
-                if self_subs & self_face == 0 {
-                    continue;
-                }
-                let nb = (cx + dx, cy + dy, cz + dz);
-                if visited.contains(&nb) {
-                    continue;
-                }
-                if let Some(neighbor) = self.cells.get(&nb) {
-                    if neighbor.sub_blocks & neighbor_face != 0 {
-                        visited.insert(nb);
-                        queue.push_back(nb);
-                    }
-                }
-            }
-        }
-        visited
-    }
-
-    /// Remove blocks that lost support after cells were destroyed or terrain lowered.
-    /// Uses flood-fill from ground-anchored blocks to find truly unsupported cells.
-    /// Returns world-space centers of every block that was removed.
-    pub fn collapse_unsupported(
-        &mut self,
-        physics: &mut PhysicsWorld,
-        seeds: &[(i32, i32, i32)],
-        terrain_height: impl Fn(f32, f32) -> f32,
-    ) -> Vec<Vec3> {
-        // Gather all cells that might be affected: neighbors of each seed.
-        let mut candidates = HashSet::new();
-        for &(cx, cy, cz) in seeds {
-            for &(dx, dy, dz) in &[(0,1,0),(0,-1,0),(1,0,0),(-1,0,0),(0,0,1),(0,0,-1),(0,0,0)] {
-                let nb = (cx + dx, cy + dy, cz + dz);
-                if self.is_occupied(nb.0, nb.1, nb.2) {
-                    candidates.insert(nb);
-                }
-            }
-        }
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        // Expand candidates to include all cells connected to them, since
-        // a disconnection can affect an entire connected structure.
-        let mut full_region = HashSet::new();
-        for &start in &candidates {
-            if full_region.contains(&start) {
-                continue;
-            }
-            let connected = self.flood_connected(start);
-            full_region.extend(connected);
-        }
-
-        // Find which cells in the region are anchored (supported by terrain
-        // or have a solid bottom resting on the ground).
-        let mut anchored = HashSet::new();
-        let mut queue = VecDeque::new();
-        for &(cx, cy, cz) in &full_region {
-            let self_subs = self.cells[&(cx, cy, cz)].sub_blocks;
-            if self_subs & BOTTOM_LAYER_MASK != 0 {
-                let th = terrain_height(cx as f32 + 0.5, cz as f32 + 0.5);
-                if th >= cy as f32 {
-                    anchored.insert((cx, cy, cz));
-                    queue.push_back((cx, cy, cz));
-                }
-            }
-        }
-
-        // Flood-fill from anchored cells through the region.
-        while let Some((cx, cy, cz)) = queue.pop_front() {
-            let self_subs = match self.cells.get(&(cx, cy, cz)) {
-                Some(cell) => cell.sub_blocks,
-                None => continue,
-            };
-
-            const DIRS: [((i32, i32, i32), u64, u64); 6] = [
-                ((0,  1, 0), TOP_LAYER_MASK,    BOTTOM_LAYER_MASK),
-                ((0, -1, 0), BOTTOM_LAYER_MASK,  TOP_LAYER_MASK),
-                ((1,  0, 0), POS_X_FACE_MASK,    NEG_X_FACE_MASK),
-                ((-1, 0, 0), NEG_X_FACE_MASK,    POS_X_FACE_MASK),
-                ((0,  0, 1), POS_Z_FACE_MASK,    NEG_Z_FACE_MASK),
-                ((0,  0,-1), NEG_Z_FACE_MASK,    POS_Z_FACE_MASK),
-            ];
-
-            for &((dx, dy, dz), self_face, neighbor_face) in &DIRS {
-                if self_subs & self_face == 0 {
-                    continue;
-                }
-                let nb = (cx + dx, cy + dy, cz + dz);
-                if anchored.contains(&nb) || !full_region.contains(&nb) {
-                    continue;
-                }
-                if let Some(neighbor) = self.cells.get(&nb) {
-                    if neighbor.sub_blocks & neighbor_face != 0 {
-                        anchored.insert(nb);
-                        queue.push_back(nb);
-                    }
-                }
-            }
-        }
-
-        // Anything in the region that isn't anchored falls.
-        let mut fallen = Vec::new();
-        for &(cx, cy, cz) in &full_region {
-            if !anchored.contains(&(cx, cy, cz)) {
-                self.remove(physics, cx, cy, cz);
-                fallen.push(cell_center(cx, cy, cz));
-            }
-        }
-
-        fallen
     }
 
     // -----------------------------------------------------------------------
@@ -1127,17 +1010,13 @@ impl BuildingGrid {
         count
     }
 
-    /// Destroy an entire baked group by index. Returns world centers of removed blocks.
-    pub fn destroy_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize) -> Vec<Vec3> {
+    /// Destroy an entire baked group by index, removing its physics body.
+    pub fn destroy_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize) {
         let group = self.groups.remove(group_idx);
         if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
             physics.remove_body(rb, col);
         }
-        let centers: Vec<Vec3> = group.blocks.iter().map(|b| {
-            cell_center(b.x, b.y, b.z)
-        }).collect();
         self.dirty = true;
-        centers
     }
 
     /// Number of baked groups.

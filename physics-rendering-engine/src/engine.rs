@@ -566,7 +566,7 @@ impl Engine {
 
     /// Stamp saved blueprints into the world as pre-built structures.
     fn stamp_world_blueprints(&mut self) {
-        let bp_path = blueprint::blueprints_dir().join("test_default_building.json");
+        let bp_path = blueprint::blueprints_dir().join("structure_1774363199.json");
         let bp = match blueprint::load_blueprint(&bp_path) {
             Ok(bp) => bp,
             Err(e) => {
@@ -1265,6 +1265,7 @@ impl Engine {
             self.physics.set_body_linvel(self.player_rb, Vec3::ZERO);
             self.apply_buoyancy(dt);
             self.physics.step(dt);
+
         } else {
             // --- First-person camera ---
             self.camera.look(input);
@@ -1326,7 +1327,6 @@ impl Engine {
             // --- Handle pried building cube ---
             if let Some((cx, cy, cz)) = interaction_result.pried_cell {
                 self.building.remove(&mut self.physics, cx, cy, cz);
-                self.collapse_above(&[(cx, cy, cz)]);
 
                 let center = building::cell_center(cx, cy, cz);
                 let obj_id = self.world.alloc_id();
@@ -1359,26 +1359,6 @@ impl Engine {
                 match pickaxe_hit {
                     PickaxeHit::Terrain(hit_pos) => {
                         self.terrain.deform_ground(hit_pos, DEFORM_RADIUS, DEFORM_AMOUNT);
-                        // Check blocks in the deformation area for lost terrain support.
-                        // Use seeds one cell below each position so collapse_above
-                        // checks the actual block cells at and above the hit.
-                        let r = DEFORM_RADIUS.ceil() as i32;
-                        let cx_min = (hit_pos.x - r as f32).floor() as i32;
-                        let cx_max = (hit_pos.x + r as f32).floor() as i32;
-                        let cz_min = (hit_pos.z - r as f32).floor() as i32;
-                        let cz_max = (hit_pos.z + r as f32).floor() as i32;
-                        // Scan a few Y levels around the hit to catch blocks on the surface.
-                        let cy_lo = (hit_pos.y - DEFORM_AMOUNT - 1.0).floor() as i32;
-                        let cy_hi = (hit_pos.y + 1.0).floor() as i32;
-                        let mut seeds = Vec::new();
-                        for cy in cy_lo..=cy_hi {
-                            for cz in cz_min..=cz_max {
-                                for cx in cx_min..=cx_max {
-                                    seeds.push((cx, cy, cz));
-                                }
-                            }
-                        }
-                        self.collapse_terrain_blocks(&seeds);
                     }
                 }
             }
@@ -1390,13 +1370,11 @@ impl Engine {
                         self.damage_mining_chunk(rb);
                     }
                     HammerHit::Static(rb, hit_pos) => {
-                        // Check baked groups first — destroy entire group at once.
                         if let Some(gi) = self.building.group_for_body(rb) {
-                            let fallen = self.building.destroy_group(&mut self.physics, gi);
-                            self.spawn_falling_cubes(&fallen);
+                            self.building.unbake_group(&mut self.physics, gi);
+                            self.building.mine_at(&mut self.physics, hit_pos);
                         } else if self.building.has_body(rb) {
-                            let destroyed = self.building.mine_at(&mut self.physics, hit_pos);
-                            self.collapse_above(&destroyed);
+                            self.building.mine_at(&mut self.physics, hit_pos);
                         } else if self.mining.is_mining_chunk(rb) {
                             self.damage_mining_chunk(rb);
                         }
@@ -1408,13 +1386,11 @@ impl Engine {
             if let Some(chisel_hit) = interaction_result.chisel_hit {
                 match chisel_hit {
                     ChiselHit::Static(rb, hit_pos) => {
-                        // Chisel also destroys entire baked group (can't chisel merged objects).
                         if let Some(gi) = self.building.group_for_body(rb) {
-                            let fallen = self.building.destroy_group(&mut self.physics, gi);
-                            self.spawn_falling_cubes(&fallen);
+                            self.building.unbake_group(&mut self.physics, gi);
+                            self.building.chisel_at(&mut self.physics, hit_pos);
                         } else if self.building.has_body(rb) {
-                            let destroyed = self.building.chisel_at(&mut self.physics, hit_pos);
-                            self.collapse_above(&destroyed);
+                            self.building.chisel_at(&mut self.physics, hit_pos);
                         }
                     }
                 }
@@ -1993,68 +1969,6 @@ impl Engine {
                 }
             }
         }
-    }
-
-    /// Spawn dynamic falling cubes at the given world positions.
-    fn spawn_falling_cubes(&mut self, positions: &[Vec3]) {
-        for &center in positions {
-            let obj_id = self.world.alloc_id();
-            let body = PhysicsBody::new_dynamic_box(
-                &mut self.physics,
-                center,
-                Vec3::splat(0.5),
-                WeightClass::Medium,
-            );
-            self.world.add_entity(Entity::prop(
-                obj_id,
-                body,
-                MESH_CUBE,
-                Vec3::ONE,
-                UNIT_BOUNDING_RADIUS,
-            ));
-        }
-    }
-
-    /// Check for and collapse unsupported building blocks above the given seed cells.
-    /// Seeds are cells that were just removed; blocks at seed.y+1 are checked first.
-    fn collapse_above(&mut self, seeds: &[(i32, i32, i32)]) {
-        if seeds.is_empty() {
-            return;
-        }
-        let terrain = &self.terrain;
-        let fallen = self.building.collapse_unsupported(
-            &mut self.physics,
-            seeds,
-            |x, z| terrain.height_at_world(x, z),
-        );
-        if !fallen.is_empty() {
-            self.spawn_falling_cubes(&fallen);
-        }
-    }
-
-    /// Check building blocks in the given cells for lost terrain support and collapse them.
-    fn collapse_terrain_blocks(&mut self, cells: &[(i32, i32, i32)]) {
-        if cells.is_empty() {
-            return;
-        }
-        // First pass: remove blocks that are no longer supported at their own position.
-        let mut removed = Vec::new();
-        for &(cx, cy, cz) in cells {
-            if !self.building.is_occupied(cx, cy, cz) {
-                continue;
-            }
-            let th = self.terrain.height_at_world(cx as f32 + 0.5, cz as f32 + 0.5);
-            let (bt, rot) = self.building.cell_info(cx, cy, cz)
-                .map(|(bt, rot, _, _)| (bt, rot))
-                .unwrap_or((building::BlockType::Cube, 0));
-            if !self.building.is_supported_with(cx, cy, cz, th, bt, rot) {
-                self.building.remove(&mut self.physics, cx, cy, cz);
-                self.spawn_falling_cubes(&[building::cell_center(cx, cy, cz)]);
-                removed.push((cx, cy, cz));
-            }
-        }
-        // Second pass: cascade upward from any removed blocks.
-        self.collapse_above(&removed);
     }
 
     /// Split a cube object into two halves along the axis most aligned with the hit.
