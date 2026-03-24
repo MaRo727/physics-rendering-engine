@@ -138,24 +138,27 @@ const FONT_8X8: [[u8; 8]; 96] = [
     [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // 127 DEL
 ];
 
-/// Pack the 8×8 font into 192 u32s for GPU upload.
+/// Pack the 8×8 font into 192 u32s for GPU upload (computed once, cached).
 /// Layout: glyph `i` occupies `[i*2]` (rows 0-3) and `[i*2+1]` (rows 4-7).
-pub fn font_gpu_data() -> [u32; 192] {
-    let mut out = [0u32; 192];
-    let mut i = 0;
-    while i < 96 {
-        let g = &FONT_8X8[i];
-        out[i * 2] = (g[0] as u32) << 24
-            | (g[1] as u32) << 16
-            | (g[2] as u32) << 8
-            | g[3] as u32;
-        out[i * 2 + 1] = (g[4] as u32) << 24
-            | (g[5] as u32) << 16
-            | (g[6] as u32) << 8
-            | g[7] as u32;
-        i += 1;
-    }
-    out
+pub fn font_gpu_data() -> &'static [u32; 192] {
+    static DATA: std::sync::LazyLock<[u32; 192]> = std::sync::LazyLock::new(|| {
+        let mut out = [0u32; 192];
+        let mut i = 0;
+        while i < 96 {
+            let g = &FONT_8X8[i];
+            out[i * 2] = (g[0] as u32) << 24
+                | (g[1] as u32) << 16
+                | (g[2] as u32) << 8
+                | g[3] as u32;
+            out[i * 2 + 1] = (g[4] as u32) << 24
+                | (g[5] as u32) << 16
+                | (g[6] as u32) << 8
+                | g[7] as u32;
+            i += 1;
+        }
+        out
+    });
+    &DATA
 }
 
 // -------------------------------------------------------------------------

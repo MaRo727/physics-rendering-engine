@@ -857,17 +857,22 @@ impl Engine {
             let player_eye = cam_eye;
 
             // Determine if crosshair is aimed at a building cell (for pry logic).
-            let building_cell_aimed_at = self.physics
-                .cast_ray_detailed(cam_eye, look_dir, PLACE_RANGE, self.player_col)
-                .and_then(|(hit_pos, normal)| {
-                    let target = hit_pos - normal * 0.01;
-                    let coords = building::snap_to_grid(target);
-                    if self.building.is_occupied(coords.0, coords.1, coords.2) {
-                        Some(coords)
-                    } else {
-                        None
-                    }
-                });
+            // Only raycast when E is pressed — the result is unused otherwise.
+            let building_cell_aimed_at = if input.interact {
+                self.physics
+                    .cast_ray_detailed(cam_eye, look_dir, PLACE_RANGE, self.player_col)
+                    .and_then(|(hit_pos, normal)| {
+                        let target = hit_pos - normal * 0.01;
+                        let coords = building::snap_to_grid(target);
+                        if self.building.is_occupied(coords.0, coords.1, coords.2) {
+                            Some(coords)
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                None
+            };
 
             let interaction_result = self.interaction.update(
                 &mut self.physics,
