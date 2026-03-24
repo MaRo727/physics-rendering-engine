@@ -30,6 +30,18 @@ Analyze the codebase for performance issues critical to a real-time game engine.
 - Chunk loading/unloading patterns
 - Dirty tracking effectiveness
 
+### UI
+- `ui.rs` runs immediate-mode GPU rendering every frame — check for unnecessary draw calls or text layout work
+- HUD and minimap caching effectiveness
+
+### Particles
+- `particles.rs` — particle count and update cost per frame
+- Particle lifetime and cleanup patterns
+
+### Save/Load
+- `save.rs` should NOT do disk I/O per frame — only on explicit save/load triggers
+- Terrain cache efficiency
+
 ## Steps
 
 1. Read the main update and render paths in `engine.rs`

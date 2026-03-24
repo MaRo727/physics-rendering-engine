@@ -12,23 +12,28 @@ This is a Rust 3D engine using:
 - **Vulkan ray tracing** (ash) — not rasterization
 - **Rapier3D** physics
 - **Voxel world** (16x16x16 chunks, greedy meshing)
-- **Procedural terrain** with biomes
+- **Procedural terrain** with biomes and terrain modification
 - **RPG systems**: stats, inventory, equipment, leveling, combat (melee + magic)
-- **Third-person camera** with orbit + wall collision
-- **Building system** (grid-based, face culling)
+- **First-person camera**
+- **Building system** with 7 block shapes (cube, slab, vertical slab, slope, inner corner slope, stairs, fence), rotation, structural support with collapse physics
 - **Water** with buoyancy and wave animation
+- **Enemy AI**: 4 enemy types with state machine AI, nighttime biome-weighted spawning, loot drops
+- **NPCs & Quests**: NPC dialogue, quest system
+- **UI**: immediate-mode GPU-rendered HUD, inventory screen, minimap, main menu
+- **Save/Load**: game state serialization, terrain cache
+- **Particles**: particle system (falling leaves, combat effects)
+- **Audio**: sound system
+- **Sprint**, **god mode** (F6), **loading screen**
 
-### Current milestones completed
-- Character systems (stats, items, inventory, equipment, progression)
-- Third-person camera + player model
-- Voxel world
-- Combat system (melee weapons, spells: fireball, ice shard, heal)
-
-### Upcoming milestones
-- M5: Enemies & AI (state machines, pathfinding, enemy types)
-- M6: UI Framework (bitmap font, GPU-rendered HUD)
-- M7: World Content (biomes, structures, NPCs, quests)
-- M8: Save/Load & Polish (particles, sound, main menu)
+### All 8 milestones completed
+- M1: Character systems (stats, items, inventory, equipment, progression)
+- M2: First-person camera + player model
+- M3: Voxel world (chunks, greedy mesher, biomes)
+- M4: Combat system (melee weapons, spells: fireball, ice shard, heal)
+- M5: Enemies & AI (4 types, state machines, spawning, gold/loot)
+- M6: UI framework (immediate-mode GPU rendering, HUD, menus)
+- M7: World content (NPCs, quests, minimap, structures)
+- M8: Save/load, particles, sound, main menu
 
 ## How to generate ideas
 

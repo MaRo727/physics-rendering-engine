@@ -4,7 +4,7 @@ Validate that all GLSL shaders compile successfully.
 
 ## Steps
 
-1. Find all shader files in `src/shaders/` (`.rgen`, `.rchit`, `.rmiss`, `.vert`, `.frag`)
+1. Find all shader files in `src/shaders/` (`.rgen`, `.rchit`, `.rmiss`, `.vert`, `.frag`). Current shaders: `raygen.rgen`, `closesthit.rchit`, `miss.rmiss`, `shadow.rmiss`, `mesh.vert`, `mesh.frag`
 2. Run `glslangValidator --target-env vulkan1.2 -V` on each shader file
 3. If any shader fails to compile:
    - Show the exact error with file and line number

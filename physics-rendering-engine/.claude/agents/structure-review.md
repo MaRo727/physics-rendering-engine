@@ -42,5 +42,5 @@ Prioritized list of refactoring steps, from highest to lowest impact.
 - Only suggest changes that meaningfully improve clarity or maintainability
 - Don't suggest splitting files that are large but cohesive
 - Don't suggest new abstractions unless there's a clear repeated pattern
-- Respect the existing architecture: struct-based (no ECS), renderer/physics/game/voxel modules
-- Consider upcoming milestones (M5-M8) — structure should accommodate planned features
+- Respect the existing architecture: struct-based (no ECS), renderer/physics/game modules plus top-level systems (building, ui, particles, save, terrain, structures, audio, mining, interaction)
+- All 8 milestones are complete — focus on maintainability and extensibility for post-milestone features

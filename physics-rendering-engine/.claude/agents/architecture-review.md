@@ -7,7 +7,8 @@ Review recent changes or the full codebase for module boundary violations and ar
 - **`renderer/`**: All `ash` (Vulkan) types must stay inside this module. Nothing outside `renderer/` should import from `ash`.
 - **`physics/`**: All `rapier3d` types must stay inside this module. Nothing outside `physics/` should import from `rapier3d`.
 - **`voxel/`**: Voxel chunk data and meshing logic. Exposes mesh data to renderer through plain types (vertices, indices).
-- **`game/`**: RPG systems (stats, inventory, equipment, progression). Should not depend on renderer or physics directly.
+- **`game/`**: RPG systems (stats, inventory, equipment, combat, enemy AI, NPCs, quests, progression). Should not depend on renderer or physics directly.
+- **Top-level modules**: `building.rs`, `ui.rs`, `particles.rs`, `save.rs`, `terrain.rs`, `structures.rs`, `audio.rs`, `mining.rs`, `interaction.rs` — standalone systems orchestrated by `engine.rs`.
 - **Data handoff**: Physics and renderer communicate only through transforms and instance IDs passed via `engine.rs`.
 
 ## Steps

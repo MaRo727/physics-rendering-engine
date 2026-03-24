@@ -5,7 +5,7 @@ Check the current state of the Action RPG milestone plan against the actual code
 ## Milestone Plan
 
 - **M1: Character Systems** — stats, items, inventory, equipment, progression
-- **M2: Third-Person Camera + Player Model** — orbit camera, capsule model
+- **M2: Camera + Player Model** — first-person camera (switched from third-person), player model
 - **M3: Voxel World** — chunk system, greedy mesher, biome generation
 - **M4: Combat System** — melee, weapon types, magic spells, damage
 - **M5: Enemies & AI** — state machine AI, pathfinding, enemy types, spawning, loot
@@ -30,4 +30,14 @@ Check the current state of the Action RPG milestone plan against the actual code
 | M1: ... | Done | ... |
 | ... | ... | ... |
 
-Then a "Next steps" section for the nearest incomplete milestone.
+Then a "Next steps" section for the nearest incomplete milestone, or post-milestone improvements if all are done.
+
+## Known Completion State (as of March 2025)
+
+All 8 milestones (M1-M8) have been implemented. Key post-milestone additions include:
+- Building system expanded with 7 block shapes, rotation, structural support
+- God mode (F6) for testing
+- Sprint mechanic
+- Terrain modification
+- Loading screen
+- Performance optimizations (per-frame allocation fixes, TLAS update mode, spatial indexing)
