@@ -105,33 +105,34 @@ void main() {
         float dx = 0.0, dz = 0.0;
 
         // Octave 1: broad gentle swells
-        dx += 0.04 * 0.5 * cos(wp.x * 0.5 + wTime * 0.8) * cos(wp.y * 0.3 + wTime * 0.5);
-        dz += 0.04 * (-0.3) * sin(wp.x * 0.5 + wTime * 0.8) * sin(wp.y * 0.3 + wTime * 0.5);
+        dx += 0.025 * 0.5 * cos(wp.x * 0.5 + wTime * 0.8) * cos(wp.y * 0.3 + wTime * 0.5);
+        dz += 0.025 * (-0.3) * sin(wp.x * 0.5 + wTime * 0.8) * sin(wp.y * 0.3 + wTime * 0.5);
 
         // Octave 2: medium ripples
         float phase2 = wp.x * 1.5 - wTime * 1.2 + wp.y * 0.8;
-        dx += 0.025 * 1.5 * cos(phase2);
-        dz += 0.025 * 0.8 * cos(phase2);
+        dx += 0.015 * 1.5 * cos(phase2);
+        dz += 0.015 * 0.8 * cos(phase2);
 
         // Octave 3: small detail ripples
-        dx += 0.012 * 3.0 * cos(wp.x * 3.0 + wTime * 2.5) * cos(wp.y * 2.8 - wTime * 1.8);
-        dz += 0.012 * (-2.8) * sin(wp.x * 3.0 + wTime * 2.5) * sin(wp.y * 2.8 - wTime * 1.8);
+        dx += 0.006 * 3.0 * cos(wp.x * 3.0 + wTime * 2.5) * cos(wp.y * 2.8 - wTime * 1.8);
+        dz += 0.006 * (-2.8) * sin(wp.x * 3.0 + wTime * 2.5) * sin(wp.y * 2.8 - wTime * 1.8);
 
         // Octave 4: tiny sparkle ripples
-        dx += 0.006 * 6.0 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
-        dz += 0.006 * 4.5 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
+        dx += 0.003 * 6.0 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
+        dz += 0.003 * 4.5 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
 
         // Wind-driven ripple bias
         float windPhase = dot(wp, windDir) * 2.0 * windStr;
-        dx += 0.02 * windStr * cos(windPhase + wTime * 3.0);
-        dz += 0.02 * windStr * cos(windPhase + wTime * 3.0) * 0.7;
+        dx += 0.012 * windStr * cos(windPhase + wTime * 3.0);
+        dz += 0.012 * windStr * cos(windPhase + wTime * 3.0) * 0.7;
 
         // Perturb the mesh normal with detail ripples
         normal = normalize(normal + vec3(-dx, 0.0, -dz));
 
         // --- Fresnel (Schlick, water IOR ~1.33, F0 ≈ 0.02) ---
+        // Capped to keep water body color visible at grazing angles
         float NdotV = max(0.0, dot(normal, -viewDir));
-        float fresnel = 0.02 + 0.98 * pow(1.0 - NdotV, 5.0);
+        float fresnel = min(0.02 + 0.98 * pow(1.0 - NdotV, 5.0), 0.7);
 
         // --- Reflection ray (skip water instances via mask 0xF9) ---
         vec3 reflDir = reflect(viewDir, normal);
