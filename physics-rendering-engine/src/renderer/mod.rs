@@ -932,6 +932,11 @@ impl Renderer {
         // Build TLAS instances — write directly into the persistently-mapped
         // GPU instance buffer, avoiding an intermediate Vec and memcpy.
         let instance_count = transforms.len();
+        if self.tlas.ensure_capacity(&self.context, instance_count as u32)? {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.write_descriptor_set(i);
+            }
+        }
         let blas_max = self.blas_list.len() - 1;
         {
             let mapped = unsafe { self.tlas.mapped_instances_mut() };

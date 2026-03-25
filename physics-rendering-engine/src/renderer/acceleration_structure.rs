@@ -193,8 +193,15 @@ pub struct Tlas {
     instance_mapped: *mut vk::AccelerationStructureInstanceKHR,
     scratch_buffer: vk::Buffer,
     scratch_memory: vk::DeviceMemory,
-    instance_count: u32,
-    prev_instance_count: u32,
+    /// Allocated instance capacity (buffer + AS sized for this many instances).
+    capacity: u32,
+    /// Whether an initial BUILD has been recorded, enabling UPDATE on subsequent frames.
+    has_been_built: bool,
+    /// Consecutive frames where instance count stayed below half the capacity.
+    shrink_frames: u32,
+    /// Frames since last full BUILD. Periodic rebuilds prevent BVH quality
+    /// degradation from instance reordering caused by frustum culling.
+    frames_since_build: u32,
 }
 
 // SAFETY: only accessed from the render thread.
@@ -230,7 +237,6 @@ impl Tlas {
         // Build sizes — use BUILD mode for initial sizing.
         let geometry = make_instance_geometry(
             mesh::get_device_address(&context.device, instance_buffer),
-            instance_count,
         );
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -293,8 +299,10 @@ impl Tlas {
             instance_mapped,
             scratch_buffer,
             scratch_memory,
-            instance_count,
-            prev_instance_count: 0,
+            capacity: instance_count,
+            has_been_built: false,
+            shrink_frames: 0,
+            frames_since_build: 0,
         })
     }
 
@@ -305,18 +313,75 @@ impl Tlas {
     /// the instance buffer. The caller must ensure the GPU is not currently
     /// reading this memory (e.g. the in-flight fence has been waited on).
     pub unsafe fn mapped_instances_mut(&mut self) -> &mut [vk::AccelerationStructureInstanceKHR] {
-        unsafe { std::slice::from_raw_parts_mut(self.instance_mapped, self.instance_count as usize) }
+        unsafe { std::slice::from_raw_parts_mut(self.instance_mapped, self.capacity as usize) }
+    }
+
+    /// Ensure the TLAS can hold at least `min_count` instances.
+    /// Returns `true` if the TLAS was reallocated (caller must update descriptor sets).
+    pub fn ensure_capacity(&mut self, context: &VulkanContext, min_count: u32) -> Result<bool> {
+        if min_count < self.capacity / 2 {
+            self.shrink_frames += 1;
+        } else {
+            self.shrink_frames = 0;
+        }
+
+        let needs_grow = min_count > self.capacity;
+        // Shrink after ~2 seconds at 60 fps of sustained under-use.
+        let needs_shrink = self.shrink_frames > 120 && self.capacity > 64;
+
+        if !needs_grow && !needs_shrink {
+            return Ok(false);
+        }
+
+        // Wait for all GPU work before destroying resources.
+        unsafe { context.device.device_wait_idle()? };
+
+        let new_capacity = pad_capacity(min_count);
+        let new_tlas = Self::new(context, new_capacity)?;
+        let old = std::mem::replace(self, new_tlas);
+        old.destroy(context);
+
+        Ok(true)
     }
 
     /// Record a TLAS build/update into `cb` for `count` instances that have
     /// already been written into [`mapped_instances_mut`].
+    ///
+    /// Unused slots (`count..capacity`) are filled with copies of active
+    /// instances but with `mask = 0` so no rays can intersect them.  This
+    /// keeps `primitive_count` equal to `capacity` every frame (required by
+    /// the Vulkan spec for UPDATE) while distributing the padding instances
+    /// across real scene positions — avoiding the degenerate zero-volume
+    /// AABBs at origin that would poison the BVH structure.
+    ///
+    /// A periodic full BUILD (every ~60 frames) prevents BVH quality
+    /// degradation from instance reordering caused by frustum culling.
     pub fn record_build(
         &mut self,
         context: &VulkanContext,
         cb: vk::CommandBuffer,
         count: u32,
     ) {
-        assert!(count <= self.instance_count);
+        assert!(count > 0 && count <= self.capacity);
+
+        // Fill unused slots with mask=0 copies so they are invisible to all
+        // rays but still provide the BVH builder with a valid BLAS reference
+        // and transform (avoiding degenerate zero-volume AABBs at origin).
+        //
+        // We read ONE active instance into a stack-local template (single WC
+        // read) and then write it sequentially to every inactive slot.
+        // Sequential writes to write-combined mapped memory are fast; the
+        // previous round-robin approach did N reads from WC memory which was
+        // orders of magnitude slower over PCIe.
+        if count < self.capacity {
+            unsafe {
+                let mut template = *self.instance_mapped;
+                template.instance_custom_index_and_mask = vk::Packed24_8::new(0, 0);
+                for i in count as usize..self.capacity as usize {
+                    std::ptr::write(self.instance_mapped.add(i), template);
+                }
+            }
+        }
 
         // Memory barrier: ensure instance writes are visible before AS build.
         unsafe {
@@ -336,18 +401,19 @@ impl Tlas {
         let instance_address = mesh::get_device_address(&context.device, self.instance_buffer);
         let scratch_address = mesh::get_device_address(&context.device, self.scratch_buffer);
 
-        let geometry = make_instance_geometry(instance_address, count);
+        let geometry = make_instance_geometry(instance_address);
 
-        // UPDATE mode is faster but requires the same primitive count as the
-        // previous build.  Use it when the instance count is stable; fall back
-        // to a full BUILD when it changes (e.g. frustum culling variance).
-        let can_update = self.prev_instance_count == count && self.prev_instance_count > 0;
-        let mode = if can_update {
+        // UPDATE is much faster than BUILD but the BVH quality degrades as
+        // frustum culling reorders instances into different slots.  Periodic
+        // full BUILDs reconstruct an optimal tree.
+        const REBUILD_INTERVAL: u32 = 60;
+        let do_update = self.has_been_built && self.frames_since_build < REBUILD_INTERVAL;
+        let mode = if do_update {
             vk::BuildAccelerationStructureModeKHR::UPDATE
         } else {
             vk::BuildAccelerationStructureModeKHR::BUILD
         };
-        self.prev_instance_count = count;
+        self.frames_since_build = if do_update { self.frames_since_build + 1 } else { 0 };
 
         let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
@@ -360,12 +426,12 @@ impl Tlas {
             .geometries(std::slice::from_ref(&geometry))
             .scratch_data(vk::DeviceOrHostAddressKHR { device_address: scratch_address });
 
-        if can_update {
+        if do_update {
             build_info.src_acceleration_structure = self.handle;
         }
 
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(count);
+            .primitive_count(self.capacity);
 
         unsafe {
             context.accel_loader.cmd_build_acceleration_structures(
@@ -391,6 +457,7 @@ impl Tlas {
             );
         }
 
+        self.has_been_built = true;
     }
 
     pub fn destroy(&self, context: &VulkanContext) {
@@ -426,9 +493,13 @@ pub fn mat4_to_transform(m: Mat4) -> vk::TransformMatrixKHR {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Round up to the next power of two (minimum 64) for TLAS capacity.
+fn pad_capacity(count: u32) -> u32 {
+    count.max(64).next_power_of_two()
+}
+
 fn make_instance_geometry(
     instance_address: vk::DeviceAddress,
-    instance_count: u32,
 ) -> vk::AccelerationStructureGeometryKHR<'static> {
     let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)
