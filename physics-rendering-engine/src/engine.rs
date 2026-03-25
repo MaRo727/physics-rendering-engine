@@ -88,6 +88,87 @@ pub enum GameState {
     Playing,
 }
 
+/// Which plane the drag-to-fill rectangle lives on.
+#[derive(Debug, Clone, Copy)]
+enum DragPlane {
+    /// Floor: fill XZ at fixed Y.
+    FloorXZ(i32),
+    /// Wall: fill XY at fixed Z.
+    WallXY(i32),
+    /// Wall: fill YZ at fixed X.
+    WallYZ(i32),
+}
+
+/// Intersect a ray with the drag plane, returning the snapped grid coordinates
+/// on the two free axes (the fixed axis comes from the plane).
+fn ray_plane_intersect(origin: Vec3, dir: Vec3, plane: DragPlane) -> Option<(i32, i32, i32)> {
+    let (plane_val, axis_component) = match plane {
+        DragPlane::FloorXZ(y) => (y as f32 + 0.5, dir.y),
+        DragPlane::WallXY(z) => (z as f32 + 0.5, dir.z),
+        DragPlane::WallYZ(x) => (x as f32 + 0.5, dir.x),
+    };
+    // Ray nearly parallel to plane — skip.
+    if axis_component.abs() < 1e-6 {
+        return None;
+    }
+    let t = match plane {
+        DragPlane::FloorXZ(_) => (plane_val - origin.y) / dir.y,
+        DragPlane::WallXY(_) => (plane_val - origin.z) / dir.z,
+        DragPlane::WallYZ(_) => (plane_val - origin.x) / dir.x,
+    };
+    if t < 0.0 || t > 200.0 {
+        return None;
+    }
+    let hit = origin + dir * t;
+    Some(match plane {
+        DragPlane::FloorXZ(y) => (hit.x.floor() as i32, y, hit.z.floor() as i32),
+        DragPlane::WallXY(z) => (hit.x.floor() as i32, hit.y.floor() as i32, z),
+        DragPlane::WallYZ(x) => (x, hit.y.floor() as i32, hit.z.floor() as i32),
+    })
+}
+
+/// Build the list of cells that fill the rectangle between `start` and `end` on the given plane.
+fn build_fill_region(
+    start: (i32, i32, i32),
+    end: (i32, i32, i32),
+    plane: DragPlane,
+    block_type: BlockType,
+    rotation: u8,
+    color: Vec3,
+) -> Vec<((i32, i32, i32), BlockType, u8, Vec3)> {
+    let mut cells = Vec::new();
+    match plane {
+        DragPlane::FloorXZ(y) => {
+            let (x0, x1) = (start.0.min(end.0), start.0.max(end.0));
+            let (z0, z1) = (start.2.min(end.2), start.2.max(end.2));
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    cells.push(((x, y, z), block_type, rotation, color));
+                }
+            }
+        }
+        DragPlane::WallXY(z) => {
+            let (x0, x1) = (start.0.min(end.0), start.0.max(end.0));
+            let (y0, y1) = (start.1.min(end.1), start.1.max(end.1));
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    cells.push(((x, y, z), block_type, rotation, color));
+                }
+            }
+        }
+        DragPlane::WallYZ(x) => {
+            let (y0, y1) = (start.1.min(end.1), start.1.max(end.1));
+            let (z0, z1) = (start.2.min(end.2), start.2.max(end.2));
+            for y in y0..=y1 {
+                for z in z0..=z1 {
+                    cells.push(((x, y, z), block_type, rotation, color));
+                }
+            }
+        }
+    }
+    cells
+}
+
 pub struct Engine {
     pub config: EngineConfig,
     game_state: GameState,
@@ -197,6 +278,14 @@ pub struct Engine {
     editor_prev_group_prev: bool,
     editor_next_group_prev: bool,
     editor_unbake_prev: bool,
+    // Drag-to-fill state.
+    drag_start: Option<(i32, i32, i32)>,
+    drag_plane: Option<DragPlane>,
+    drag_end: Option<(i32, i32, i32)>,
+    /// Time RMB has been held; drag activates after threshold.
+    drag_hold_timer: f32,
+    /// Whether the drag has activated (hold exceeded threshold).
+    drag_active: bool,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -424,6 +513,11 @@ impl Engine {
             editor_prev_group_prev: false,
             editor_next_group_prev: false,
             editor_unbake_prev: false,
+            drag_start: None,
+            drag_plane: None,
+            drag_end: None,
+            drag_hold_timer: 0.0,
+            drag_active: false,
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -897,10 +991,15 @@ impl Engine {
         let (sp, cp) = self.editor_camera.pitch.sin_cos();
         let look_dir = Vec3::new(-sy * cp, sp, -cy_cos * cp);
 
-        // Place block (RMB).
-        let place_edge = input.place && !self.place_prev;
+        // Drag-to-fill placement (RMB).
+        // Quick click places a single block. Hold for 0.5s to enter drag mode.
+        const DRAG_THRESHOLD: f32 = 0.5;
+        let place_press = input.place && !self.place_prev;
+        let place_release = !input.place && self.place_prev;
         self.place_prev = input.place;
-        if place_edge {
+
+        if place_press {
+            // Immediately place a single block on click.
             if let Some((_rb, hit_pos, normal)) = self.editor_physics.cast_ray_unfiltered(cam_eye, look_dir, 50.0) {
                 let target = hit_pos + normal * 0.01;
                 let (cx, cy, cz) = building::snap_to_grid(target);
@@ -909,8 +1008,74 @@ impl Engine {
                     &mut self.editor_physics, cx, cy, cz,
                     self.selected_block_type, self.selected_rotation, color,
                 );
-                self.editor_physics.step(0.0); // rebuild query pipeline
+                self.editor_physics.step(0.0);
+                // Record start for potential drag.
+                let (ax, ay, az) = (normal.x.abs(), normal.y.abs(), normal.z.abs());
+                let plane = if ay >= ax && ay >= az {
+                    DragPlane::FloorXZ(cy)
+                } else if ax >= az {
+                    DragPlane::WallYZ(cx)
+                } else {
+                    DragPlane::WallXY(cz)
+                };
+                self.drag_start = Some((cx, cy, cz));
+                self.drag_plane = Some(plane);
+                self.drag_end = Some((cx, cy, cz));
+                self.drag_hold_timer = 0.0;
+                self.drag_active = false;
             }
+        } else if input.place && self.drag_start.is_some() {
+            // Holding RMB — accumulate hold time, activate drag after threshold.
+            self.drag_hold_timer += dt;
+            if self.drag_hold_timer >= DRAG_THRESHOLD {
+                self.drag_active = true;
+            }
+            if self.drag_active {
+                if let (Some(start), Some(plane)) = (self.drag_start, self.drag_plane)
+                    && let Some(end) = ray_plane_intersect(cam_eye, look_dir, plane)
+                {
+                    let prev_end = self.drag_end;
+                    self.drag_end = Some(end);
+                    if self.drag_end != prev_end {
+                        let color = EDITOR_PALETTE[self.editor_color_idx];
+                        let bt = self.selected_block_type;
+                        let rot = self.selected_rotation;
+                        let preview = build_fill_region(start, end, plane, bt, rot, color);
+                        self.editor_grid.set_preview(preview);
+                    }
+                }
+            }
+        } else if place_release && self.drag_start.is_some() {
+            // Release: if drag was active, place the fill region.
+            if self.drag_active {
+                if let (Some(start), Some(plane), Some(end)) = (self.drag_start, self.drag_plane, self.drag_end) {
+                    let color = EDITOR_PALETTE[self.editor_color_idx];
+                    let bt = self.selected_block_type;
+                    let rot = self.selected_rotation;
+                    let region = build_fill_region(start, end, plane, bt, rot, color);
+                    let mut placed = 0u32;
+                    for &((cx, cy, cz), block_type, rotation, col) in &region {
+                        if self.editor_grid.place_unsupported(
+                            &mut self.editor_physics, cx, cy, cz,
+                            block_type, rotation, col,
+                        ) {
+                            placed += 1;
+                        }
+                    }
+                    if placed > 0 {
+                        self.editor_physics.step(0.0);
+                    }
+                    if placed > 1 {
+                        self.editor_status = Some((format!("Placed {} blocks", placed), 2.0));
+                    }
+                }
+                self.editor_grid.clear_preview();
+            }
+            self.drag_start = None;
+            self.drag_plane = None;
+            self.drag_end = None;
+            self.drag_active = false;
+            self.drag_hold_timer = 0.0;
         }
 
         // Remove block (LMB — edge triggered).
@@ -1141,9 +1306,15 @@ impl Engine {
                 self.editor_camera.yaw = 0.0;
                 self.editor_camera.pitch = -0.4;
             } else {
-                // Exit editor: restore main building mesh.
+                // Exit editor: restore main building mesh, clear drag state.
                 self.editor_camera.active = false;
                 self.building.mark_dirty();
+                self.editor_grid.clear_preview();
+                self.drag_start = None;
+                self.drag_plane = None;
+                self.drag_end = None;
+                self.drag_active = false;
+                self.drag_hold_timer = 0.0;
             }
         }
         self.editor_prev = input.toggle_editor;
@@ -2067,8 +2238,8 @@ impl Engine {
         // Pack with terrain object ID to reuse an existing mesh slot.
         self.frame_instance_ids.push(pack_instance_id(MESH_CUBE, 0xFFF2));
 
-        // Building mesh (editor grid).
-        if !self.editor_grid.is_empty() && self.renderer.has_building_blas() {
+        // Building mesh (editor grid + preview).
+        if (!self.editor_grid.is_empty() || self.editor_grid.has_preview()) && self.renderer.has_building_blas() {
             self.frame_transforms.push(Mat4::IDENTITY);
             self.frame_instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
         }
@@ -2495,7 +2666,7 @@ impl Engine {
         }
 
         // Help text.
-        let help = "1-0: Color  RMB: Place  LMB: Remove  B: Block  V: Rotate  G: Bake  U: Unbake  </>: Groups  F9: Save  F10: Load  F8: Exit";
+        let help = "1-0: Color  RMB: Place (drag to fill)  LMB: Remove  B: Block  V: Rotate  G: Bake  U: Unbake  </>: Groups  F9: Save  F10: Load  F8: Exit";
         let help_w = help.len() as f32 * cell * 0.5;
         self.ui.text((sw - help_w) * 0.5, sh - 28.0, help, scale * 0.5, [0.7, 0.7, 0.7, 1.0]);
 

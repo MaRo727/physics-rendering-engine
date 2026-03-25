@@ -419,6 +419,8 @@ pub struct BuildingGrid {
     cells: HashMap<(i32, i32, i32), CellData>,
     groups: Vec<BakedGroup>,
     dirty: bool,
+    /// Temporary preview cells for drag-to-fill (position + color). No physics bodies.
+    preview_cells: Vec<((i32, i32, i32), BlockType, u8, Vec3)>,
 }
 
 impl BuildingGrid {
@@ -427,6 +429,7 @@ impl BuildingGrid {
             cells: HashMap::new(),
             groups: Vec::new(),
             dirty: false,
+            preview_cells: Vec::new(),
         }
     }
 
@@ -448,6 +451,27 @@ impl BuildingGrid {
 
     pub fn is_occupied(&self, x: i32, y: i32, z: i32) -> bool {
         self.cells.contains_key(&(x, y, z))
+    }
+
+    /// Set the drag-to-fill preview (visual only, no physics).
+    pub fn set_preview(&mut self, cells: Vec<((i32, i32, i32), BlockType, u8, Vec3)>) {
+        if self.preview_cells != cells {
+            self.preview_cells = cells;
+            self.dirty = true;
+        }
+    }
+
+    /// Clear the drag preview.
+    pub fn clear_preview(&mut self) {
+        if !self.preview_cells.is_empty() {
+            self.preview_cells.clear();
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the grid has any preview cells (used for empty-check in rendering).
+    pub fn has_preview(&self) -> bool {
+        !self.preview_cells.is_empty()
     }
 
     /// Return the sub_blocks mask of a baked group block at the given cell, or 0.
@@ -756,6 +780,18 @@ impl BuildingGrid {
             } else {
                 // Mined — fall back to sub-block iteration.
                 self.emit_sub_block_mesh(cx, cy, cz, cell, &mut vertices, &mut indices);
+            }
+        }
+
+        // Append drag-to-fill preview blocks (tinted, no neighbor culling).
+        for &((cx, cy, cz), block_type, rotation, color) in &self.preview_cells {
+            if !self.cells.contains_key(&(cx, cy, cz)) {
+                let preview_color = color * 0.55 + Vec3::splat(0.25);
+                emit_block_mesh(
+                    block_type, rotation, cx, cy, cz,
+                    &self.cells, self, preview_color,
+                    &mut vertices, &mut indices,
+                );
             }
         }
 
