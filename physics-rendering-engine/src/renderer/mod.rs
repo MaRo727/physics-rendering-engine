@@ -943,7 +943,8 @@ impl Renderer {
                     let clean_id = packed_id & !SHADOW_ONLY_BIT;
                     let mesh_type = (clean_id >> 16) as usize;
                     let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
-                    let mask = if shadow_only { 0x02u8 } else { 0xFFu8 };
+                    let is_water = mesh_type == MESH_WATER as usize;
+                    let mask = if shadow_only { 0x02u8 } else if is_water { 0x04u8 } else { 0xFFu8 };
                     vk::AccelerationStructureInstanceKHR {
                         transform: mat4_to_transform(t),
                         instance_custom_index_and_mask: vk::Packed24_8::new(clean_id, mask),

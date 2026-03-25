@@ -237,7 +237,7 @@ fn create_rt_pipeline(context: &VulkanContext, layout: vk::PipelineLayout) -> Re
     let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::default()
         .stages(&stages)
         .groups(&groups)
-        .max_pipeline_ray_recursion_depth(2)
+        .max_pipeline_ray_recursion_depth(3)
         .layout(layout);
 
     let pipeline = unsafe {
