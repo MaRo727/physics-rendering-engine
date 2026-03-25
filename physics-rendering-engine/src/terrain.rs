@@ -15,7 +15,13 @@ const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1801
 const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 150
 
 const TERRAIN_CACHE_FILE: &str = "terrain_cache.bin";
-const TERRAIN_CACHE_MAGIC: u32 = 0x5452_4E31; // "TRN1"
+const TERRAIN_CACHE_MAGIC: u32 = 0x5452_4E32; // "TRN2" – island terrain
+
+// Island shape parameters
+const ISLAND_RADIUS: f64 = 1400.0; // base radius where coastline begins
+const ISLAND_NOISE_AMP: f64 = 350.0; // how much noise varies the coastline
+const ISLAND_FALLOFF: f64 = 300.0; // width of land-to-ocean transition
+const OCEAN_FLOOR: f32 = -18.0; // depth of ocean floor
 
 // ---------------------------------------------------------------------------
 // Biomes
@@ -234,6 +240,12 @@ impl TerrainGrid {
             .set_frequency(0.002)
             .set_persistence(0.5);
 
+        // Island shape noise – low-frequency for natural coastline variation.
+        let shape_noise = Fbm::<Perlin>::new(seed.wrapping_add(300))
+            .set_octaves(4)
+            .set_frequency(0.0015)
+            .set_persistence(0.5);
+
         let total = GRID_SIZE * GRID_SIZE;
         let mut heights = vec![0.0f32; total];
         let mut biomes = vec![Biome::Plains; total];
@@ -332,6 +344,29 @@ impl TerrainGrid {
 
                 let other_h = sample_height(&fbm, wx, wz, boundary_other[idx]);
                 heights[idx] = heights[idx] * (1.0 - t) + other_h * t;
+            }
+        }
+
+        // Pass 4: Island mask – lower terrain near world edges to form ocean.
+        // Uses noise-distorted distance from center for an irregular coastline.
+        for gz in 0..GRID_SIZE {
+            for gx in 0..GRID_SIZE {
+                let wx = (gx as i32 - GRID_HALF) as f64 * CELL_SIZE as f64;
+                let wz = (gz as i32 - GRID_HALF) as f64 * CELL_SIZE as f64;
+                let dist = (wx * wx + wz * wz).sqrt();
+
+                // Shape noise varies the effective coastline radius.
+                let shape_val = shape_noise.get([wx, wz]);
+                let effective_radius = ISLAND_RADIUS + shape_val * ISLAND_NOISE_AMP;
+
+                if dist > effective_radius {
+                    let over = dist - effective_radius;
+                    let t = (over / ISLAND_FALLOFF).min(1.0);
+                    let t = t * t * (3.0 - 2.0 * t); // smoothstep
+
+                    let idx = gz * GRID_SIZE + gx;
+                    heights[idx] = heights[idx] * (1.0 - t as f32) + OCEAN_FLOOR * t as f32;
+                }
             }
         }
 
