@@ -195,6 +195,20 @@ impl StructureGrid {
         let max_cz = ((player_pos.z + TREE_RENDER_DISTANCE + half) / CHUNK_WORLD_SIZE)
             .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
 
+        // Precompute shared wind trig values used across all trees.
+        // These four frequencies cover the multi-frequency sway; trees add per-tree
+        // variation via a cheap linear phase offset rather than extra sin() calls.
+        let sway_amount = wind_strength * 0.04; // max ~2.3 degrees in full wind
+        let wind_bias = wind_strength * 0.015;
+        let base_sin_1_2 = (time * 1.2).sin();
+        let base_cos_1_2 = (time * 1.2).cos();
+        let base_sin_2_7 = (time * 2.7).sin();
+        let base_cos_2_7 = (time * 2.7).cos();
+        let base_sin_0_9 = (time * 0.9).sin();
+        let base_cos_0_9 = (time * 0.9).cos();
+        let base_sin_2_1 = (time * 2.1).sin();
+        let base_cos_2_1 = (time * 2.1).cos();
+
         for cx in min_cx..max_cx {
             for cz in min_cz..max_cz {
                 let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
@@ -223,26 +237,46 @@ impl StructureGrid {
 
                     let shake = self.shake_angle(tree_idx);
 
-                    // Wind sway: each tree has a unique phase from its position.
+                    // Wind sway: use angle-addition identity sin(A+B) = sinA cosB + cosA sinB
+                    // to derive per-tree sway from precomputed base trig values + per-tree phase.
                     let phase = tree.position.x * 0.13 + tree.position.z * 0.17;
-                    let sway_amount = wind_strength * 0.04; // max ~2.3 degrees in full wind
-                    let sway_x = (time * 1.2 + phase).sin() * sway_amount
-                        + (time * 2.7 + phase * 1.3).sin() * sway_amount * 0.3;
-                    let sway_z = (time * 0.9 + phase * 0.7).sin() * sway_amount * 0.6
-                        + (time * 2.1 + phase * 1.1).sin() * sway_amount * 0.2;
+                    let (sp, cp) = (phase.sin(), phase.cos());
+                    let (sp13, cp13) = {
+                        let p13 = phase * 1.3;
+                        (p13.sin(), p13.cos())
+                    };
+                    let (sp07, cp07) = {
+                        let p07 = phase * 0.7;
+                        (p07.sin(), p07.cos())
+                    };
+                    let (sp11, cp11) = {
+                        let p11 = phase * 1.1;
+                        (p11.sin(), p11.cos())
+                    };
 
-                    // Bias sway toward wind direction.
-                    let wind_bias = wind_strength * 0.015;
+                    // sin(time*f + phase*k) = base_sin_f * cos(phase*k) + base_cos_f * sin(phase*k)
+                    let sway_x = (base_sin_1_2 * cp + base_cos_1_2 * sp) * sway_amount
+                        + (base_sin_2_7 * cp13 + base_cos_2_7 * sp13) * sway_amount * 0.3;
+                    let sway_z = (base_sin_0_9 * cp07 + base_cos_0_9 * sp07) * sway_amount * 0.6
+                        + (base_sin_2_1 * cp11 + base_cos_2_1 * sp11) * sway_amount * 0.2;
+
                     let total_sway_x = sway_x + wind_dir.0 * wind_bias;
                     let total_sway_z = sway_z + wind_dir.1 * wind_bias;
 
                     let mut transform = Mat4::from_translation(tree.position)
                         * Mat4::from_rotation_y(tree.rotation_y);
-                    // Apply wind sway (tilt along X and Z axes).
+                    // Apply wind sway using small-angle rotation matrix approximation.
+                    // For small angles a, b: Rx(a)*Rz(b) ≈ [[1, -b, 0], [b, 1, -a], [0, a, 1]].
                     if total_sway_x.abs() > 0.0001 || total_sway_z.abs() > 0.0001 {
-                        transform = transform
-                            * Mat4::from_rotation_x(total_sway_z)
-                            * Mat4::from_rotation_z(total_sway_x);
+                        let a = total_sway_z; // rotation about X
+                        let b = total_sway_x; // rotation about Z
+                        let sway_mat = Mat4::from_cols(
+                            Vec4::new(1.0, b, 0.0, 0.0),
+                            Vec4::new(-b, 1.0, a, 0.0),
+                            Vec4::new(a * b, -a, 1.0, 0.0),
+                            Vec4::new(0.0, 0.0, 0.0, 1.0),
+                        );
+                        transform = transform * sway_mat;
                     }
                     if shake != 0.0 {
                         transform = transform * Mat4::from_rotation_z(shake);
@@ -794,6 +828,17 @@ impl GrassGrid {
         // to wind direction). Each strand gets a unique phase offset from its position hash.
         let sway_enabled = wind_strength > 0.01;
 
+        // Precompute base trig values for the three sway frequencies. Per-patch phase
+        // offsets are applied via angle-addition identities (no per-strand sin/cos).
+        let sway_scale = wind_strength * 0.15;
+        let lean = if sway_enabled { wind_strength * 0.06 } else { 0.0 };
+        let base_sin_2_5 = (time * 2.5).sin();
+        let base_cos_2_5 = (time * 2.5).cos();
+        let base_sin_5_3 = (time * 5.3).sin();
+        let base_cos_5_3 = (time * 5.3).cos();
+        let base_sin_9_1 = (time * 9.1).sin();
+        let base_cos_9_1 = (time * 9.1).cos();
+
         for cx in min_cx..max_cx {
             for cz in min_cz..max_cz {
                 let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
@@ -814,6 +859,32 @@ impl GrassGrid {
                         continue;
                     }
 
+                    // Precompute per-patch wind sway using the patch center position.
+                    // Individual strands add cheap linear variation on top of this.
+                    let patch_sway_mat = if sway_enabled {
+                        let phase = patch.center.x * 0.37 + patch.center.z * 0.53;
+                        let (sp, cp) = (phase.sin(), phase.cos());
+                        let (sp17, cp17) = { let p = phase * 1.7; (p.sin(), p.cos()) };
+                        let (sp23, cp23) = { let p = phase * 2.3; (p.sin(), p.cos()) };
+                        // sin(base + phase*k) via angle-addition identity
+                        let sway = sway_scale
+                            * ((base_sin_2_5 * cp + base_cos_2_5 * sp)
+                               + 0.4 * (base_sin_5_3 * cp17 + base_cos_5_3 * sp17)
+                               + 0.15 * (base_sin_9_1 * cp23 + base_cos_9_1 * sp23));
+                        let tilt = sway + lean;
+                        let a = tilt * wind_dir.1;  // rotation about X
+                        let b = -tilt * wind_dir.0; // rotation about Z
+                        // Small-angle combined Rx(a)*Rz(b) matrix.
+                        Some((a, b, Mat4::from_cols(
+                            Vec4::new(1.0, b, 0.0, 0.0),
+                            Vec4::new(-b, 1.0, a, 0.0),
+                            Vec4::new(a * b, -a, 1.0, 0.0),
+                            Vec4::new(0.0, 0.0, 0.0, 1.0),
+                        )))
+                    } else {
+                        None
+                    };
+
                     // Render individual strands within this patch.
                     let (start, end) = patch.strand_range;
                     for strand in &self.strands[start..end] {
@@ -826,23 +897,8 @@ impl GrassGrid {
                         let mut transform = Mat4::from_translation(strand.position)
                             * Mat4::from_rotation_y(strand.rotation_y);
 
-                        if sway_enabled {
-                            // Per-strand phase offset from position for natural variation.
-                            let phase = strand.position.x * 0.37 + strand.position.z * 0.53;
-                            // Multi-frequency sway for organic motion.
-                            let sway = wind_strength * 0.15
-                                * ((time * 2.5 + phase).sin()
-                                   + 0.4 * (time * 5.3 + phase * 1.7).sin()
-                                   + 0.15 * (time * 9.1 + phase * 2.3).sin());
-                            // Constant lean in wind direction.
-                            let lean = wind_strength * 0.06;
-                            // Tilt toward wind: rotate about the axis perpendicular to wind.
-                            // Wind blows along (wind_dir.0, wind_dir.1), so tilt axis is (-wind_dir.1, 0, wind_dir.0).
-                            let tilt = sway + lean;
-                            // Apply as rotations around X and Z (approximation for small angles).
-                            transform = transform
-                                * Mat4::from_rotation_x(tilt * wind_dir.1)
-                                * Mat4::from_rotation_z(-tilt * wind_dir.0);
+                        if let Some((_a, _b, ref sway_mat)) = patch_sway_mat {
+                            transform = transform * *sway_mat;
                         }
 
                         transform = transform * Mat4::from_scale(strand.scale);
