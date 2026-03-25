@@ -14,7 +14,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;  // .x = level, .y = stamina%, .z = player x, .w = player z
     vec4 sunMoon;     // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo;    // .xyz = moon direction, .w = moon altitude
-    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time, .z = water level
     vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
     vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
@@ -46,7 +46,7 @@ layout(set = 0, binding = 6, std430) buffer UiBuffer {
     UiPrim prims[];
 } ui;
 
-layout(location = 0) rayPayloadEXT vec3 payload;
+layout(location = 0) rayPayloadEXT vec4 payload;
 
 // ---------------------------------------------------------------------------
 // 8×8 bitmap font sampling  (font data lives in the UI SSBO)
@@ -121,7 +121,7 @@ void main() {
     vec4 target    = scene.invProj * vec4(ndc, 1.0, 1.0);
     vec4 direction = scene.invView * vec4(normalize(target.xyz / target.w), 0.0);
 
-    payload = vec3(0.0);
+    payload = vec4(0.0);
 
     traceRayEXT(
         topLevelAS,
@@ -136,6 +136,18 @@ void main() {
         10000.0,
         0     // payload location
     );
+
+    // Underwater camera effects — blue-green tint + visibility fog.
+    float waterLevel = scene.blizzardInfo.z;
+    float cameraY = origin.y;
+    if (cameraY < waterLevel) {
+        float hitDist = payload.w;
+        // Blue-green tint.
+        payload.xyz = mix(payload.xyz, vec3(0.05, 0.15, 0.25), 0.35);
+        // Distance fog — reduce visibility underwater.
+        float uwFog = 1.0 - exp(-hitDist * 0.025);
+        payload.xyz = mix(payload.xyz, vec3(0.02, 0.08, 0.15), uwFog);
+    }
 
     // Volumetric 3D snowflakes — sample world-space positions along the ray.
     float snowIntensity = scene.blizzardInfo.x;
@@ -181,7 +193,7 @@ void main() {
         }
 
         snowAccum = min(snowAccum, 1.0) * snowIntensity;
-        payload = mix(payload, vec3(0.92, 0.93, 0.96), snowAccum * 0.85);
+        payload.xyz = mix(payload.xyz, vec3(0.92, 0.93, 0.96), snowAccum * 0.85);
     }
 
     // Volumetric rain streaks — thin vertical lines sampling world-space positions.
@@ -237,13 +249,13 @@ void main() {
         rainAccum = min(rainAccum, 1.0) * rainIntensity;
         // Rain is a subtle blue-white tint.
         vec3 rainColor = vec3(0.7, 0.75, 0.85);
-        payload = mix(payload, rainColor, rainAccum * 0.5);
+        payload.xyz = mix(payload.xyz, rainColor, rainAccum * 0.5);
     }
 
     // Lightning flash — bright white overlay.
     float lightningFlash = scene.weatherInfo.z;
     if (lightningFlash > 0.0) {
-        payload = mix(payload, vec3(1.0, 0.98, 0.95), lightningFlash * 0.3);
+        payload.xyz = mix(payload.xyz, vec3(1.0, 0.98, 0.95), lightningFlash * 0.3);
     }
 
     // Crosshair overlay.
@@ -256,7 +268,7 @@ void main() {
     bool onCross = (d.x <= thickness && d.y >= gap && d.y <= arm)
                || (d.y <= thickness && d.x >= gap && d.x <= arm);
     if (onCross) {
-        payload = vec3(1.0);
+        payload.xyz = vec3(1.0);
     }
 
     // Pry progress arc around crosshair.
@@ -273,7 +285,7 @@ void main() {
             // Remap so 0 = top: shift by 0.5
             norm = fract(norm + 0.5);
             if (norm <= pryProgress) {
-                payload = mix(payload, vec3(1.0, 0.9, 0.3), 0.9);
+                payload.xyz = mix(payload.xyz, vec3(1.0, 0.9, 0.3), 0.9);
             }
         }
     }
@@ -283,17 +295,17 @@ void main() {
 
     if (toolType > 0.5 && toolType < 1.5) {
         // Axe — orange crosshair + axe icon.
-        if (onCross) { payload = vec3(1.0, 0.4, 0.2); }
+        if (onCross) { payload.xyz = vec3(1.0, 0.4, 0.2); }
         vec2 aOff = vec2(pixel - center) - vec2(0.0, 22.0);
         bool axeHandle = (abs(aOff.x) <= 1.0 && aOff.y >= -6.0 && aOff.y <= 6.0);
         bool axeBlade = (aOff.x >= 1.0 && aOff.x <= 6.0 && aOff.y >= -4.0 && aOff.y <= 2.0
                         && aOff.x - 1.0 <= 5.0 * (1.0 - abs(aOff.y - (-1.0)) / 4.0));
         if (axeHandle || axeBlade) {
-            payload = mix(payload, vec3(0.9, 0.9, 0.9), 0.85);
+            payload.xyz = mix(payload.xyz, vec3(0.9, 0.9, 0.9), 0.85);
         }
     } else if (toolType > 1.5 && toolType < 2.5) {
         // Pickaxe — brown crosshair + pick icon.
-        if (onCross) { payload = vec3(0.7, 0.5, 0.2); }
+        if (onCross) { payload.xyz = vec3(0.7, 0.5, 0.2); }
         vec2 pOff = vec2(pixel - center) - vec2(0.0, 22.0);
         // Shaft (diagonal line).
         bool shaft = (abs(pOff.x - pOff.y) <= 1.5 && pOff.x >= -5.0 && pOff.x <= 5.0);
@@ -302,22 +314,22 @@ void main() {
         // Point (angled tip).
         bool point = (pOff.x >= 5.0 && pOff.x <= 7.0 && pOff.y >= -4.0 && pOff.y <= -2.0);
         if (shaft || head || point) {
-            payload = mix(payload, vec3(0.8, 0.65, 0.4), 0.85);
+            payload.xyz = mix(payload.xyz, vec3(0.8, 0.65, 0.4), 0.85);
         }
     } else if (toolType > 2.5 && toolType < 3.5) {
         // Hammer — blue crosshair + hammer icon.
-        if (onCross) { payload = vec3(0.3, 0.6, 1.0); }
+        if (onCross) { payload.xyz = vec3(0.3, 0.6, 1.0); }
         vec2 hOff = vec2(pixel - center) - vec2(0.0, 22.0);
         // Handle (vertical line).
         bool handle = (abs(hOff.x) <= 1.0 && hOff.y >= -2.0 && hOff.y <= 6.0);
         // Head (thick rectangle at top).
         bool hammerHead = (abs(hOff.x) <= 5.0 && hOff.y >= -6.0 && hOff.y <= -2.0);
         if (handle || hammerHead) {
-            payload = mix(payload, vec3(0.7, 0.8, 1.0), 0.85);
+            payload.xyz = mix(payload.xyz, vec3(0.7, 0.8, 1.0), 0.85);
         }
     } else if (toolType > 3.5) {
         // Chisel — cyan crosshair + chisel icon.
-        if (onCross) { payload = vec3(0.2, 0.8, 0.8); }
+        if (onCross) { payload.xyz = vec3(0.2, 0.8, 0.8); }
         vec2 cOff = vec2(pixel - center) - vec2(0.0, 22.0);
         // Handle (vertical bar).
         bool cHandle = (abs(cOff.x) <= 1.0 && cOff.y >= 0.0 && cOff.y <= 6.0);
@@ -326,12 +338,12 @@ void main() {
         // Tip (single-pixel point at bottom).
         bool cTip = (abs(cOff.x) <= 0.5 && cOff.y >= -7.0 && cOff.y < -6.0);
         if (cHandle || cBlade || cTip) {
-            payload = mix(payload, vec3(0.6, 0.9, 0.9), 0.85);
+            payload.xyz = mix(payload.xyz, vec3(0.6, 0.9, 0.9), 0.85);
         }
     }
 
     // UI overlay — data-driven primitives from the UI SSBO.
-    payload = renderUi(pixel, payload);
+    payload.xyz = renderUi(pixel, payload.xyz);
 
-    imageStore(outputImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload, 1.0));
+    imageStore(outputImage, ivec2(gl_LaunchIDEXT.xy), vec4(payload.xyz, 1.0));
 }

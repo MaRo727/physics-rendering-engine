@@ -2261,7 +2261,7 @@ impl Engine {
         let player_vp = render_proj * render_view;
         let debug_info = Vec4::ZERO;
         let debug_info2 = Vec4::ZERO;
-        let blizzard_info = Vec4::ZERO;
+        let blizzard_info = Vec4::new(0.0, 0.0, WATER_LEVEL, 0.0);
         let weather_info = Vec4::ZERO;
         let wind_info = Vec4::ZERO;
 
@@ -2565,7 +2565,7 @@ impl Engine {
         // Simplest: add a second vec4 for moon.
         let moon_info = Vec4::new(moon_dir.x, moon_dir.y, moon_dir.z, moon_altitude);
 
-        let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, 0.0, 0.0);
+        let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, WATER_LEVEL, 0.0);
 
         let (wd_x, wd_z) = self.weather.wind_dir();
         let weather_info = Vec4::new(

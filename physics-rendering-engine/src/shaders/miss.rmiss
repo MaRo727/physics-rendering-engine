@@ -1,7 +1,7 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-layout(location = 0) rayPayloadInEXT vec3 payload;
+layout(location = 0) rayPayloadInEXT vec4 payload;
 
 layout(set = 0, binding = 2) uniform SceneUBO {
     mat4 invView;
@@ -14,7 +14,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude (-1 to 1)
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude (-1 to 1)
-    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time, .z = water level
     vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
     vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
@@ -178,5 +178,5 @@ void main() {
         sky = mix(sky, fogColor, snowIntensity * 0.9);
     }
 
-    payload = sky;
+    payload = vec4(sky, 10000.0);
 }

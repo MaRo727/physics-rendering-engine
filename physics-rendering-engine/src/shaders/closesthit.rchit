@@ -2,7 +2,7 @@
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(location = 0) rayPayloadInEXT vec3 payload;
+layout(location = 0) rayPayloadInEXT vec4 payload;
 layout(location = 1) rayPayloadEXT float shadowed;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
@@ -17,7 +17,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
     vec4 debugInfo2;
     vec4 sunMoon;  // .xyz = sun direction, .w = sun altitude
     vec4 moonInfo; // .xyz = moon direction, .w = moon altitude
-    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time
+    vec4 blizzardInfo; // .x = snow intensity (0..1), .y = time, .z = water level
     vec4 weatherInfo;  // .x = rain intensity, .y = fog density, .z = lightning flash, .w = cloud coverage
     vec4 windInfo;     // .x = wind strength, .y = wind dir x, .z = wind dir z, .w = weather time
 } scene;
@@ -92,13 +92,30 @@ void main() {
     float diffuse = max(0.0, NdotL) * mix(1.0, shadowed, shadowStrength);
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 
-    // Water surface shading.
+    // Underwater caustics on submerged terrain.
+    float waterLevel = scene.blizzardInfo.z;
     uint WATER_MESH_TYPE = 6u;
+    if (hitPos.y < waterLevel && mesh_type != WATER_MESH_TYPE) {
+        float wTimeCaustic = scene.windInfo.w;
+        float depth = waterLevel - hitPos.y;
+        float caustStrength = exp(-depth * 0.08);
+        vec2 cp = hitPos.xz * 0.3 + wTimeCaustic * vec2(0.8, 0.6);
+        float caustic = pow(0.5 + 0.5 * sin(cp.x * 3.0 + sin(cp.y * 2.0 + wTimeCaustic)), 4.0);
+        lit += vec3(0.15, 0.2, 0.1) * caustic * caustStrength * shadowed;
+    }
+
+    // Water surface shading.
     if (mesh_type == WATER_MESH_TYPE) {
         vec3 viewDir = normalize(gl_WorldRayDirectionEXT);
         float wTime = scene.windInfo.w;
         float windStr = scene.windInfo.x;
         vec2 windDir = vec2(scene.windInfo.y, scene.windInfo.z);
+
+        // Detect if ray hits water from below (underwater camera looking up).
+        bool underwater = dot(viewDir, normal) > 0.0;
+        if (underwater) {
+            normal = -normal;
+        }
 
         // --- Detail ripple normals (animated multi-octave sine waves) ---
         vec2 wp = hitPos.xz;
@@ -145,17 +162,37 @@ void main() {
             reflOrigin, 0.01, reflDir, 10000.0,
             0
         );
-        vec3 reflColor = payload;
+        vec3 reflColor = payload.xyz;
 
-        // --- Water base color ---
-        vec3 waterDeep    = vec3(0.01, 0.06, 0.15);
-        vec3 waterShallow = vec3(0.06, 0.28, 0.42);
-        vec3 waterColor = mix(waterDeep, waterShallow, pow(NdotV, 0.6));
+        // --- Refraction ray (see-through water) ---
+        // IOR: air-to-water = 1/1.33, water-to-air = 1.33/1.0
+        float eta = underwater ? 1.33 : (1.0 / 1.33);
+        vec3 refrDir = refract(viewDir, normal, eta);
 
-        // Lighting on the water surface itself
-        float waterDiffuse = max(0.0, dot(normal, L)) * mix(1.0, shadowed, shadowStrength);
-        vec3 litWater = waterColor * scene.lightColor.xyz * scene.lightColor.w
-                      * (ambient * 1.2 + fill + waterDiffuse);
+        vec3 refrColor;
+        if (length(refrDir) < 0.001) {
+            // Total internal reflection (underwater at grazing angles).
+            refrColor = reflColor;
+            fresnel = 1.0;
+        } else {
+            vec3 refrOrigin = hitPos - normal * 0.05; // offset through surface
+            traceRayEXT(
+                topLevelAS,
+                gl_RayFlagsOpaqueEXT,
+                0xF9, // skip shadow-only and water
+                0, 1, 0,
+                refrOrigin, 0.01, refrDir, 10000.0,
+                0
+            );
+            float refrHitDist = payload.w;
+            refrColor = payload.xyz;
+
+            // Beer's law absorption — deeper water absorbs more red.
+            vec3 refrHitPos = refrOrigin + refrDir * refrHitDist;
+            float waterDepth = max(0.0, abs(hitPos.y - refrHitPos.y));
+            vec3 absorption = exp(-vec3(0.4, 0.1, 0.05) * waterDepth);
+            refrColor *= absorption;
+        }
 
         // --- Sun specular ---
         vec3 halfVec = normalize(L - viewDir);
@@ -172,8 +209,8 @@ void main() {
             specular += vec3(0.3, 0.35, 0.5) * moonSpec * 0.2 * moonFade;
         }
 
-        // --- Combine: Fresnel blends reflection vs water body color ---
-        lit = mix(litWater, reflColor, fresnel) + specular;
+        // --- Combine: Fresnel blends reflection vs refraction ---
+        lit = mix(refrColor, reflColor, fresnel) + specular;
     }
 
     // Ghost mode: green highlight for surfaces inside the player's frozen frustum.
@@ -256,5 +293,5 @@ void main() {
         lit = mix(lit, fogColor, fogFactor * snowIntensity);
     }
 
-    payload = lit;
+    payload = vec4(lit, gl_HitTEXT);
 }
