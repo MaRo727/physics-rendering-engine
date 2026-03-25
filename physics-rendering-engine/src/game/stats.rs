@@ -21,7 +21,7 @@ pub struct StatBlock {
     pub gold: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DerivedStats {
     pub max_health: f32,
     pub max_mana: f32,

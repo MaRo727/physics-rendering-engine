@@ -276,8 +276,6 @@ pub struct Renderer {
     surface_width: u32,
     surface_height: u32,
     swapchain_dirty: bool,
-    // Reusable per-frame buffer for TLAS instances.
-    tlas_instances: Vec<vk::AccelerationStructureInstanceKHR>,
 }
 
 impl Renderer {
@@ -459,7 +457,6 @@ impl Renderer {
             surface_width: extent.width,
             surface_height: extent.height,
             swapchain_dirty: false,
-            tlas_instances: Vec::new(),
         };
 
         // Write initial descriptor sets.
@@ -932,34 +929,32 @@ impl Renderer {
             )?;
         }
 
-        // Build TLAS instances — each references the correct BLAS for its mesh type.
-        self.tlas_instances.clear();
-        self.tlas_instances.extend(
-            transforms
-                .iter()
-                .zip(instance_ids.iter())
-                .map(|(&t, &packed_id)| {
-                    let shadow_only = packed_id & SHADOW_ONLY_BIT != 0;
-                    let clean_id = packed_id & !SHADOW_ONLY_BIT;
-                    let mesh_type = (clean_id >> 16) as usize;
-                    let blas_address = self.blas_list[mesh_type.min(self.blas_list.len() - 1)].device_address;
-                    let is_water = mesh_type == MESH_WATER as usize;
-                    let mask = if shadow_only { 0x02u8 } else if is_water { 0x04u8 } else { 0xFFu8 };
-                    vk::AccelerationStructureInstanceKHR {
-                        transform: mat4_to_transform(t),
-                        instance_custom_index_and_mask: vk::Packed24_8::new(clean_id, mask),
-                        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                            0,
-                            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-                        ),
-                        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                            device_handle: blas_address,
-                        },
-                    }
-                }),
-        );
+        // Build TLAS instances — write directly into the persistently-mapped
+        // GPU instance buffer, avoiding an intermediate Vec and memcpy.
+        let instance_count = transforms.len();
+        let blas_max = self.blas_list.len() - 1;
+        {
+            let mapped = unsafe { self.tlas.mapped_instances_mut() };
+            let cull_disable_flags = vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8;
+            let sbt_offset = vk::Packed24_8::new(0, cull_disable_flags);
+            for (i, (&t, &packed_id)) in transforms.iter().zip(instance_ids.iter()).enumerate() {
+                let shadow_only = packed_id & SHADOW_ONLY_BIT != 0;
+                let clean_id = packed_id & !SHADOW_ONLY_BIT;
+                let mesh_type = ((clean_id >> 16) as usize).min(blas_max);
+                let is_water = mesh_type == MESH_WATER as usize;
+                let mask = if shadow_only { 0x02u8 } else if is_water { 0x04u8 } else { 0xFFu8 };
+                mapped[i] = vk::AccelerationStructureInstanceKHR {
+                    transform: mat4_to_transform(t),
+                    instance_custom_index_and_mask: vk::Packed24_8::new(clean_id, mask),
+                    instance_shader_binding_table_record_offset_and_flags: sbt_offset,
+                    acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                        device_handle: self.blas_list[mesh_type].device_address,
+                    },
+                };
+            }
+        }
 
-        self.tlas.update(&self.context, cb, &self.tlas_instances);
+        self.tlas.record_build(&self.context, cb, instance_count as u32);
 
         // Trace rays.
         unsafe {

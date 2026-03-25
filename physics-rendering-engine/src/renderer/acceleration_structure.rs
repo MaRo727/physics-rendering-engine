@@ -298,20 +298,25 @@ impl Tlas {
         })
     }
 
-    /// Write new instance transforms and record TLAS build/update into `cb`.
-    pub fn update(
+    /// Return a mutable slice into the persistently-mapped instance buffer.
+    ///
+    /// # Safety
+    /// The returned slice is only valid until the next GPU submit that reads
+    /// the instance buffer. The caller must ensure the GPU is not currently
+    /// reading this memory (e.g. the in-flight fence has been waited on).
+    pub unsafe fn mapped_instances_mut(&mut self) -> &mut [vk::AccelerationStructureInstanceKHR] {
+        unsafe { std::slice::from_raw_parts_mut(self.instance_mapped, self.instance_count as usize) }
+    }
+
+    /// Record a TLAS build/update into `cb` for `count` instances that have
+    /// already been written into [`mapped_instances_mut`].
+    pub fn record_build(
         &mut self,
         context: &VulkanContext,
         cb: vk::CommandBuffer,
-        instances: &[vk::AccelerationStructureInstanceKHR],
+        count: u32,
     ) {
-        assert!(instances.len() <= self.instance_count as usize);
-
-        // Write instances to the persistently-mapped buffer.
-        unsafe {
-            self.instance_mapped
-                .copy_from_nonoverlapping(instances.as_ptr(), instances.len());
-        }
+        assert!(count <= self.instance_count);
 
         // Memory barrier: ensure instance writes are visible before AS build.
         unsafe {
@@ -331,7 +336,6 @@ impl Tlas {
         let instance_address = mesh::get_device_address(&context.device, self.instance_buffer);
         let scratch_address = mesh::get_device_address(&context.device, self.scratch_buffer);
 
-        let count = instances.len() as u32;
         let geometry = make_instance_geometry(instance_address, count);
 
         // UPDATE mode is faster but requires the same primitive count as the
@@ -361,7 +365,7 @@ impl Tlas {
         }
 
         let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(instances.len() as u32);
+            .primitive_count(count);
 
         unsafe {
             context.accel_loader.cmd_build_acceleration_structures(

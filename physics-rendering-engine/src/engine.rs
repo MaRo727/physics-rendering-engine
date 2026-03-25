@@ -578,7 +578,7 @@ impl Engine {
             let (rb, col) = self.physics.add_static_box(pos, half);
             let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
             let entity = Entity::npc(id, body, MESH_CAPSULE, def.scale, 1.5, def.kind as u8);
-            self.world.entities.push(entity);
+            self.world.add_entity(entity);
         }
     }
 
@@ -596,7 +596,7 @@ impl Engine {
             let (rb, col) = physics.add_static_box(Vec3::new(x, y, z), half);
             let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
             let entity = Entity::prop(id, body, mesh, scale, scale.length());
-            world.entities.push(entity);
+            world.add_entity(entity);
         };
 
         // Waystone Circle (Plains, near spawn).
@@ -1666,7 +1666,7 @@ impl Engine {
                 player_melee_mult,
             ) {
                 // Apply damage to hit enemy.
-                if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == hit.entity_id) {
+                if let Some(entity) = self.world.entity_mut(hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
                         let dmg = if self.god_mode { 99999.0 } else { hit.damage };
                         stats.take_damage(dmg);
@@ -1708,7 +1708,7 @@ impl Engine {
                     match result {
                         CastResult::Hit(spell_hit) => {
                             // Ice Shard direct hit.
-                            if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
+                            if let Some(entity) = self.world.entity_mut(spell_hit.entity_id) {
                                 if let Some(ref mut stats) = entity.stats {
                                     let dmg = if self.god_mode { 99999.0 } else { spell_hit.damage };
                                     stats.take_damage(dmg);
@@ -1741,7 +1741,7 @@ impl Engine {
                 &mut self.spell_hit_buf,
             );
             for spell_hit in self.spell_hit_buf.iter() {
-                if let Some(entity) = self.world.entities.iter_mut().find(|e| e.id == spell_hit.entity_id) {
+                if let Some(entity) = self.world.entity_mut(spell_hit.entity_id) {
                     if let Some(ref mut stats) = entity.stats {
                         let dmg = if self.god_mode { 99999.0 } else { spell_hit.damage };
                         stats.take_damage(dmg);

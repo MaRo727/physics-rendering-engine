@@ -156,7 +156,7 @@ pub struct TerrainChunkInfo {
 
 pub struct TerrainGrid {
     heights: Vec<f32>,
-    original_heights: Vec<f32>,
+    original_heights: Option<Vec<f32>>,
     biomes: Vec<Biome>,
     dirty_chunks: Vec<bool>,
 }
@@ -370,13 +370,12 @@ impl TerrainGrid {
             }
         }
 
-        let original_heights = heights.clone();
         let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
         let dirty_chunks = vec![false; num_chunks];
 
         Self {
             heights,
-            original_heights,
+            original_heights: None,
             biomes,
             dirty_chunks,
         }
@@ -467,13 +466,12 @@ impl TerrainGrid {
         file.read_exact(&mut biome_bytes).ok()?;
         let biomes: Vec<Biome> = biome_bytes.iter().map(|&b| u8_to_biome(b)).collect();
 
-        let original_heights = heights.clone();
         let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
         let dirty_chunks = vec![false; num_chunks];
 
         Some(Self {
             heights,
-            original_heights,
+            original_heights: None,
             biomes,
             dirty_chunks,
         })
@@ -493,7 +491,11 @@ impl TerrainGrid {
     fn original_at_grid(&self, gx: i32, gz: i32) -> f32 {
         let col = (gx + GRID_HALF) as usize;
         let row = (gz + GRID_HALF) as usize;
-        self.original_heights[row * GRID_SIZE + col]
+        let idx = row * GRID_SIZE + col;
+        match &self.original_heights {
+            Some(orig) => orig[idx],
+            None => self.heights[idx],
+        }
     }
 
     fn biome_at_grid(&self, gx: i32, gz: i32) -> Biome {
@@ -550,6 +552,10 @@ impl TerrainGrid {
 
     /// Lower terrain within `radius` of `point` by up to `amount` (with linear falloff).
     pub fn deform_ground(&mut self, point: Vec3, radius: f32, amount: f32) {
+        // Lazily snapshot original heights on first deformation.
+        if self.original_heights.is_none() {
+            self.original_heights = Some(self.heights.clone());
+        }
         let step = CELL_SIZE as f32;
         let min_gx = ((point.x - radius) / step).floor() as i32;
         let max_gx = ((point.x + radius) / step).ceil() as i32;
