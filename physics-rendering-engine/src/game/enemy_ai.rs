@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 use crate::game::entity::{Entity, EntityId, EntityKind};
+use crate::game::pathfinding::{self, PathState};
 use crate::physics::body::{ColliderHandle, RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_SLIME, MESH_SKELETON, MESH_GOBLIN, MESH_GOLEM, MESH_ARROW};
-use crate::terrain::Biome;
+use crate::terrain::{Biome, TerrainGrid};
 
 // ---------------------------------------------------------------------------
 // Enemy type definitions
@@ -252,6 +253,15 @@ enum AiState {
     Flee,
 }
 
+/// How often (seconds) to recompute the A* path.
+const PATH_RECOMPUTE_INTERVAL: f32 = 0.8;
+
+/// Waypoint arrival distance — advance to next waypoint when this close.
+const WAYPOINT_ARRIVAL_DIST: f32 = 2.5;
+
+/// Distance threshold: if target is this close, skip pathfinding and move direct.
+const DIRECT_MOVE_DIST: f32 = 6.0;
+
 pub struct EnemyAi {
     pub enemy_type: EnemyType,
     state: AiState,
@@ -260,6 +270,7 @@ pub struct EnemyAi {
     seed: u32,
     spawn_pos: Vec3,
     patrol_target: Vec3,
+    path: PathState,
 }
 
 impl EnemyAi {
@@ -272,6 +283,7 @@ impl EnemyAi {
             seed,
             spawn_pos,
             patrol_target: spawn_pos,
+            path: PathState::new(),
         }
     }
 }
@@ -318,6 +330,7 @@ pub fn update_all(
     player_collider: ColliderHandle,
     dt: f32,
     hits: &mut Vec<EnemyAttackHit>,
+    terrain: &TerrainGrid,
 ) {
     hits.clear();
 
@@ -357,8 +370,10 @@ pub fn update_all(
                 if params.flee_threshold > 0.0 && health_frac < params.flee_threshold && dist < params.deaggro_range {
                     ai.state = AiState::Flee;
                     ai.timer = 3.0 + cheap_rand(&mut ai.seed) * 2.0;
+                    ai.path.clear();
                 } else if dist < params.aggro_range {
                     ai.state = AiState::Chase;
+                    ai.path.clear();
                 } else if ai.timer <= 0.0 {
                     // Pick a random patrol target near spawn.
                     let angle = cheap_rand(&mut ai.seed) * std::f32::consts::TAU;
@@ -378,11 +393,25 @@ pub fn update_all(
                 // Check aggro.
                 if dist < params.aggro_range {
                     ai.state = AiState::Chase;
+                    ai.path.clear();
                 } else if target_dist < 1.0 || ai.timer <= 0.0 {
                     ai.state = AiState::Idle;
                     ai.timer = 1.0 + cheap_rand(&mut ai.seed) * 2.0;
+                    ai.path.clear();
                 } else {
-                    let dir = Vec3::new(to_target.x, 0.0, to_target.z).normalize_or_zero();
+                    // Use pathfinding for patrol movement.
+                    ai.path.recompute_timer -= dt;
+                    if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
+                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, ai.patrol_target) {
+                            ai.path.set(waypoints);
+                        } else {
+                            ai.path.clear();
+                        }
+                        ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL * 2.0;
+                    }
+                    let fallback = Vec3::new(to_target.x, 0.0, to_target.z).normalize_or_zero();
+                    let dir = ai.path.advance_toward(pos, WAYPOINT_ARRIVAL_DIST)
+                        .unwrap_or(fallback);
                     apply_movement(physics, entity, dir, params.move_speed, params.hop_movement, &mut ai.seed, dt);
                 }
             }
@@ -393,19 +422,36 @@ pub fn update_all(
                 if params.flee_threshold > 0.0 && health_frac < params.flee_threshold {
                     ai.state = AiState::Flee;
                     ai.timer = 3.0 + cheap_rand(&mut ai.seed) * 2.0;
+                    ai.path.clear();
                 } else if dist > params.deaggro_range {
                     ai.state = AiState::Idle;
                     ai.timer = 1.0 + cheap_rand(&mut ai.seed) * 1.0;
+                    ai.path.clear();
                 } else if dist < params.attack_range && ai.attack_cooldown <= 0.0 {
                     ai.state = AiState::Attack { windup_remaining: params.attack_windup, has_hit: false };
+                    ai.path.clear();
                 } else {
-                    // Move toward player, but ranged enemies maintain preferred_range.
-                    let dir = if params.is_ranged && dist < params.preferred_range {
-                        -dir_to_player // back away
+                    // Ranged enemies backing away use direct movement.
+                    if params.is_ranged && dist < params.preferred_range {
+                        apply_movement(physics, entity, -dir_to_player, params.chase_speed, params.hop_movement, &mut ai.seed, dt);
+                    } else if dist < DIRECT_MOVE_DIST {
+                        // Close enough — move directly.
+                        apply_movement(physics, entity, dir_to_player, params.chase_speed, params.hop_movement, &mut ai.seed, dt);
                     } else {
-                        dir_to_player
-                    };
-                    apply_movement(physics, entity, dir, params.chase_speed, params.hop_movement, &mut ai.seed, dt);
+                        // Use pathfinding for longer distances.
+                        ai.path.recompute_timer -= dt;
+                        if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
+                            if let Some(waypoints) = pathfinding::find_path(terrain, pos, player_pos) {
+                                ai.path.set(waypoints);
+                            } else {
+                                ai.path.clear();
+                            }
+                            ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL;
+                        }
+                        let dir = ai.path.advance_toward(pos, WAYPOINT_ARRIVAL_DIST)
+                            .unwrap_or(dir_to_player);
+                        apply_movement(physics, entity, dir, params.chase_speed, params.hop_movement, &mut ai.seed, dt);
+                    }
                 }
             }
 
@@ -469,8 +515,22 @@ pub fn update_all(
                 if ai.timer <= 0.0 || dist > params.deaggro_range * 1.5 {
                     ai.state = AiState::Idle;
                     ai.timer = 1.0 + cheap_rand(&mut ai.seed) * 1.0;
+                    ai.path.clear();
                 } else {
-                    let dir = -dir_to_player;
+                    // Pathfind to a point away from the player.
+                    ai.path.recompute_timer -= dt;
+                    if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
+                        let flee_dir = -dir_to_player;
+                        let flee_target = pos + flee_dir * params.deaggro_range;
+                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, flee_target) {
+                            ai.path.set(waypoints);
+                        } else {
+                            ai.path.clear();
+                        }
+                        ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL;
+                    }
+                    let dir = ai.path.advance_toward(pos, WAYPOINT_ARRIVAL_DIST)
+                        .unwrap_or(-dir_to_player);
                     apply_movement(physics, entity, dir, params.flee_speed, params.hop_movement, &mut ai.seed, dt);
                 }
             }

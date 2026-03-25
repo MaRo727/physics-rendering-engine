@@ -9,6 +9,7 @@ pub mod camera;
 pub mod player_model;
 pub mod combat;
 pub mod enemy_ai;
+pub mod pathfinding;
 pub mod spells;
 pub mod quest;
 pub mod npc;

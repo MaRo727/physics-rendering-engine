@@ -1855,6 +1855,7 @@ impl Engine {
                 player_col_handle,
                 dt,
                 &mut self.enemy_hit_buf,
+                &self.terrain,
             );
             // Tick enemy projectiles (arrows).
             enemy_ai::update_projectiles(
