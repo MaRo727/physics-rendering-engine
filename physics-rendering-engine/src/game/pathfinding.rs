@@ -1,6 +1,9 @@
 // A* pathfinding on the 2D terrain heightmap.
 // Enemies query this to navigate around steep slopes and water.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use glam::Vec3;
 
 use crate::terrain::{TerrainGrid, CELL_SIZE};
@@ -46,10 +49,69 @@ struct Node {
     parent: u16, // index into closed list, u16::MAX = no parent
 }
 
+/// Wrapper for BinaryHeap so we get a min-heap ordered by f-score.
+#[derive(Clone, Copy)]
+struct OpenEntry {
+    f: f32,
+    /// Insertion counter for stable tie-breaking (FIFO among equal f).
+    seq: u32,
+    node: Node,
+}
+
+impl PartialEq for OpenEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.f == other.f && self.seq == other.seq
+    }
+}
+impl Eq for OpenEntry {}
+
+impl PartialOrd for OpenEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OpenEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering so BinaryHeap (max-heap) acts as min-heap by f.
+        // On tie, prefer the earlier insertion (lower seq).
+        other.f.partial_cmp(&self.f)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| other.seq.cmp(&self.seq))
+    }
+}
+
+/// Reusable scratch buffers for A* to avoid per-call heap allocations.
+pub struct PathScratch {
+    open: BinaryHeap<OpenEntry>,
+    closed: Vec<Node>,
+    visited: std::collections::HashMap<(i32, i32), f32>,
+}
+
+impl PathScratch {
+    pub fn new() -> Self {
+        Self {
+            open: BinaryHeap::with_capacity(256),
+            closed: Vec::with_capacity(256),
+            visited: std::collections::HashMap::with_capacity(512),
+        }
+    }
+
+    /// Clear all buffers for reuse without deallocating.
+    fn clear(&mut self) {
+        self.open.clear();
+        self.closed.clear();
+        self.visited.clear();
+    }
+}
+
 /// Find a path from `start` to `goal` on the terrain heightmap.
 /// Returns world-space XZ waypoints (Y is filled from terrain height).
 /// The path excludes the start position and includes the goal (or nearest reachable).
-pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>> {
+/// Uses `scratch` buffers to avoid per-call heap allocations.
+pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut PathScratch) -> Option<Vec<Vec3>> {
+    scratch.clear();
+
     let sx = world_to_cell(start.x);
     let sz = world_to_cell(start.z);
     let gx = world_to_cell(goal.x);
@@ -60,18 +122,19 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<V
         return None;
     }
 
-    // Open list (binary heap would be ideal, but a simple sorted vec is fine for bounded search).
-    let mut open: Vec<Node> = Vec::with_capacity(256);
-    let mut closed: Vec<Node> = Vec::with_capacity(256);
-    // Track visited cells to avoid re-expanding. Use a HashMap for sparse grid.
-    let mut visited = std::collections::HashMap::<(i32, i32), f32>::with_capacity(512);
+    let open = &mut scratch.open;
+    let closed = &mut scratch.closed;
+    let visited = &mut scratch.visited;
+    let mut seq: u32 = 0;
 
-    open.push(Node {
+    let start_node = Node {
         cx: sx, cz: sz,
         g: 0.0,
         f: heuristic(sx, sz, gx, gz),
         parent: u16::MAX,
-    });
+    };
+    open.push(OpenEntry { f: start_node.f, seq, node: start_node });
+    seq += 1;
     visited.insert((sx, sz), 0.0);
 
     // 8-directional neighbors (dx, dz, cost_multiplier).
@@ -82,19 +145,12 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<V
 
     let mut best_node_idx: Option<usize> = None; // closest to goal if we can't reach it
 
-    while !open.is_empty() {
+    while let Some(entry) = open.pop() {
         if closed.len() >= MAX_OPEN {
             break;
         }
 
-        // Find node with lowest f in open list.
-        let mut best = 0;
-        for i in 1..open.len() {
-            if open[i].f < open[best].f {
-                best = i;
-            }
-        }
-        let current = open.swap_remove(best);
+        let current = entry.node;
         let current_idx = closed.len() as u16;
         closed.push(current);
 
@@ -112,7 +168,7 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<V
 
         // Goal reached?
         if current.cx == gx && current.cz == gz {
-            return Some(reconstruct(&closed, current_idx as usize, terrain));
+            return Some(reconstruct(closed, current_idx as usize, terrain));
         }
 
         let cur_h = terrain.height_at_world(cell_to_world(current.cx), cell_to_world(current.cz));
@@ -160,12 +216,14 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<V
 
             visited.insert((nx, nz), ng);
             let nf = ng + heuristic(nx, nz, gx, gz);
-            open.push(Node {
+            let new_node = Node {
                 cx: nx, cz: nz,
                 g: ng,
                 f: nf,
                 parent: current_idx,
-            });
+            };
+            open.push(OpenEntry { f: nf, seq, node: new_node });
+            seq += 1;
         }
     }
 
@@ -173,7 +231,7 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> Option<Vec<V
     if let Some(bi) = best_node_idx {
         let dist_from_start = heuristic(closed[bi].cx, closed[bi].cz, sx, sz);
         if dist_from_start > 2.0 {
-            return Some(reconstruct(&closed, bi, terrain));
+            return Some(reconstruct(closed, bi, terrain));
         }
     }
     None
@@ -270,11 +328,12 @@ fn line_walkable(a: Vec3, b: Vec3, terrain: &TerrainGrid) -> bool {
 // Path storage for enemy AI
 // ---------------------------------------------------------------------------
 
-/// Per-enemy path state.
+/// Per-enemy path state with reusable A* scratch buffers.
 pub struct PathState {
     pub waypoints: Vec<Vec3>,
     pub current_idx: usize,
     pub recompute_timer: f32,
+    pub scratch: PathScratch,
 }
 
 impl PathState {
@@ -283,6 +342,7 @@ impl PathState {
             waypoints: Vec::new(),
             current_idx: 0,
             recompute_timer: 0.0,
+            scratch: PathScratch::new(),
         }
     }
 

@@ -402,7 +402,7 @@ pub fn update_all(
                     // Use pathfinding for patrol movement.
                     ai.path.recompute_timer -= dt;
                     if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
-                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, ai.patrol_target) {
+                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, ai.patrol_target, &mut ai.path.scratch) {
                             ai.path.set(waypoints);
                         } else {
                             ai.path.clear();
@@ -441,7 +441,7 @@ pub fn update_all(
                         // Use pathfinding for longer distances.
                         ai.path.recompute_timer -= dt;
                         if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
-                            if let Some(waypoints) = pathfinding::find_path(terrain, pos, player_pos) {
+                            if let Some(waypoints) = pathfinding::find_path(terrain, pos, player_pos, &mut ai.path.scratch) {
                                 ai.path.set(waypoints);
                             } else {
                                 ai.path.clear();
@@ -522,7 +522,7 @@ pub fn update_all(
                     if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
                         let flee_dir = -dir_to_player;
                         let flee_target = pos + flee_dir * params.deaggro_range;
-                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, flee_target) {
+                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, flee_target, &mut ai.path.scratch) {
                             ai.path.set(waypoints);
                         } else {
                             ai.path.clear();
