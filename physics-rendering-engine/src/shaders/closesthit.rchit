@@ -75,6 +75,10 @@ void main() {
 
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 
+    // Secondary bounce flag: payload.w < 0 signals reflection/refraction bounce.
+    // Skip expensive shadow rays and point lights for these.
+    bool isBounce = (payload.w < -0.5);
+
     // Emissive torch flame — bright orange diamond, skip shadow/lighting.
     uint TORCH_MESH_TYPE = 42u;
     if (mesh_type == TORCH_MESH_TYPE && color.r > 0.9 && color.g > 0.5 && color.b < 0.3) {
@@ -83,23 +87,28 @@ void main() {
         return;
     }
 
-    // Shadow ray — offset origin along surface normal to avoid self-intersection.
-    vec3 shadowOrigin = hitPos + normal * 0.01;
     vec3 L = normalize(scene.lightDir.xyz);
-    shadowed = 0.0;
-    traceRayEXT(
-        topLevelAS,
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-        0xFF,
-        0,    // sbtRecordOffset
-        1,    // sbtRecordStride
-        1,    // missIndex → shadow.rmiss
-        shadowOrigin,
-        0.001,
-        L,
-        10000.0,
-        1     // payload location
-    );
+
+    // Shadow ray — skip for secondary bounces (reflection/refraction).
+    if (!isBounce) {
+        vec3 shadowOrigin = hitPos + normal * 0.01;
+        shadowed = 0.0;
+        traceRayEXT(
+            topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+            0xFF,
+            0,    // sbtRecordOffset
+            1,    // sbtRecordStride
+            1,    // missIndex → shadow.rmiss
+            shadowOrigin,
+            0.001,
+            L,
+            10000.0,
+            1     // payload location
+        );
+    } else {
+        shadowed = 1.0; // assume lit for bounces
+    }
 
     float NdotL = dot(normal, L);
     // Day/night adaptive lighting.
@@ -113,26 +122,28 @@ void main() {
     float diffuse = max(0.0, NdotL) * mix(1.0, shadowed, shadowStrength);
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 
-    // Point light contributions (capped at 8, skip for secondary ray bounces).
-    uint numLights = min(light_count, 8u);
-    if (numLights > 0u && gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT) {
-        for (uint li = 0u; li < numLights; li++) {
-            PointLight pl = point_lights[li];
-            vec3 toLight = pl.position - hitPos;
-            float dist2 = dot(toLight, toLight);
-            float r2 = pl.radius * pl.radius;
-            if (dist2 > r2) continue;
+    // Point light contributions (skip for secondary bounces).
+    if (!isBounce) {
+        uint numLights = min(light_count, 8u);
+        if (numLights > 0u && gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT) {
+            for (uint li = 0u; li < numLights; li++) {
+                PointLight pl = point_lights[li];
+                vec3 toLight = pl.position - hitPos;
+                float dist2 = dot(toLight, toLight);
+                float r2 = pl.radius * pl.radius;
+                if (dist2 > r2) continue;
 
-            float dist = sqrt(dist2);
-            vec3 L_pt = toLight / dist;
-            float NdotL_pt = max(0.0, dot(normal, L_pt));
+                float dist = sqrt(dist2);
+                vec3 L_pt = toLight / dist;
+                float NdotL_pt = max(0.0, dot(normal, L_pt));
 
-            // Smooth distance attenuation.
-            float atten = 1.0 / (1.0 + dist2 * 0.3);
-            float edge = 1.0 - smoothstep(pl.radius * 0.6, pl.radius, dist);
-            atten *= edge;
+                // Smooth distance attenuation.
+                float atten = 1.0 / (1.0 + dist2 * 0.3);
+                float edge = 1.0 - smoothstep(pl.radius * 0.6, pl.radius, dist);
+                atten *= edge;
 
-            lit += color * pl.color * pl.intensity * NdotL_pt * atten;
+                lit += color * pl.color * pl.intensity * NdotL_pt * atten;
+            }
         }
     }
 
@@ -198,6 +209,7 @@ void main() {
         // --- Reflection ray (skip water instances via mask 0xF9) ---
         vec3 reflDir = reflect(viewDir, normal);
         vec3 reflOrigin = hitPos + normal * 0.05;
+        payload = vec4(0.0, 0.0, 0.0, -1.0); // flag as bounce ray
         traceRayEXT(
             topLevelAS,
             gl_RayFlagsOpaqueEXT,
@@ -220,6 +232,7 @@ void main() {
             fresnel = 1.0;
         } else {
             vec3 refrOrigin = hitPos - normal * 0.05; // offset through surface
+            payload = vec4(0.0, 0.0, 0.0, -1.0); // flag as bounce ray
             traceRayEXT(
                 topLevelAS,
                 gl_RayFlagsOpaqueEXT,

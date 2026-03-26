@@ -299,6 +299,8 @@ pub struct Engine {
     torch_prev: bool,
     /// Reusable per-frame point light buffer.
     frame_point_lights: Vec<GpuPointLight>,
+    /// Time accumulator for fire particle emission (fixed rate).
+    fire_particle_timer: f32,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -534,6 +536,7 @@ impl Engine {
             torches: Vec::new(),
             torch_prev: false,
             frame_point_lights: Vec::new(),
+            fire_particle_timer: 0.0,
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -1980,10 +1983,15 @@ impl Engine {
         // --- Update particles ---
         self.particles.update(dt);
 
-        // Emit fire particles for nearby torches (within 60m of player).
-        for torch in &self.torches {
-            if torch.position.distance_squared(player_pos) < 3600.0 {
-                self.particles.emit_fire(torch.flame_pos, 1);
+        // Emit fire particles for nearby torches at a fixed rate (~20/sec/torch).
+        self.fire_particle_timer += dt;
+        let fire_interval = 1.0 / 20.0;
+        while self.fire_particle_timer >= fire_interval {
+            self.fire_particle_timer -= fire_interval;
+            for torch in &self.torches {
+                if torch.position.distance_squared(player_pos) < 3600.0 {
+                    self.particles.emit_fire(torch.flame_pos, 1);
+                }
             }
         }
 
