@@ -2517,8 +2517,14 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
 
-        // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
+        // Terrain chunks — distance cull + frustum cull in ghost mode.
+        const TERRAIN_CULL_DIST_SQ: f32 = 1500.0 * 1500.0;
         for chunk in &self.terrain_chunks {
+            let dx = chunk.center.x - player_pos.x;
+            let dz = chunk.center.z - player_pos.z;
+            if dx * dx + dz * dz > TERRAIN_CULL_DIST_SQ {
+                continue;
+            }
             if let Some(planes) = ghost_frustum {
                 if !is_sphere_in_frustum(planes, chunk.center, chunk.radius) {
                     continue;
@@ -2553,12 +2559,7 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(leaf.mesh_type, leaf_object_base + (i as u32 & 0xFF)));
         }
 
-        // Grass patches near the player, frustum-culled.
-        self.grass.render_nearby(
-            player_pos, &tree_frustum,
-            wind_strength, wind_dir, weather_time,
-            &mut self.frame_transforms, &mut self.frame_instance_ids,
-        );
+        // Grass and flowers disabled for performance.
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
         // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.
