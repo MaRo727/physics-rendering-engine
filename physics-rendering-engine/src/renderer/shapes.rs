@@ -1454,6 +1454,80 @@ pub fn cactus_small_lod() -> (Vec<Vertex>, Vec<u32>) {
     (v, i)
 }
 
+/// Small leaf shape for tree-punch particles.
+/// Asymmetric oval with a pointed tip and stem — looks like an actual leaf, not a diamond.
+pub fn leaf_particle() -> (Vec<Vertex>, Vec<u32>) {
+    let green = Vec3::new(0.20, 0.52, 0.14);
+    let green_light = Vec3::new(0.26, 0.58, 0.18);
+    let green_tip = Vec3::new(0.28, 0.60, 0.20);
+    let stem = Vec3::new(0.25, 0.40, 0.12);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Leaf shape in XY plane: stem at bottom, widest in lower-mid, tapers to point at top.
+    // 6 verts: stem, two lower-wide points, two upper-narrow points, tip.
+    let base = v.len() as u32;
+    v.push(Vertex { position: Vec3::new(0.0, -0.12, 0.0), normal: Vec3::Z, color: stem });        // 0: stem
+    v.push(Vertex { position: Vec3::new(0.14, 0.04, 0.0), normal: Vec3::Z, color: green });       // 1: right wide
+    v.push(Vertex { position: Vec3::new(0.08, 0.16, 0.0), normal: Vec3::Z, color: green_light }); // 2: right narrow
+    v.push(Vertex { position: Vec3::new(0.0, 0.26, 0.0), normal: Vec3::Z, color: green_tip });    // 3: tip
+    v.push(Vertex { position: Vec3::new(-0.08, 0.16, 0.0), normal: Vec3::Z, color: green_light });// 4: left narrow
+    v.push(Vertex { position: Vec3::new(-0.14, 0.04, 0.0), normal: Vec3::Z, color: green });      // 5: left wide
+    // Fan triangles from stem up one side, then tip fan
+    i.extend_from_slice(&[
+        base, base + 1, base + 2,  // stem -> right wide -> right narrow
+        base, base + 2, base + 3,  // stem -> right narrow -> tip
+        base, base + 3, base + 4,  // stem -> tip -> left narrow
+        base, base + 4, base + 5,  // stem -> left narrow -> left wide
+    ]);
+
+    // Cross-billboard: same shape in YZ plane
+    let base = v.len() as u32;
+    v.push(Vertex { position: Vec3::new(0.0, -0.12, 0.0), normal: Vec3::X, color: stem });
+    v.push(Vertex { position: Vec3::new(0.0, 0.04, 0.14), normal: Vec3::X, color: green });
+    v.push(Vertex { position: Vec3::new(0.0, 0.16, 0.08), normal: Vec3::X, color: green_light });
+    v.push(Vertex { position: Vec3::new(0.0, 0.26, 0.0), normal: Vec3::X, color: green_tip });
+    v.push(Vertex { position: Vec3::new(0.0, 0.16, -0.08), normal: Vec3::X, color: green_light });
+    v.push(Vertex { position: Vec3::new(0.0, 0.04, -0.14), normal: Vec3::X, color: green });
+    i.extend_from_slice(&[
+        base, base + 1, base + 2,
+        base, base + 2, base + 3,
+        base, base + 3, base + 4,
+        base, base + 4, base + 5,
+    ]);
+
+    (v, i)
+}
+
+/// Small chip particle for dead tree and cactus punches.
+/// Two crossed irregular quads with green coloring.
+pub fn bark_chip() -> (Vec<Vertex>, Vec<u32>) {
+    let dark = Vec3::new(0.15, 0.40, 0.10);
+    let light = Vec3::new(0.22, 0.50, 0.15);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Irregular chip shape in XY plane
+    let base = v.len() as u32;
+    v.push(Vertex { position: Vec3::new(-0.08, -0.05, 0.0), normal: Vec3::Z, color: dark });
+    v.push(Vertex { position: Vec3::new(0.10, -0.03, 0.0), normal: Vec3::Z, color: light });
+    v.push(Vertex { position: Vec3::new(0.06, 0.10, 0.0), normal: Vec3::Z, color: dark });
+    v.push(Vertex { position: Vec3::new(-0.06, 0.08, 0.0), normal: Vec3::Z, color: light });
+    i.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+    // Cross quad rotated 90 degrees
+    let base = v.len() as u32;
+    v.push(Vertex { position: Vec3::new(0.0, -0.05, -0.08), normal: Vec3::X, color: dark });
+    v.push(Vertex { position: Vec3::new(0.0, -0.03, 0.10), normal: Vec3::X, color: light });
+    v.push(Vertex { position: Vec3::new(0.0, 0.10, 0.06), normal: Vec3::X, color: dark });
+    v.push(Vertex { position: Vec3::new(0.0, 0.08, -0.06), normal: Vec3::X, color: light });
+    i.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+    (v, i)
+}
+
 /// Rounded hemisphere cap for cactus tops.
 fn add_cactus_cap(
     vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,

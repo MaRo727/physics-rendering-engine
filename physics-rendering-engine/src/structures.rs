@@ -3,7 +3,7 @@ use glam::{Mat4, Vec3, Vec4};
 use crate::renderer::{pack_instance_id, MESH_TREE_OAK, MESH_TREE_PINE, MESH_TREE_DEAD,
     MESH_TREE_OAK_LOD, MESH_TREE_PINE_LOD, MESH_TREE_DEAD_LOD,
     MESH_CACTUS, MESH_CACTUS_SMALL, MESH_CACTUS_LOD, MESH_CACTUS_SMALL_LOD,
-    MESH_GRASS_A, MESH_GRASS_B, MESH_GRASS_C,
+    MESH_GRASS_A, MESH_GRASS_B, MESH_GRASS_C, MESH_LEAF_PARTICLE, MESH_BARK_CHIP,
     MESH_FLOWER_RED, MESH_FLOWER_YELLOW, MESH_FLOWER_BLUE, MESH_FLOWER_WHITE, MESH_FLOWER_PURPLE};
 use crate::terrain::{Biome, TerrainGrid, TERRAIN_HALF, CHUNKS_PER_SIDE};
 
@@ -370,16 +370,18 @@ impl StructureGrid {
 
         self.shakes.push(TreeShake { tree_idx, timer: SHAKE_DURATION });
 
-        // Spawn leaf particles at the tree canopy.
+        // Spawn particles at the canopy (trees) or body (cacti).
         let tree = &self.trees[tree_idx];
-        let canopy_height = match tree.mesh_type {
-            MESH_TREE_OAK => 5.0 * tree.scale.y,
-            MESH_TREE_PINE => 6.0 * tree.scale.y,
-            MESH_TREE_DEAD => 3.0 * tree.scale.y,
-            _ => 5.0 * tree.scale.y,
+        let (particle_height, particle_radius) = match tree.mesh_type {
+            MESH_TREE_OAK => (5.0 * tree.scale.y, 3.0 * tree.scale.x),
+            MESH_TREE_PINE => (6.0 * tree.scale.y, 3.0 * tree.scale.x),
+            MESH_TREE_DEAD => (3.0 * tree.scale.y, 2.0 * tree.scale.x),
+            MESH_CACTUS => (2.0 * tree.scale.y, 0.8 * tree.scale.x),
+            MESH_CACTUS_SMALL => (1.2 * tree.scale.y, 0.5 * tree.scale.x),
+            _ => (5.0 * tree.scale.y, 3.0 * tree.scale.x),
         };
-        let canopy_center = tree.position + Vec3::new(0.0, canopy_height, 0.0);
-        let canopy_radius = 3.0 * tree.scale.x;
+        let canopy_center = tree.position + Vec3::new(0.0, particle_height, 0.0);
+        let canopy_radius = particle_radius;
 
         let mut h = seed;
         for _ in 0..LEAF_COUNT {
@@ -398,11 +400,9 @@ impl StructureGrid {
 
             let pos = canopy_center + Vec3::new(angle.cos() * r, (hash_f32(h) - 0.5) * 1.0, angle.sin() * r);
 
-            // Use grass mesh types for leaf look
-            let mesh = if tree.mesh_type == MESH_TREE_DEAD {
-                MESH_GRASS_C // brownish for dead trees
-            } else {
-                MESH_GRASS_A
+            let mesh = match tree.mesh_type {
+                MESH_TREE_DEAD | MESH_CACTUS | MESH_CACTUS_SMALL => MESH_BARK_CHIP,
+                _ => MESH_LEAF_PARTICLE,
             };
 
             self.leaf_particles.push(LeafParticle {
@@ -543,7 +543,7 @@ impl StructureGrid {
                         position: pos,
                         velocity: Vec3::new(vx, vy, vz),
                         lifetime: LEAF_LIFETIME + life_extra * 1.0,
-                        mesh_type: if mesh_roll > 0.5 { MESH_GRASS_A } else { MESH_GRASS_B },
+                        mesh_type: MESH_LEAF_PARTICLE,
                         scale: 0.12 + scale_extra * 0.08,
                         rotation_y: rot,
                     });
