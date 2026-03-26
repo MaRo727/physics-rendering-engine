@@ -475,8 +475,8 @@ impl Engine {
             tree_rbs: data.tree_rbs,
             tree_punch_seed: 12345,
             player_derived: StatBlock::new_player().compute_derived(&StatBonuses::default()),
-            frame_transforms: Vec::new(),
-            frame_instance_ids: Vec::new(),
+            frame_transforms: Vec::with_capacity(max_instances as usize),
+            frame_instance_ids: Vec::with_capacity(max_instances as usize),
             buoyancy_bodies: Vec::new(),
             dead_ids: Vec::new(),
             despawn_ids: Vec::new(),
@@ -1485,9 +1485,8 @@ impl Engine {
 
             // --- Handle item pickup ---
             if let Some(drop_id) = interaction_result.picked_up_item {
-                // Get position for particles before removing.
-                let pickup_pos = self.world.entities.iter()
-                    .find(|e| e.id == drop_id)
+                // Get position for particles before removing (O(1) via index map).
+                let pickup_pos = self.world.entity(drop_id)
                     .map(|e| self.physics.body_position(e.body.rigid_body));
                 if self.world.pickup_item(drop_id) {
                     if let Some(entity) = self.world.remove_by_id(drop_id) {
@@ -1771,9 +1770,8 @@ impl Engine {
                 // Grab enemy type before removing.
                 let enemy_type = self.enemy_ais.get(&dead_id).map(|ai| ai.enemy_type);
 
-                // Get enemy position for death particles before removing.
-                let death_pos = self.world.entities.iter()
-                    .find(|e| e.id == dead_id)
+                // Get enemy position for death particles before removing (O(1) via index map).
+                let death_pos = self.world.entity(dead_id)
                     .map(|e| self.physics.body_position(e.body.rigid_body));
 
                 if let Some(entity) = self.world.remove_by_id(dead_id) {
