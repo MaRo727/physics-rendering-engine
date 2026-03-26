@@ -162,25 +162,30 @@ void main() {
         }
 
         // --- Detail ripple normals (animated multi-octave sine waves) ---
+        // Reduce octaves at distance to save ALU.
+        float waterDist = gl_HitTEXT;
         vec2 wp = hitPos.xz;
         float dx = 0.0, dz = 0.0;
 
-        // Octave 1: broad gentle swells
+        // Octave 1: broad gentle swells (always)
         dx += 0.025 * 0.5 * cos(wp.x * 0.5 + wTime * 0.8) * cos(wp.y * 0.3 + wTime * 0.5);
         dz += 0.025 * (-0.3) * sin(wp.x * 0.5 + wTime * 0.8) * sin(wp.y * 0.3 + wTime * 0.5);
 
-        // Octave 2: medium ripples
+        // Octave 2: medium ripples (always)
         float phase2 = wp.x * 1.5 - wTime * 1.2 + wp.y * 0.8;
         dx += 0.015 * 1.5 * cos(phase2);
         dz += 0.015 * 0.8 * cos(phase2);
 
-        // Octave 3: small detail ripples
-        dx += 0.006 * 3.0 * cos(wp.x * 3.0 + wTime * 2.5) * cos(wp.y * 2.8 - wTime * 1.8);
-        dz += 0.006 * (-2.8) * sin(wp.x * 3.0 + wTime * 2.5) * sin(wp.y * 2.8 - wTime * 1.8);
-
-        // Octave 4: tiny sparkle ripples
-        dx += 0.003 * 6.0 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
-        dz += 0.003 * 4.5 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
+        if (waterDist < 150.0) {
+            // Octave 3: small detail ripples
+            dx += 0.006 * 3.0 * cos(wp.x * 3.0 + wTime * 2.5) * cos(wp.y * 2.8 - wTime * 1.8);
+            dz += 0.006 * (-2.8) * sin(wp.x * 3.0 + wTime * 2.5) * sin(wp.y * 2.8 - wTime * 1.8);
+        }
+        if (waterDist < 80.0) {
+            // Octave 4: tiny sparkle ripples
+            dx += 0.003 * 6.0 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
+            dz += 0.003 * 4.5 * cos(wp.x * 6.0 - wTime * 3.5 + wp.y * 4.5);
+        }
 
         // Wind-driven ripple bias
         float windPhase = dot(wp, windDir) * 2.0 * windStr;
@@ -199,9 +204,9 @@ void main() {
         // Mask 0xF8: skip detail geometry (bit 0), shadow-only (bit 1), water (bit 2).
         vec3 reflDir = reflect(viewDir, normal);
         // Skip reflection trace when Fresnel contribution is negligible
-        // (looking mostly downward at water). Saves 2 rays per pixel.
+        // or water is far away — use sky approximation instead.
         vec3 reflColor;
-        if (fresnel > 0.08) {
+        if (fresnel > 0.08 && waterDist < 200.0) {
             vec3 reflOrigin = hitPos + normal * 0.05;
             traceRayEXT(
                 topLevelAS,
@@ -228,7 +233,7 @@ void main() {
             // Total internal reflection (underwater at grazing angles).
             refrColor = reflColor;
             fresnel = 1.0;
-        } else {
+        } else if (waterDist < 200.0) {
             vec3 refrOrigin = hitPos - normal * 0.05; // offset through surface
             traceRayEXT(
                 topLevelAS,
@@ -246,6 +251,9 @@ void main() {
             float waterDepth = max(0.0, abs(hitPos.y - refrHitPos.y));
             vec3 absorption = exp(-vec3(0.4, 0.1, 0.05) * waterDepth);
             refrColor *= absorption;
+        } else {
+            // Far water: approximate with deep water body color.
+            refrColor = vec3(0.04, 0.12, 0.18) * scene.lightColor.w;
         }
 
         // --- Sun specular ---
