@@ -215,6 +215,9 @@ pub struct Engine {
     god_prev: bool,
     show_debug_ui: bool,
     debug_ui_prev: bool,
+    /// Rolling frame time buffer for FPS display.
+    frame_times: [f32; 60],
+    frame_time_idx: usize,
     show_inventory: bool,
     inventory_prev: bool,
     mute_prev: bool,
@@ -463,6 +466,8 @@ impl Engine {
             god_prev: false,
             show_debug_ui: false,
             debug_ui_prev: false,
+            frame_times: [0.016; 60],
+            frame_time_idx: 0,
             show_inventory: false,
             inventory_prev: false,
             mute_prev: false,
@@ -1324,6 +1329,10 @@ impl Engine {
     }
 
     pub fn update(&mut self, dt: f32, input: &InputState) {
+        // Track frame times for FPS display.
+        self.frame_times[self.frame_time_idx] = dt;
+        self.frame_time_idx = (self.frame_time_idx + 1) % self.frame_times.len();
+
         // --- Main menu ---
         if self.game_state == GameState::MainMenu {
             self.update_menu(input);
@@ -2962,10 +2971,31 @@ impl Engine {
             let line_h = cell + 2.0;
 
             let panel_w = 22.0 * cell + 16.0;
-            let panel_h = 7.0 * line_h + 12.0;
+            let panel_h = 10.0 * line_h + 12.0;
             self.ui.panel(ox - 6.0, oy - 6.0, panel_w, panel_h);
 
             let white = [0.9, 0.9, 0.9, 1.0];
+
+            // Performance metrics.
+            let avg_dt: f32 = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+            let avg_fps = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
+            let avg_ms = avg_dt * 1000.0;
+            let fps_color = if avg_fps >= 55.0 { [0.3, 0.9, 0.3, 1.0] }
+                            else if avg_fps >= 30.0 { [0.9, 0.8, 0.2, 1.0] }
+                            else { [0.9, 0.2, 0.2, 1.0] };
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "FPS: {:.0}  ({:.1}ms)", avg_fps, avg_ms);
+            self.ui.text(ox, oy, &self.hud_buf, scale, fps_color);
+
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "INST: {}  PART: {}", self.frame_transforms.len(), self.particles.count());
+            self.ui.text(ox, oy + line_h, &self.hud_buf, scale, [0.7, 0.7, 0.7, 1.0]);
+
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "TORCH: {}", self.torches.len());
+            self.ui.text(ox, oy + 2.0 * line_h, &self.hud_buf, scale, [0.7, 0.7, 0.7, 1.0]);
+
+            let perf_offset = 3.0; // lines used by perf section
 
             let biome_name = match biome_id as u32 {
                 0 => "PLAINS",
@@ -2981,15 +3011,16 @@ impl Engine {
                 3 => [0.7, 0.7, 0.9, 1.0],
                 _ => [0.6, 0.4, 0.7, 1.0],
             };
-            self.ui.text(ox, oy, "BIOME: ", scale, white);
-            self.ui.text(ox + 7.0 * cell, oy, biome_name, scale, biome_color);
+            let dy = perf_offset;
+            self.ui.text(ox, oy + dy * line_h, "BIOME: ", scale, white);
+            self.ui.text(ox + 7.0 * cell, oy + dy * line_h, biome_name, scale, biome_color);
 
             self.hud_buf.clear();
             let _ = write!(self.hud_buf, "LEVEL: {}", level as u32);
-            self.ui.text(ox, oy + line_h, &self.hud_buf, scale, white);
+            self.ui.text(ox, oy + (dy + 1.0) * line_h, &self.hud_buf, scale, white);
 
             self.ui.labelled_bar(
-                ox, oy + 2.0 * line_h,
+                ox, oy + (dy + 2.0) * line_h,
                 "HP:  ", bar_w, bar_h, hp_frac,
                 white,
                 [0.8, 0.2, 0.2, 1.0],
@@ -2997,7 +3028,7 @@ impl Engine {
                 scale,
             );
             self.ui.labelled_bar(
-                ox, oy + 3.0 * line_h,
+                ox, oy + (dy + 3.0) * line_h,
                 "MANA:", bar_w, bar_h, mana_frac,
                 white,
                 [0.2, 0.3, 0.9, 1.0],
@@ -3005,7 +3036,7 @@ impl Engine {
                 scale,
             );
             self.ui.labelled_bar(
-                ox, oy + 4.0 * line_h,
+                ox, oy + (dy + 4.0) * line_h,
                 "STAM:", bar_w, bar_h, stam_frac,
                 white,
                 [0.2, 0.8, 0.3, 1.0],
@@ -3015,7 +3046,7 @@ impl Engine {
 
             self.hud_buf.clear();
             let _ = write!(self.hud_buf, "POS: {} {}", player_pos.x as i32, player_pos.z as i32);
-            self.ui.text(ox, oy + 5.0 * line_h, &self.hud_buf, scale, [0.8, 0.8, 0.8, 1.0]);
+            self.ui.text(ox, oy + (dy + 5.0) * line_h, &self.hud_buf, scale, [0.8, 0.8, 0.8, 1.0]);
 
             let weather_name = match self.weather.kind {
                 crate::weather::WeatherKind::Clear => "CLEAR",
@@ -3033,8 +3064,8 @@ impl Engine {
                 crate::weather::WeatherKind::Fog => [0.6, 0.65, 0.7, 1.0],
                 crate::weather::WeatherKind::Windy => [0.5, 0.9, 0.7, 1.0],
             };
-            self.ui.text(ox, oy + 6.0 * line_h, "WEATHER: ", scale, white);
-            self.ui.text(ox + 9.0 * cell, oy + 6.0 * line_h, weather_name, scale, weather_color);
+            self.ui.text(ox, oy + (dy + 6.0) * line_h, "WEATHER: ", scale, white);
+            self.ui.text(ox + 9.0 * cell, oy + (dy + 6.0) * line_h, weather_name, scale, weather_color);
         }
 
         // -- Minimap (top-right corner) --
