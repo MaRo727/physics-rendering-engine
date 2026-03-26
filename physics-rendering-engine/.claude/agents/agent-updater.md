@@ -18,8 +18,8 @@ Review the latest commit and determine if any agent definition files in this pro
    |---|---|
    | New module or major file restructure | `add-feature.md`, `architecture-review.md`, `structure-review.md` |
    | Milestone feature completed or new RPG system | `milestone-status.md`, `ideabot.md` |
-   | New shader stages or rendering pipeline changes | `shader-check.md`, `perf-check.md` |
-   | New performance-critical system or hot-path change | `perf-check.md` |
+   | New shader stages or rendering pipeline changes | `shader-check.md`, `perf-check.md`, `perf-fix.md` |
+   | New performance-critical system or hot-path change | `perf-check.md`, `perf-fix.md` |
    | Architecture boundary rule changes | `architecture-review.md`, `add-feature.md` |
    | Build system or tooling changes | `build-and-test.md` |
    | New combat, AI, or gameplay mechanic | `ideabot.md` |
