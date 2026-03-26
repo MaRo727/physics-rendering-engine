@@ -460,6 +460,23 @@ impl Renderer {
         let ui1 = create_ui_buffer(&context)?;
         let ui_buffers = [ui0, ui1];
 
+        // Upload static font bitmap data once into every UI buffer so that
+        // the per-frame `upload_ui` only needs to write the header + primitives.
+        {
+            let font = ui::font_gpu_data();
+            let font_offset = std::mem::size_of::<ui::UiHeader>();
+            let font_bytes = 192 * std::mem::size_of::<u32>();
+            for buf in &ui_buffers {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        font.as_ptr() as *const u8,
+                        buf.mapped.add(font_offset),
+                        font_bytes,
+                    );
+                }
+            }
+        }
+
         let pl0 = create_point_light_buffer(&context)?;
         let pl1 = create_point_light_buffer(&context)?;
         let point_light_buffers = [pl0, pl1];
@@ -630,6 +647,8 @@ impl Renderer {
 
     /// Upload UI primitives for the current frame.
     /// Must be called before `draw_frame`.
+    /// Font bitmap data is written once at init; only the header and dynamic
+    /// primitives are memcpy'd here.
     pub fn upload_ui(&mut self, prims: &[ui::UiPrimitive], screen_w: u32, screen_h: u32) {
         let fi = self.current_frame;
         let buf = &self.ui_buffers[fi];
@@ -642,8 +661,6 @@ impl Renderer {
             _pad: 0,
         };
 
-        let font = ui::font_gpu_data();
-
         unsafe {
             let dst = buf.mapped;
             // Header (16 bytes).
@@ -652,16 +669,13 @@ impl Renderer {
                 dst,
                 std::mem::size_of::<ui::UiHeader>(),
             );
-            // Font data (768 bytes).
-            let font_dst = dst.add(std::mem::size_of::<ui::UiHeader>());
-            std::ptr::copy_nonoverlapping(
-                font.as_ptr() as *const u8,
-                font_dst,
-                192 * std::mem::size_of::<u32>(),
-            );
+            // Font data lives at a fixed offset and was written once at init —
+            // skip it here.
             // Primitives.
             if count > 0 {
-                let prim_dst = font_dst.add(192 * std::mem::size_of::<u32>());
+                let prim_dst = dst.add(
+                    std::mem::size_of::<ui::UiHeader>() + 192 * std::mem::size_of::<u32>(),
+                );
                 std::ptr::copy_nonoverlapping(
                     prims.as_ptr() as *const u8,
                     prim_dst,
@@ -804,30 +818,32 @@ impl Renderer {
 
     /// Update terrain chunk mesh data with partial GPU buffer writes.
     /// Batches all chunk copies into a single command buffer, then rebuilds only dirty BLASes.
+    /// Takes ownership of `updates` so vertex/index data can be moved into
+    /// `base_mesh_data` without cloning.
     pub fn update_terrain_chunks(
         &mut self,
-        updates: &[(usize, Vec<mesh::Vertex>, Vec<u32>)],
+        updates: Vec<(usize, Vec<mesh::Vertex>, Vec<u32>)>,
     ) -> Result<()> {
         // GPU-side pipeline barriers in the batched staging copy ensure safe
         // synchronization with any in-flight frames — no CPU stall needed.
 
-        // Batch all chunk copies into one command submission.
-        let batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> = updates
-            .iter()
-            .map(|(chunk_idx, verts, indices)| {
-                let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
-                (&self.sub_mesh_infos[mesh_idx], verts.as_slice(), indices.as_slice())
-            })
-            .collect();
-        self.mesh.update_regions_batched(&self.context, &batch)?;
-
-        // Rebuild only dirty BLASes and keep CPU data in sync.
-        for (chunk_idx, verts, indices) in updates {
+        // Build batch references into the owned updates (pre-allocated, no resize).
+        let mut batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> =
+            Vec::with_capacity(updates.len());
+        for (chunk_idx, verts, indices) in &updates {
             let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
+            batch.push((&self.sub_mesh_infos[mesh_idx], verts.as_slice(), indices.as_slice()));
+        }
+        self.mesh.update_regions_batched(&self.context, &batch)?;
+        drop(batch);
+
+        // Rebuild only dirty BLASes and move CPU data in sync (no clone).
+        for (chunk_idx, verts, indices) in updates {
+            let mesh_idx = SHAPE_MESH_COUNT + chunk_idx;
             self.blas_list[mesh_idx].destroy(&self.context);
             self.blas_list[mesh_idx] =
                 Blas::from_range(&self.context, &self.mesh, &self.sub_mesh_infos[mesh_idx])?;
-            self.base_mesh_data[mesh_idx] = (verts.clone(), indices.clone());
+            self.base_mesh_data[mesh_idx] = (verts, indices);
         }
 
         Ok(())

@@ -603,16 +603,16 @@ impl TerrainGrid {
         }
     }
 
-    /// Returns indices of dirty chunks and clears the dirty flags.
-    pub fn take_dirty_chunks(&mut self) -> Vec<usize> {
-        let mut dirty = Vec::new();
+    /// Appends indices of dirty chunks to `out` and clears the dirty flags.
+    /// The caller should reuse `out` across frames to avoid per-frame allocation.
+    pub fn drain_dirty_chunks(&mut self, out: &mut Vec<usize>) {
+        out.clear();
         for (i, d) in self.dirty_chunks.iter_mut().enumerate() {
             if *d {
-                dirty.push(i);
+                out.push(i);
                 *d = false;
             }
         }
-        dirty
     }
 
     pub fn has_dirty_chunks(&self) -> bool {

@@ -252,6 +252,8 @@ pub struct Engine {
     buoyancy_bodies: Vec<(rapier3d::prelude::RigidBodyHandle, f32)>,
     dead_ids: Vec<(u32, u32)>,
     despawn_ids: Vec<u32>,
+    // Reusable dirty-chunk index buffer (avoid per-frame heap allocs).
+    dirty_chunk_buf: Vec<usize>,
     // Reusable hit-result buffers (avoid per-frame heap allocs).
     enemy_hit_buf: Vec<EnemyAttackHit>,
     arrow_hit_buf: Vec<EnemyAttackHit>,
@@ -504,6 +506,7 @@ impl Engine {
             buoyancy_bodies: Vec::new(),
             dead_ids: Vec::new(),
             despawn_ids: Vec::new(),
+            dirty_chunk_buf: Vec::new(),
             enemy_hit_buf: Vec::new(),
             arrow_hit_buf: Vec::new(),
             spell_hit_buf: Vec::new(),
@@ -2121,13 +2124,13 @@ impl Engine {
 
     /// Rebuild terrain chunk meshes, BLASes, and physics heightfield for dirty chunks.
     fn rebuild_dirty_terrain(&mut self) {
-        let dirty = self.terrain.take_dirty_chunks();
-        if dirty.is_empty() {
+        self.terrain.drain_dirty_chunks(&mut self.dirty_chunk_buf);
+        if self.dirty_chunk_buf.is_empty() {
             return;
         }
 
         // Regenerate chunk meshes.
-        let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> = dirty
+        let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> = self.dirty_chunk_buf
             .iter()
             .map(|&idx| {
                 let (verts, indices) = self.terrain.regenerate_chunk(idx);
@@ -2136,14 +2139,14 @@ impl Engine {
             .collect();
 
         // Update renderer (GPU mesh + BLASes).
-        if let Err(e) = self.renderer.update_terrain_chunks(&updates) {
+        if let Err(e) = self.renderer.update_terrain_chunks(updates) {
             log::error!("Failed to update terrain chunks: {}", e);
         }
 
         // Update only the dirty chunks' physics heightfields.
         let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
         let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
-        for &idx in &dirty {
+        for &idx in &self.dirty_chunk_buf {
             let (heights, nrows, ncols, _cx, _cz) = self.terrain.chunk_heightfield_data(idx);
             self.physics.update_heightfield_chunk(
                 self.terrain_chunk_cols[idx],
