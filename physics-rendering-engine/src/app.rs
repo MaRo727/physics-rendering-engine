@@ -143,6 +143,7 @@ impl ApplicationHandler for App {
                         self.input.editor_save = pressed;
                     }
                     PhysicalKey::Code(KeyCode::F10) => self.input.editor_load = pressed,
+                    PhysicalKey::Code(KeyCode::F11) => self.input.toggle_perf = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
                     PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
                     PhysicalKey::Code(KeyCode::KeyT) => self.input.place_torch = pressed,

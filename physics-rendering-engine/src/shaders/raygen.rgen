@@ -121,6 +121,8 @@ void main() {
     vec4 target    = scene.invProj * vec4(ndc, 1.0, 1.0);
     vec4 direction = scene.invView * vec4(normalize(target.xyz / target.w), 0.0);
 
+    bool perfMode = scene.blizzardInfo.w > 0.5;
+
     payload = vec4(0.0);
 
     traceRayEXT(
@@ -150,8 +152,9 @@ void main() {
     }
 
     // Volumetric 3D snowflakes — sample world-space positions along the ray.
+    // Skipped in performance mode (expensive: 24 hash samples per pixel).
     float snowIntensity = scene.blizzardInfo.x;
-    if (snowIntensity > 0.01) {
+    if (snowIntensity > 0.01 && !perfMode) {
         float time = scene.blizzardInfo.y;
         vec3 rayDir = normalize(direction.xyz);
         vec3 rayOrig = origin.xyz;
@@ -197,8 +200,9 @@ void main() {
     }
 
     // Volumetric rain streaks — thin vertical lines sampling world-space positions.
+    // Skipped in performance mode (expensive: 28 hash samples per pixel).
     float rainIntensity = scene.weatherInfo.x;
-    if (rainIntensity > 0.01) {
+    if (rainIntensity > 0.01 && !perfMode) {
         float wTime = scene.windInfo.w;
         float windStr = scene.windInfo.x;
         float windDirX = scene.windInfo.y;
@@ -258,9 +262,11 @@ void main() {
         payload.xyz = mix(payload.xyz, vec3(1.0, 0.98, 0.95), lightningFlash * 0.3);
     }
 
-    // Crosshair overlay.
-    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-    ivec2 center = ivec2(gl_LaunchSizeEXT.xy) / 2;
+    // Map render-resolution pixel to native screen coords for UI hit-testing.
+    // When render scale < 1.0, gl_LaunchSizeEXT is smaller than the native
+    // surface but UI primitives are positioned in native coordinates.
+    ivec2 pixel = ivec2(vec2(gl_LaunchIDEXT.xy) * vec2(ui.screen_w, ui.screen_h) / vec2(gl_LaunchSizeEXT.xy));
+    ivec2 center = ivec2(ui.screen_w, ui.screen_h) / 2;
     ivec2 d = abs(pixel - center);
     int thickness = 1;
     int gap = 3;

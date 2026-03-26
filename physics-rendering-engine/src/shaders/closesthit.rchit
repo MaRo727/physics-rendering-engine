@@ -46,6 +46,8 @@ layout(set = 0, binding = 7, std430) readonly buffer PointLightBuf {
 hitAttributeEXT vec2 attribs;
 
 void main() {
+    bool perfMode = scene.blizzardInfo.w > 0.5;
+
     // Decode mesh_type (upper 8 bits) and object_id (lower 16 bits).
     uint mesh_type = gl_InstanceCustomIndexEXT >> 16u;
     uint object_id = gl_InstanceCustomIndexEXT & 0xFFFFu;
@@ -113,8 +115,8 @@ void main() {
     float diffuse = max(0.0, NdotL) * mix(1.0, shadowed, shadowStrength);
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
 
-    // Point light contributions (capped at 8).
-    uint numLights = min(light_count, 8u);
+    // Point light contributions (capped at 8, or 4 in performance mode).
+    uint numLights = min(light_count, perfMode ? 4u : 8u);
     if (numLights > 0u && gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT) {
         for (uint li = 0u; li < numLights; li++) {
             PointLight pl = point_lights[li];
@@ -136,10 +138,10 @@ void main() {
         }
     }
 
-    // Underwater caustics on submerged terrain.
+    // Underwater caustics on submerged terrain (skipped in perf mode).
     float waterLevel = scene.blizzardInfo.z;
     uint WATER_MESH_TYPE = 6u;
-    if (hitPos.y < waterLevel && mesh_type != WATER_MESH_TYPE) {
+    if (hitPos.y < waterLevel && mesh_type != WATER_MESH_TYPE && !perfMode) {
         float wTimeCaustic = scene.windInfo.w;
         float depth = waterLevel - hitPos.y;
         float caustStrength = exp(-depth * 0.08);
@@ -206,7 +208,7 @@ void main() {
         // Skip reflection trace when Fresnel contribution is negligible
         // or water is far away — use sky approximation instead.
         vec3 reflColor;
-        if (fresnel > 0.08 && waterDist < 200.0) {
+        if (!perfMode && fresnel > 0.08 && waterDist < 200.0) {
             vec3 reflOrigin = hitPos + normal * 0.05;
             traceRayEXT(
                 topLevelAS,
@@ -233,7 +235,7 @@ void main() {
             // Total internal reflection (underwater at grazing angles).
             refrColor = reflColor;
             fresnel = 1.0;
-        } else if (waterDist < 200.0) {
+        } else if (!perfMode && waterDist < 200.0) {
             vec3 refrOrigin = hitPos - normal * 0.05; // offset through surface
             traceRayEXT(
                 topLevelAS,

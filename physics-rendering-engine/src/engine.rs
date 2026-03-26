@@ -241,6 +241,8 @@ pub struct Engine {
     weather: Weather,
     weather_debug_active: bool,
     weather_prev: bool,
+    perf_mode: bool,
+    perf_prev: bool,
     wind_leaf_timer: f32,
     tree_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     tree_punch_seed: u32,
@@ -497,6 +499,8 @@ impl Engine {
             weather: Weather::new(42),
             weather_debug_active: false,
             weather_prev: false,
+            perf_mode: false,
+            perf_prev: false,
             wind_leaf_timer: 0.0,
             tree_rbs: data.tree_rbs,
             tree_punch_seed: 12345,
@@ -1413,6 +1417,14 @@ impl Engine {
             log::info!("Weather debug: {:?} (active={})", self.weather.kind, self.weather_debug_active);
         }
         self.weather_prev = input.toggle_weather;
+
+        // --- Performance mode toggle (F11) ---
+        if input.toggle_perf && !self.perf_prev {
+            self.perf_mode = !self.perf_mode;
+            self.renderer.set_render_scale(if self.perf_mode { 0.5 } else { 1.0 });
+            log::info!("Performance mode: {}", self.perf_mode);
+        }
+        self.perf_prev = input.toggle_perf;
 
         // --- Debug UI toggle (F3) ---
         if input.toggle_debug_ui && !self.debug_ui_prev {
@@ -2363,7 +2375,8 @@ impl Engine {
         let player_vp = render_proj * render_view;
         let debug_info = Vec4::ZERO;
         let debug_info2 = Vec4::ZERO;
-        let blizzard_info = Vec4::new(0.0, 0.0, WATER_LEVEL, 0.0);
+        let perf_flag = if self.perf_mode { 1.0 } else { 0.0 };
+        let blizzard_info = Vec4::new(0.0, 0.0, WATER_LEVEL, perf_flag);
         let weather_info = Vec4::ZERO;
         let wind_info = Vec4::ZERO;
         self.renderer.upload_point_lights(&[]);
@@ -2517,18 +2530,17 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
 
-        // Terrain chunks — distance cull + frustum cull in ghost mode.
-        const TERRAIN_CULL_DIST_SQ: f32 = 1500.0 * 1500.0;
+        // Terrain chunks — distance cull + always frustum cull.
+        // In a ray tracer, off-screen chunks cannot contribute to primary rays.
+        let terrain_cull_dist_sq: f32 = if self.perf_mode { 750.0 * 750.0 } else { 1500.0 * 1500.0 };
         for chunk in &self.terrain_chunks {
             let dx = chunk.center.x - player_pos.x;
             let dz = chunk.center.z - player_pos.z;
-            if dx * dx + dz * dz > TERRAIN_CULL_DIST_SQ {
+            if dx * dx + dz * dz > terrain_cull_dist_sq {
                 continue;
             }
-            if let Some(planes) = ghost_frustum {
-                if !is_sphere_in_frustum(planes, chunk.center, chunk.radius) {
-                    continue;
-                }
+            if !is_sphere_in_frustum(&frustum_planes, chunk.center, chunk.radius) {
+                continue;
             }
             self.frame_transforms.push(Mat4::IDENTITY);
             self.frame_instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
@@ -2680,7 +2692,8 @@ impl Engine {
         // Simplest: add a second vec4 for moon.
         let moon_info = Vec4::new(moon_dir.x, moon_dir.y, moon_dir.z, moon_altitude);
 
-        let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, WATER_LEVEL, 0.0);
+        let perf_flag = if self.perf_mode { 1.0 } else { 0.0 };
+        let blizzard_info = Vec4::new(self.snow_intensity, self.snow_time, WATER_LEVEL, perf_flag);
 
         let (wd_x, wd_z) = self.weather.wind_dir();
         let weather_info = Vec4::new(
@@ -2905,6 +2918,11 @@ impl Engine {
         let sw = self.surface_width as f32;
         let sh = self.surface_height as f32;
         self.ui.begin_frame(sw, sh);
+
+        // Performance mode indicator (top-right).
+        if self.perf_mode {
+            self.ui.text(sw - 80.0, 8.0, "PERF", 2.0, [1.0, 0.6, 0.2, 0.8]);
+        }
 
         let scale = 2.0;
         let cell = 8.0 * scale;

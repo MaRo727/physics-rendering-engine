@@ -20,6 +20,7 @@ layout(set = 0, binding = 2) uniform SceneUBO {
 } scene;
 
 void main() {
+    bool perfMode = scene.blizzardInfo.w > 0.5;
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
 
     float sunAlt = scene.sunMoon.w;
@@ -105,8 +106,8 @@ void main() {
         }
     }
 
-    // --- Stars at night ---
-    if (nightness > 0.1 && y > 0.0) {
+    // --- Stars at night (skipped in perf mode) ---
+    if (nightness > 0.1 && y > 0.0 && !perfMode) {
         // Hash based on quantized direction for stable stars.
         // Use spherical coordinates for uniform distribution.
         float theta = atan(dir.z, dir.x); // -PI to PI
@@ -138,9 +139,15 @@ void main() {
         vec3 overcastColor = mix(overcastNight, overcastDay, dayFactor);
 
         // Procedural cloud-like noise variation using ray direction.
+        // Simplified to constant in perf mode.
         float wTime = scene.windInfo.w;
-        float cloudNoise = fract(sin(dot(dir.xz * 8.0 + vec2(wTime * 0.02), vec2(127.1, 311.7))) * 43758.5453);
-        float cloudVar = 0.85 + cloudNoise * 0.15;
+        float cloudVar;
+        if (perfMode) {
+            cloudVar = 1.0;
+        } else {
+            float cloudNoise = fract(sin(dot(dir.xz * 8.0 + vec2(wTime * 0.02), vec2(127.1, 311.7))) * 43758.5453);
+            cloudVar = 0.85 + cloudNoise * 0.15;
+        }
 
         // Blend: more clouds = more gray sky, mostly above horizon.
         float aboveHorizon = smoothstep(-0.05, 0.3, y);

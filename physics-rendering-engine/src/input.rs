@@ -38,6 +38,7 @@ pub struct InputState {
     pub editor_unbake: bool,         // U — unbake selected group back to cells
     pub editor_color_slot: Option<u8>, // 1-9 number keys
     pub place_torch: bool,              // T — place a torch
+    pub toggle_perf: bool,              // F11 — toggle performance mode
     pub scroll_delta: f32,           // Mouse wheel scroll
     pub mouse_dx: f32,
     pub mouse_dy: f32,
@@ -80,6 +81,7 @@ impl Default for InputState {
             editor_next_group: false,
             editor_unbake: false,
             place_torch: false,
+            toggle_perf: false,
             editor_color_slot: None,
             scroll_delta: 0.0,
             mouse_dx: 0.0,

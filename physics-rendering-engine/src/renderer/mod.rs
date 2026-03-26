@@ -332,6 +332,7 @@ pub struct Renderer {
     surface_width: u32,
     surface_height: u32,
     swapchain_dirty: bool,
+    render_scale: f32,
 }
 
 impl Renderer {
@@ -542,6 +543,7 @@ impl Renderer {
             surface_width: extent.width,
             surface_height: extent.height,
             swapchain_dirty: false,
+            render_scale: 1.0,
         };
 
         // Write initial descriptor sets.
@@ -645,6 +647,11 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = scale;
+        self.swapchain_dirty = true;
+    }
+
     /// Upload UI primitives for the current frame.
     /// Must be called before `draw_frame`.
     /// Font bitmap data is written once at init; only the header and dynamic
@@ -724,7 +731,10 @@ impl Renderer {
         unsafe { self.context.device.device_wait_idle()? };
 
         self.swapchain.recreate(&self.context, self.surface_width, self.surface_height)?;
-        self.extent = self.swapchain.extent;
+        self.extent = vk::Extent2D {
+            width: ((self.swapchain.extent.width as f32 * self.render_scale) as u32).max(1),
+            height: ((self.swapchain.extent.height as f32 * self.render_scale) as u32).max(1),
+        };
 
         // Recreate storage image at new size.
         unsafe {
