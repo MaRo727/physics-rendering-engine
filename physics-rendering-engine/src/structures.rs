@@ -25,7 +25,11 @@ pub struct TreeInstance {
     pub position: Vec3,
     pub mesh_type: u32,
     pub scale: Vec3,
+    #[allow(dead_code)]
     pub rotation_y: f32,
+    /// Pre-computed static transform: translation * rotation_y (without scale).
+    /// Scale is applied separately so sway/shake are inserted between rotation and scale.
+    base_transform_no_scale: Mat4,
 }
 
 /// A leaf particle spawned when a tree is punched.
@@ -146,12 +150,16 @@ impl StructureGrid {
                     let scale_factor = 0.8 + hash_f32(h.wrapping_add(3)) * 0.6;
                     let rotation_y = hash_f32(h.wrapping_add(4)) * std::f32::consts::TAU;
 
+                    let pos = Vec3::new(jx, height, jz);
+                    let base_transform_no_scale = Mat4::from_translation(pos)
+                        * Mat4::from_rotation_y(rotation_y);
                     let tree_idx = trees.len();
                     trees.push(TreeInstance {
-                        position: Vec3::new(jx, height, jz),
+                        position: pos,
                         mesh_type,
                         scale: Vec3::splat(scale_factor),
                         rotation_y,
+                        base_transform_no_scale,
                     });
 
                     // Bucket by chunk.
@@ -263,25 +271,30 @@ impl StructureGrid {
                     let total_sway_x = sway_x + wind_dir.0 * wind_bias;
                     let total_sway_z = sway_z + wind_dir.1 * wind_bias;
 
-                    let mut transform = Mat4::from_translation(tree.position)
-                        * Mat4::from_rotation_y(tree.rotation_y);
-                    // Apply wind sway using small-angle rotation matrix approximation.
-                    // For small angles a, b: Rx(a)*Rz(b) ≈ [[1, -b, 0], [b, 1, -a], [0, a, 1]].
-                    if total_sway_x.abs() > 0.0001 || total_sway_z.abs() > 0.0001 {
-                        let a = total_sway_z; // rotation about X
-                        let b = total_sway_x; // rotation about Z
-                        let sway_mat = Mat4::from_cols(
-                            Vec4::new(1.0, b, 0.0, 0.0),
-                            Vec4::new(-b, 1.0, a, 0.0),
-                            Vec4::new(a * b, -a, 1.0, 0.0),
-                            Vec4::new(0.0, 0.0, 0.0, 1.0),
-                        );
-                        transform = transform * sway_mat;
-                    }
-                    if shake != 0.0 {
-                        transform = transform * Mat4::from_rotation_z(shake);
-                    }
-                    transform = transform * Mat4::from_scale(tree.scale);
+                    // Start from pre-computed base (translation * rotation_y).
+                    // Apply sway and shake dynamically, then scale last.
+                    let has_sway = total_sway_x.abs() > 0.0001 || total_sway_z.abs() > 0.0001;
+                    let transform = if has_sway || shake != 0.0 {
+                        let mut t = tree.base_transform_no_scale;
+                        if has_sway {
+                            let a = total_sway_z; // rotation about X
+                            let b = total_sway_x; // rotation about Z
+                            // Small-angle combined Rx(a)*Rz(b) matrix.
+                            let sway_mat = Mat4::from_cols(
+                                Vec4::new(1.0, b, 0.0, 0.0),
+                                Vec4::new(-b, 1.0, a, 0.0),
+                                Vec4::new(a * b, -a, 1.0, 0.0),
+                                Vec4::new(0.0, 0.0, 0.0, 1.0),
+                            );
+                            t = t * sway_mat;
+                        }
+                        if shake != 0.0 {
+                            t = t * Mat4::from_rotation_z(shake);
+                        }
+                        t * Mat4::from_scale(tree.scale)
+                    } else {
+                        tree.base_transform_no_scale * Mat4::from_scale(tree.scale)
+                    };
                     transforms.push(transform);
                     instance_ids.push(pack_instance_id(mesh, TREE_OBJECT_ID));
                 }
@@ -595,10 +608,14 @@ const MAX_STRANDS_PER_PATCH: u32 = 16000;
 const MIN_STRANDS_PER_PATCH: u32 = 4000;
 
 struct GrassStrand {
-    position: Vec3,
     mesh_type: u32,
+    /// Pre-computed static transform: translation * rotation_y (without scale).
+    /// Sway is applied between rotation and scale at render time.
+    base_transform_no_scale: Mat4,
+    /// Pre-computed full static transform: translation * rotation_y * scale.
+    /// Used when there is no sway (wind off).
+    base_transform_full: Mat4,
     scale: Vec3,
-    rotation_y: f32,
 }
 
 /// Metadata for a grass patch (used for coarse frustum culling of the whole cluster).
@@ -762,11 +779,17 @@ impl GrassGrid {
                     let scale_factor = (0.5 + hash_f32(sh4) * 0.7) * edge_factor;
                     let rotation_y = hash_f32(sh5) * std::f32::consts::TAU;
 
+                    let strand_pos = Vec3::new(strand_x, strand_height, strand_z);
+                    let strand_scale = Vec3::splat(scale_factor);
+                    let base_transform_no_scale = Mat4::from_translation(strand_pos)
+                        * Mat4::from_rotation_y(rotation_y);
+                    let base_transform_full = base_transform_no_scale
+                        * Mat4::from_scale(strand_scale);
                     strands.push(GrassStrand {
-                        position: Vec3::new(strand_x, strand_height, strand_z),
                         mesh_type,
-                        scale: Vec3::splat(scale_factor),
-                        rotation_y,
+                        base_transform_no_scale,
+                        base_transform_full,
+                        scale: strand_scale,
                     });
                 }
 
@@ -813,7 +836,6 @@ impl GrassGrid {
     ) {
         let half = TERRAIN_HALF as f32;
         let render_dist = GRASS_RENDER_DISTANCE;
-        let render_dist_sq = render_dist * render_dist;
 
         let min_cx = ((player_pos.x - render_dist + half) / CHUNK_WORLD_SIZE)
             .floor().max(0.0) as usize;
@@ -886,24 +908,26 @@ impl GrassGrid {
                     };
 
                     // Render individual strands within this patch.
+                    // Per-strand distance check is removed: patch-level distance + frustum
+                    // culling above already limits visibility. The patch bounding sphere
+                    // (with generous 1.4x margin) ensures no strands outside render range
+                    // are drawn.
                     let (start, end) = patch.strand_range;
-                    for strand in &self.strands[start..end] {
-                        let sdx = strand.position.x - player_pos.x;
-                        let sdz = strand.position.z - player_pos.z;
-                        if sdx * sdx + sdz * sdz > render_dist_sq {
-                            continue;
+                    if let Some((_a, _b, ref sway_mat)) = patch_sway_mat {
+                        // Sway active: insert sway between rotation and scale.
+                        for strand in &self.strands[start..end] {
+                            let transform = strand.base_transform_no_scale
+                                * *sway_mat
+                                * Mat4::from_scale(strand.scale);
+                            transforms.push(transform);
+                            instance_ids.push(pack_instance_id(strand.mesh_type, GRASS_OBJECT_ID));
                         }
-
-                        let mut transform = Mat4::from_translation(strand.position)
-                            * Mat4::from_rotation_y(strand.rotation_y);
-
-                        if let Some((_a, _b, ref sway_mat)) = patch_sway_mat {
-                            transform = transform * *sway_mat;
+                    } else {
+                        // No sway: use fully pre-computed transform directly.
+                        for strand in &self.strands[start..end] {
+                            transforms.push(strand.base_transform_full);
+                            instance_ids.push(pack_instance_id(strand.mesh_type, GRASS_OBJECT_ID));
                         }
-
-                        transform = transform * Mat4::from_scale(strand.scale);
-                        transforms.push(transform);
-                        instance_ids.push(pack_instance_id(strand.mesh_type, GRASS_OBJECT_ID));
                     }
                 }
             }
