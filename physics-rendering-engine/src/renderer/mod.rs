@@ -596,6 +596,7 @@ impl Renderer {
     /// Wait for all in-flight frames to finish on the GPU.
     /// Much cheaper than device_wait_idle() — only waits on our frame fences
     /// rather than flushing all driver-internal state.
+    #[allow(dead_code)]
     fn wait_all_frames(&self) -> Result<()> {
         let fences: Vec<_> = self.frames.iter().map(|f| f.in_flight).collect();
         unsafe {
@@ -669,10 +670,10 @@ impl Renderer {
         let new_idx_count = building_indices.len() as u32;
 
         // Fast path: fits within existing allocation.
+        // GPU-side pipeline barriers in the staging copy ensure safe synchronization
+        // with any in-flight frames — no need to stall the CPU with wait_all_frames().
         if let Some((vert_cap, idx_cap)) = self.building_capacity {
             if new_vert_count <= vert_cap && new_idx_count <= idx_cap {
-                self.wait_all_frames()?;
-
                 let info = &self.sub_mesh_infos[self.base_mesh_count];
                 self.mesh.update_region(&self.context, info, building_verts, building_indices)?;
 
@@ -706,7 +707,8 @@ impl Renderer {
         &mut self,
         updates: &[(usize, Vec<mesh::Vertex>, Vec<u32>)],
     ) -> Result<()> {
-        self.wait_all_frames()?;
+        // GPU-side pipeline barriers in the batched staging copy ensure safe
+        // synchronization with any in-flight frames — no CPU stall needed.
 
         // Batch all chunk copies into one command submission.
         let batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> = updates
