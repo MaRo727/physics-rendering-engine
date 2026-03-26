@@ -195,7 +195,8 @@ void main() {
         float NdotV = max(0.0, dot(normal, -viewDir));
         float fresnel = min(0.02 + 0.98 * pow(1.0 - NdotV, 5.0), 0.7);
 
-        // --- Reflection ray (skip water instances via mask 0xF9) ---
+        // --- Reflection ray ---
+        // Mask 0xF8: skip detail geometry (bit 0), shadow-only (bit 1), water (bit 2).
         vec3 reflDir = reflect(viewDir, normal);
         // Skip reflection trace when Fresnel contribution is negligible
         // (looking mostly downward at water). Saves 2 rays per pixel.
@@ -205,9 +206,9 @@ void main() {
             traceRayEXT(
                 topLevelAS,
                 gl_RayFlagsOpaqueEXT,
-                0xF9, // skip shadow-only (bit 1) and water (bit 2)
+                0xF8, // skip detail, shadow-only, water
                 0, 1, 0,
-                reflOrigin, 0.01, reflDir, 10000.0,
+                reflOrigin, 0.01, reflDir, 200.0,
                 0
             );
             reflColor = payload.xyz;
@@ -217,7 +218,7 @@ void main() {
                         * scene.lightColor.w;
         }
 
-        // --- Refraction ray (see-through water) ---
+        // --- Refraction ray ---
         // IOR: air-to-water = 1/1.33, water-to-air = 1.33/1.0
         float eta = underwater ? 1.33 : (1.0 / 1.33);
         vec3 refrDir = refract(viewDir, normal, eta);
@@ -232,9 +233,9 @@ void main() {
             traceRayEXT(
                 topLevelAS,
                 gl_RayFlagsOpaqueEXT,
-                0xF9, // skip shadow-only and water
+                0xF8, // skip detail, shadow-only, water
                 0, 1, 0,
-                refrOrigin, 0.01, refrDir, 10000.0,
+                refrOrigin, 0.01, refrDir, 200.0,
                 0
             );
             float refrHitDist = payload.w;

@@ -1050,7 +1050,15 @@ impl Renderer {
                 let clean_id = packed_id & !SHADOW_ONLY_BIT;
                 let mesh_type = ((clean_id >> 16) as usize).min(blas_max);
                 let is_water = mesh_type == MESH_WATER as usize;
-                let mask = if shadow_only { 0x02u8 } else if is_water { 0x04u8 } else { 0xFFu8 };
+                // Detail geometry (grass, flowers, LOD billboards, particles):
+                // mask 0x01 so water bounce rays (mask 0xF8) skip them.
+                let is_detail = matches!(mesh_type,
+                    11..=21 | 38 | 39 | 40 | 41
+                );
+                let mask = if shadow_only { 0x02u8 }
+                           else if is_water { 0x04u8 }
+                           else if is_detail { 0x01u8 }
+                           else { 0xFFu8 };
                 mapped[i] = vk::AccelerationStructureInstanceKHR {
                     transform: mat4_to_transform(t),
                     instance_custom_index_and_mask: vk::Packed24_8::new(clean_id, mask),
