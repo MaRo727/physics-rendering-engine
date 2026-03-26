@@ -302,8 +302,12 @@ pub struct Engine {
     torch_prev: bool,
     /// Reusable per-frame point light buffer.
     frame_point_lights: Vec<GpuPointLight>,
+    /// Reusable per-frame torch distance buffer (avoids allocation each frame).
+    frame_torch_dists: Vec<(usize, f32)>,
     /// Time accumulator for fire particle emission (fixed rate).
     fire_particle_timer: f32,
+    /// Cached player biome from update(), reused in render() to avoid redundant lookups.
+    cached_player_biome: Biome,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -541,7 +545,9 @@ impl Engine {
             torches: Vec::new(),
             torch_prev: false,
             frame_point_lights: Vec::new(),
+            frame_torch_dists: Vec::new(),
             fire_particle_timer: 0.0,
+            cached_player_biome: Biome::Plains,
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -1988,6 +1994,9 @@ impl Engine {
 
         // Player position after physics step — used by weather, quests, audio, minimap, etc.
         let player_pos = self.physics.body_position(self.player_rb);
+        // Cache biome lookup once per frame (used by weather, audio, and render).
+        let player_biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
+        self.cached_player_biome = player_biome;
 
         // --- Update particles ---
         self.particles.update(dt);
@@ -2005,10 +2014,7 @@ impl Engine {
         }
 
         // --- Update weather system ---
-        {
-            let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
-            self.weather.update(dt, biome);
-        }
+        self.weather.update(dt, player_biome);
 
         // --- Update tree shake + leaf particles (wind-affected) ---
         let wind_dir = self.weather.wind_dir();
@@ -2105,12 +2111,11 @@ impl Engine {
 
         // --- Audio: update music and footsteps based on player biome ---
         if let Some(audio) = &mut self.audio {
-            let biome = self.terrain.biome_at_world(player_pos.x, player_pos.z);
-            audio.update(dt, biome, None);
+            audio.update(dt, player_biome, None);
 
             let vel = self.physics.body_linvel_xz(self.player_rb);
             let horizontal_speed = (vel.x * vel.x + vel.z * vel.z).sqrt();
-            audio.update_footsteps(dt, biome, horizontal_speed, self.player_on_ground);
+            audio.update_footsteps(dt, player_biome, horizontal_speed, self.player_on_ground);
         }
     }
 
@@ -2410,11 +2415,15 @@ impl Engine {
         self.frame_transforms.clear();
         self.frame_instance_ids.clear();
 
+        // Pre-compute view-projection matrix and frustum planes once for reuse.
+        let vp = cull_proj * cull_view;
+        let frustum_planes = extract_frustum_planes(vp);
+
         // In ghost mode, frustum-cull to the frozen camera so only visible
         // geometry appears.  In normal mode, skip culling so off-screen
         // entities can still cast shadows.
         let ghost_frustum = if self.ghost.active {
-            Some(extract_frustum_planes(cull_proj * cull_view))
+            Some(&frustum_planes)
         } else {
             None
         };
@@ -2424,7 +2433,7 @@ impl Engine {
             if entity.kind == EntityKind::Player { continue; }
 
             let pos = self.physics.body_position(entity.body.rigid_body);
-            if let Some(ref planes) = ghost_frustum {
+            if let Some(planes) = ghost_frustum {
                 if !is_sphere_in_frustum(planes, pos, entity.bounding_radius) {
                     continue;
                 }
@@ -2507,7 +2516,7 @@ impl Engine {
 
         // Terrain chunks — cull in ghost mode, include all otherwise for shadows.
         for chunk in &self.terrain_chunks {
-            if let Some(ref planes) = ghost_frustum {
+            if let Some(planes) = ghost_frustum {
                 if !is_sphere_in_frustum(planes, chunk.center, chunk.radius) {
                     continue;
                 }
@@ -2518,7 +2527,7 @@ impl Engine {
 
         // Trees near the player, frustum-culled to the player camera
         // (in ghost mode, use the frozen player frustum like terrain chunks).
-        let tree_frustum = extract_frustum_planes(cull_proj * cull_view);
+        let tree_frustum = frustum_planes;
         let wind_dir = self.weather.wind_dir();
         let wind_strength = self.weather.wind_strength;
         let weather_time = self.weather.weather_time;
@@ -2561,7 +2570,7 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
         }
 
-        let player_vp = cull_proj * cull_view;
+        let player_vp = vp;
 
         let pry_progress = self.interaction.pry_progress();
         let tool_type = match self.interaction.equipped_tool {
@@ -2573,7 +2582,7 @@ impl Engine {
         };
 
         // Debug overlay data.
-        let biome_id = match self.terrain.biome_at_world(player_pos.x, player_pos.z) {
+        let biome_id = match self.cached_player_biome {
             crate::terrain::Biome::Plains => 0.0,
             crate::terrain::Biome::Forest => 1.0,
             crate::terrain::Biome::Desert => 2.0,
@@ -2699,13 +2708,15 @@ impl Engine {
         self.frame_point_lights.clear();
         let time = self.water_time;
         let cam_pos = if self.ghost.active { self.ghost.eye } else { self.camera.eye };
-        // Collect distances for sorting.
-        let mut torch_dists: Vec<(usize, f32)> = self.torches.iter().enumerate()
-            .map(|(i, t)| (i, t.flame_pos.distance_squared(cam_pos)))
-            .filter(|(_, d2)| *d2 < 60.0 * 60.0) // within 60m
-            .collect();
-        torch_dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        for &(idx, _) in torch_dists.iter().take(8) {
+        // Collect distances for sorting (reuse buffer to avoid per-frame allocation).
+        self.frame_torch_dists.clear();
+        self.frame_torch_dists.extend(
+            self.torches.iter().enumerate()
+                .map(|(i, t)| (i, t.flame_pos.distance_squared(cam_pos)))
+                .filter(|(_, d2)| *d2 < 60.0 * 60.0) // within 60m
+        );
+        self.frame_torch_dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        for &(idx, _) in self.frame_torch_dists.iter().take(8) {
             let torch = &self.torches[idx];
             let flicker = 0.9 + 0.1 * (time * 8.0 + torch.position.x * 1.7).sin();
             self.frame_point_lights.push(GpuPointLight {
