@@ -202,6 +202,11 @@ pub struct Tlas {
     /// Frames since last full BUILD. Periodic rebuilds prevent BVH quality
     /// degradation from instance reordering caused by frustum culling.
     frames_since_build: u32,
+    /// The active instance count from the previous frame. Used to avoid
+    /// redundantly re-deactivating unused slots that were already cleared.
+    /// Initialized to `capacity` so that the first frame after allocation
+    /// fills all unused slots (uninitialized memory).
+    prev_active_count: u32,
 }
 
 // SAFETY: only accessed from the render thread.
@@ -303,6 +308,7 @@ impl Tlas {
             has_been_built: false,
             shrink_frames: 0,
             frames_since_build: 0,
+            prev_active_count: instance_count,
         })
     }
 
@@ -373,15 +379,24 @@ impl Tlas {
         // Sequential writes to write-combined mapped memory are fast; the
         // previous round-robin approach did N reads from WC memory which was
         // orders of magnitude slower over PCIe.
-        if count < self.capacity {
+        //
+        // Optimization: only clear slots that transitioned from active to
+        // unused since last frame. Slots beyond `prev_active_count` were
+        // already deactivated in a prior frame and don't need re-writing.
+        // On the first frame after allocation, `prev_active_count` equals
+        // `capacity`, so all unused slots `[count..capacity]` are filled
+        // (the buffer contains uninitialized memory).
+        let clear_end = self.prev_active_count;
+        if count < clear_end {
             unsafe {
                 let mut template = *self.instance_mapped;
                 template.instance_custom_index_and_mask = vk::Packed24_8::new(0, 0);
-                for i in count as usize..self.capacity as usize {
+                for i in count as usize..clear_end as usize {
                     std::ptr::write(self.instance_mapped.add(i), template);
                 }
             }
         }
+        self.prev_active_count = count;
 
         // Memory barrier: ensure instance writes are visible before AS build.
         unsafe {
