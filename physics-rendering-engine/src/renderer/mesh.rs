@@ -191,8 +191,27 @@ impl Mesh {
             context.device.unmap_memory(staging_mem);
         }
 
-        // Single command buffer for all copies.
+        // Single command buffer for all copies, with barriers to synchronize
+        // with any in-flight ray tracing / AS build reads.
         super::acceleration_structure::one_shot(context, |cb| unsafe {
+            // Barrier: wait for in-flight RT shader / AS build reads before transfer.
+            let pre_barrier = vk::MemoryBarrier::default()
+                .src_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                )
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+            context.device.cmd_pipeline_barrier(
+                cb,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
+                    | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[pre_barrier],
+                &[],
+                &[],
+            );
+
             if !vert_copies.is_empty() {
                 context
                     .device
@@ -203,6 +222,24 @@ impl Mesh {
                     .device
                     .cmd_copy_buffer(cb, staging, self.index_buffer, &idx_copies);
             }
+
+            // Barrier: make transfer writes visible to subsequent AS builds / RT reads.
+            let post_barrier = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                );
+            context.device.cmd_pipeline_barrier(
+                cb,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                    | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::DependencyFlags::empty(),
+                &[post_barrier],
+                &[],
+                &[],
+            );
         })?;
 
         unsafe {
@@ -254,6 +291,25 @@ fn copy_to_device_region<T: Copy>(
     }
 
     super::acceleration_structure::one_shot(context, |cb| unsafe {
+        // Barrier: wait for any in-flight ray tracing / AS build reads to finish
+        // before we overwrite the buffer region with a transfer write.
+        let pre_barrier = vk::MemoryBarrier::default()
+            .src_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            )
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        context.device.cmd_pipeline_barrier(
+            cb,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
+                | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[pre_barrier],
+            &[],
+            &[],
+        );
+
         context.device.cmd_copy_buffer(
             cb,
             staging,
@@ -263,6 +319,25 @@ fn copy_to_device_region<T: Copy>(
                 dst_offset,
                 size,
             }],
+        );
+
+        // Barrier: make the transfer writes visible to subsequent AS builds
+        // and ray tracing shader reads.
+        let post_barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            );
+        context.device.cmd_pipeline_barrier(
+            cb,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                | vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::DependencyFlags::empty(),
+            &[post_barrier],
+            &[],
+            &[],
         );
     })?;
 
