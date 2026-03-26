@@ -26,6 +26,12 @@ pub struct TreeInstance {
     pub mesh_type: u32,
     pub scale: Vec3,
     pub rotation_y: f32,
+    /// Precomputed wind-phase trig values for the four sway frequencies.
+    /// `phase = position.x * 0.13 + position.z * 0.17`.
+    /// Stores `[(sin(phase), cos(phase)), (sin(1.3*phase), cos(1.3*phase)),
+    ///          (sin(0.7*phase), cos(0.7*phase)), (sin(1.1*phase), cos(1.1*phase))]`.
+    /// Eliminates 8 trig calls per visible tree each frame.
+    phase_sc: [(f32, f32); 4],
 }
 
 /// A leaf particle spawned when a tree is punched.
@@ -147,11 +153,17 @@ impl StructureGrid {
                     let rotation_y = hash_f32(h.wrapping_add(4)) * std::f32::consts::TAU;
 
                     let tree_idx = trees.len();
+                    let phase = jx * 0.13 + jz * 0.17;
+                    let sc0 = phase.sin_cos();
+                    let sc1 = (phase * 1.3).sin_cos();
+                    let sc2 = (phase * 0.7).sin_cos();
+                    let sc3 = (phase * 1.1).sin_cos();
                     trees.push(TreeInstance {
                         position: Vec3::new(jx, height, jz),
                         mesh_type,
                         scale: Vec3::splat(scale_factor),
                         rotation_y,
+                        phase_sc: [sc0, sc1, sc2, sc3],
                     });
 
                     // Bucket by chunk.
@@ -238,21 +250,8 @@ impl StructureGrid {
                     let shake = self.shake_angle(tree_idx);
 
                     // Wind sway: use angle-addition identity sin(A+B) = sinA cosB + cosA sinB
-                    // to derive per-tree sway from precomputed base trig values + per-tree phase.
-                    let phase = tree.position.x * 0.13 + tree.position.z * 0.17;
-                    let (sp, cp) = (phase.sin(), phase.cos());
-                    let (sp13, cp13) = {
-                        let p13 = phase * 1.3;
-                        (p13.sin(), p13.cos())
-                    };
-                    let (sp07, cp07) = {
-                        let p07 = phase * 0.7;
-                        (p07.sin(), p07.cos())
-                    };
-                    let (sp11, cp11) = {
-                        let p11 = phase * 1.1;
-                        (p11.sin(), p11.cos())
-                    };
+                    // to derive per-tree sway from precomputed base trig values + precomputed per-tree phase.
+                    let [(sp, cp), (sp13, cp13), (sp07, cp07), (sp11, cp11)] = tree.phase_sc;
 
                     // sin(time*f + phase*k) = base_sin_f * cos(phase*k) + base_cos_f * sin(phase*k)
                     let sway_x = (base_sin_1_2 * cp + base_cos_1_2 * sp) * sway_amount
@@ -598,7 +597,9 @@ struct GrassStrand {
     position: Vec3,
     mesh_type: u32,
     scale: Vec3,
-    rotation_y: f32,
+    /// Precomputed `(sin(rotation_y), cos(rotation_y))`.
+    /// Eliminates per-strand sin/cos in the render loop (thousands of calls per frame).
+    rot_sin_cos: (f32, f32),
 }
 
 /// Metadata for a grass patch (used for coarse frustum culling of the whole cluster).
@@ -606,6 +607,12 @@ struct PatchInfo {
     center: Vec3,
     radius: f32,
     strand_range: (usize, usize), // index range into strands vec
+    /// Precomputed wind-phase trig for the three sway frequencies.
+    /// `phase = center.x * 0.37 + center.z * 0.53`.
+    /// Stores `[(sin(phase), cos(phase)), (sin(1.7*phase), cos(1.7*phase)),
+    ///          (sin(2.3*phase), cos(2.3*phase))]`.
+    /// Eliminates 6 trig calls per visible patch each frame.
+    phase_sc: [(f32, f32); 3],
 }
 
 pub struct GrassGrid {
@@ -766,7 +773,7 @@ impl GrassGrid {
                         position: Vec3::new(strand_x, strand_height, strand_z),
                         mesh_type,
                         scale: Vec3::splat(scale_factor),
-                        rotation_y,
+                        rot_sin_cos: rotation_y.sin_cos(),
                     });
                 }
 
@@ -777,10 +784,15 @@ impl GrassGrid {
 
                 let patch_idx = patches.len();
                 let cull_radius = base_radius * aspect.max(1.0) * 1.4; // generous for wobble
+                let phase = cx * 0.37 + cz * 0.53;
+                let sc0 = phase.sin_cos();
+                let sc1 = (phase * 1.7).sin_cos();
+                let sc2 = (phase * 2.3).sin_cos();
                 patches.push(PatchInfo {
                     center: Vec3::new(cx, center_height, cz),
                     radius: cull_radius,
                     strand_range: (strand_start, strand_end),
+                    phase_sc: [sc0, sc1, sc2],
                 });
 
                 // Bucket the patch by its center chunk.
@@ -859,13 +871,10 @@ impl GrassGrid {
                         continue;
                     }
 
-                    // Precompute per-patch wind sway using the patch center position.
+                    // Precompute per-patch wind sway using precomputed phase trig.
                     // Individual strands add cheap linear variation on top of this.
                     let patch_sway_mat = if sway_enabled {
-                        let phase = patch.center.x * 0.37 + patch.center.z * 0.53;
-                        let (sp, cp) = (phase.sin(), phase.cos());
-                        let (sp17, cp17) = { let p = phase * 1.7; (p.sin(), p.cos()) };
-                        let (sp23, cp23) = { let p = phase * 2.3; (p.sin(), p.cos()) };
+                        let [(sp, cp), (sp17, cp17), (sp23, cp23)] = patch.phase_sc;
                         // sin(base + phase*k) via angle-addition identity
                         let sway = sway_scale
                             * ((base_sin_2_5 * cp + base_cos_2_5 * sp)
@@ -894,8 +903,15 @@ impl GrassGrid {
                             continue;
                         }
 
-                        let mut transform = Mat4::from_translation(strand.position)
-                            * Mat4::from_rotation_y(strand.rotation_y);
+                        // Build rotation-Y matrix from precomputed sin/cos (avoids trig per strand).
+                        let (s, c) = strand.rot_sin_cos;
+                        let rot_y = Mat4::from_cols(
+                            Vec4::new(c, 0.0, -s, 0.0),
+                            Vec4::new(0.0, 1.0, 0.0, 0.0),
+                            Vec4::new(s, 0.0, c, 0.0),
+                            Vec4::new(0.0, 0.0, 0.0, 1.0),
+                        );
+                        let mut transform = Mat4::from_translation(strand.position) * rot_y;
 
                         if let Some((_a, _b, ref sway_mat)) = patch_sway_mat {
                             transform = transform * *sway_mat;
