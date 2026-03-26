@@ -4,7 +4,7 @@ use glam::{Mat4, Vec3};
 
 use crate::renderer::{pack_instance_id, MESH_CUBE};
 
-const MAX_PARTICLES: usize = 1024;
+const MAX_PARTICLES: usize = 512;
 const GRAVITY: f32 = -9.81;
 const PARTICLE_OBJECT_BASE: u32 = 0xFF00;
 
