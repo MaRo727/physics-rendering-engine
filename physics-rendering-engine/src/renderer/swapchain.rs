@@ -174,12 +174,10 @@ fn choose_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
         .unwrap_or(formats[0])
 }
 
-fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    if modes.contains(&vk::PresentModeKHR::MAILBOX) {
-        vk::PresentModeKHR::MAILBOX
-    } else {
-        vk::PresentModeKHR::FIFO
-    }
+fn choose_present_mode(_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    // FIFO is the only mode guaranteed tear-free by the Vulkan spec.
+    // MAILBOX can tear on some drivers/compositors (especially Linux).
+    vk::PresentModeKHR::FIFO
 }
 
 fn choose_extent(capabilities: &vk::SurfaceCapabilitiesKHR, width: u32, height: u32) -> vk::Extent2D {
