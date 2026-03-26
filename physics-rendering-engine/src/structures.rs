@@ -2,6 +2,7 @@ use glam::{Mat4, Vec3, Vec4};
 
 use crate::renderer::{pack_instance_id, MESH_TREE_OAK, MESH_TREE_PINE, MESH_TREE_DEAD,
     MESH_TREE_OAK_LOD, MESH_TREE_PINE_LOD, MESH_TREE_DEAD_LOD,
+    MESH_CACTUS, MESH_CACTUS_SMALL, MESH_CACTUS_LOD, MESH_CACTUS_SMALL_LOD,
     MESH_GRASS_A, MESH_GRASS_B, MESH_GRASS_C,
     MESH_FLOWER_RED, MESH_FLOWER_YELLOW, MESH_FLOWER_BLUE, MESH_FLOWER_WHITE, MESH_FLOWER_PURPLE};
 use crate::terrain::{Biome, TerrainGrid, TERRAIN_HALF, CHUNKS_PER_SIDE};
@@ -133,7 +134,15 @@ impl StructureGrid {
                         Biome::Desert => {
                             if pass > 0 { continue; }
                             if height <= 4.0 { continue; }
-                            (0.05, MESH_TREE_DEAD)
+                            let r = hash_f32(h.wrapping_add(1));
+                            let mesh = if r < 0.50 {
+                                MESH_CACTUS
+                            } else if r < 0.80 {
+                                MESH_CACTUS_SMALL
+                            } else {
+                                MESH_TREE_DEAD
+                            };
+                            (0.12, mesh)
                         }
                         Biome::Mountains => {
                             if pass > 0 { continue; }
@@ -564,6 +573,8 @@ fn lod_mesh(mesh_type: u32) -> u32 {
         MESH_TREE_OAK => MESH_TREE_OAK_LOD,
         MESH_TREE_PINE => MESH_TREE_PINE_LOD,
         MESH_TREE_DEAD => MESH_TREE_DEAD_LOD,
+        MESH_CACTUS => MESH_CACTUS_LOD,
+        MESH_CACTUS_SMALL => MESH_CACTUS_SMALL_LOD,
         other => other,
     }
 }

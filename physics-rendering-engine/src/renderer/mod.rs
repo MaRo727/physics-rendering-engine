@@ -59,8 +59,12 @@ pub const MESH_BLOCK_SLOPE: u32 = 32;
 pub const MESH_BLOCK_INNER_CORNER: u32 = 33;
 pub const MESH_BLOCK_STAIRS: u32 = 34;
 pub const MESH_BLOCK_FENCE: u32 = 35;
-pub const MESH_TERRAIN_BASE: u32 = 36;
-const SHAPE_MESH_COUNT: usize = 36;
+pub const MESH_CACTUS: u32 = 36;
+pub const MESH_CACTUS_SMALL: u32 = 37;
+pub const MESH_CACTUS_LOD: u32 = 38;
+pub const MESH_CACTUS_SMALL_LOD: u32 = 39;
+pub const MESH_TERRAIN_BASE: u32 = 40;
+const SHAPE_MESH_COUNT: usize = 40;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -330,6 +334,10 @@ impl Renderer {
             shapes::block_inner_corner_slope(),                               // MESH_BLOCK_INNER_CORNER = 33
             shapes::block_stairs(),                                           // MESH_BLOCK_STAIRS = 34
             shapes::block_fence(),                                            // MESH_BLOCK_FENCE = 35
+            shapes::cactus(),                                                 // MESH_CACTUS = 36
+            shapes::cactus_small(),                                           // MESH_CACTUS_SMALL = 37
+            shapes::cactus_lod(),                                             // MESH_CACTUS_LOD = 38
+            shapes::cactus_small_lod(),                                       // MESH_CACTUS_SMALL_LOD = 39
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);

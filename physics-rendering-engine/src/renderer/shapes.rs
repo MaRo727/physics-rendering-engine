@@ -1364,3 +1364,126 @@ pub fn block_fence() -> (Vec<Vertex>, Vec<u32>) {
         Vec3::new(lo, 0.5, lo), Vec3::new(hi, 0.5, lo), c);
     (v, i)
 }
+
+// ---------------------------------------------------------------------------
+// Cactus meshes (desert vegetation)
+// ---------------------------------------------------------------------------
+
+/// Saguaro-style cactus: main cylindrical trunk with 1-2 upward-curving arms.
+/// Base at y=0, height ~4-5 units.
+pub fn cactus() -> (Vec<Vertex>, Vec<u32>) {
+    let mut v = Vec::new();
+    let mut idx = Vec::new();
+
+    let body = Vec3::new(0.15, 0.55, 0.12);
+    let body_dark = Vec3::new(0.10, 0.42, 0.08);
+    let sides = 6u32;
+
+    // Main trunk: tapered cylinder from y=0 to y=4.5
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 4.5, 0.0),
+        0.35, 0.28, sides, body);
+
+    // Rounded top cap on trunk
+    add_cactus_cap(&mut v, &mut idx, Vec3::new(0.0, 4.5, 0.0), 0.28, sides, body);
+
+    // Arm 1: starts at y=2.0, goes outward then curves up
+    // Horizontal segment
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(0.35, 2.0, 0.0), Vec3::new(1.0, 2.1, 0.0),
+        0.22, 0.20, sides, body_dark);
+    // Upward segment
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(1.0, 2.1, 0.0), Vec3::new(1.05, 3.8, 0.0),
+        0.20, 0.16, sides, body);
+    // Cap
+    add_cactus_cap(&mut v, &mut idx, Vec3::new(1.05, 3.8, 0.0), 0.16, sides, body);
+
+    // Arm 2: starts at y=2.8, opposite side, shorter
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(-0.35, 2.8, 0.05), Vec3::new(-0.85, 2.95, 0.05),
+        0.18, 0.16, sides, body_dark);
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(-0.85, 2.95, 0.05), Vec3::new(-0.88, 4.0, 0.05),
+        0.16, 0.13, sides, body);
+    add_cactus_cap(&mut v, &mut idx, Vec3::new(-0.88, 4.0, 0.05), 0.13, sides, body);
+
+    (v, idx)
+}
+
+/// Small barrel/prickly-pear cactus variant: short and round.
+/// Base at y=0, height ~1.5 units.
+pub fn cactus_small() -> (Vec<Vertex>, Vec<u32>) {
+    let mut v = Vec::new();
+    let mut idx = Vec::new();
+
+    let body = Vec3::new(0.18, 0.50, 0.12);
+    let body_light = Vec3::new(0.20, 0.58, 0.15);
+    let sides = 6u32;
+
+    // Short, fat barrel body
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.2, 0.0),
+        0.40, 0.30, sides, body);
+    add_cactus_cap(&mut v, &mut idx, Vec3::new(0.0, 1.2, 0.0), 0.30, sides, body_light);
+
+    // A smaller lobe offset to the side
+    add_branch_segment(&mut v, &mut idx,
+        Vec3::new(0.3, 0.0, 0.15), Vec3::new(0.35, 0.9, 0.15),
+        0.25, 0.18, sides, body);
+    add_cactus_cap(&mut v, &mut idx, Vec3::new(0.35, 0.9, 0.15), 0.18, sides, body_light);
+
+    (v, idx)
+}
+
+/// LOD cactus: simple crossed quads.
+pub fn cactus_lod() -> (Vec<Vertex>, Vec<u32>) {
+    let body = Vec3::new(0.15, 0.50, 0.12);
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+    add_cross_quad(&mut v, &mut i, Vec3::new(0.0, 2.25, 0.0), 0.6, 4.5, body);
+    (v, i)
+}
+
+/// LOD small cactus: tiny crossed quads.
+pub fn cactus_small_lod() -> (Vec<Vertex>, Vec<u32>) {
+    let body = Vec3::new(0.18, 0.50, 0.12);
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+    add_cross_quad(&mut v, &mut i, Vec3::new(0.0, 0.6, 0.0), 0.4, 1.2, body);
+    (v, i)
+}
+
+/// Rounded hemisphere cap for cactus tops.
+fn add_cactus_cap(
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+    center: Vec3, radius: f32, sides: u32, color: Vec3,
+) {
+    let base_idx = vertices.len() as u32;
+
+    // Ring at base of cap
+    for j in 0..sides {
+        let theta = 2.0 * PI * j as f32 / sides as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let offset = Vec3::new(cos_t, 0.0, sin_t);
+        vertices.push(Vertex {
+            position: center + offset * radius,
+            normal: offset,
+            color,
+        });
+    }
+
+    // Top point
+    let top_idx = vertices.len() as u32;
+    vertices.push(Vertex {
+        position: center + Vec3::new(0.0, radius * 0.6, 0.0),
+        normal: Vec3::Y,
+        color,
+    });
+
+    // Triangles from ring to top
+    for j in 0..sides {
+        let j_next = (j + 1) % sides;
+        indices.extend_from_slice(&[base_idx + j, base_idx + j_next, top_idx]);
+    }
+}
