@@ -145,6 +145,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F10) => self.input.editor_load = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
                     PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
+                    PhysicalKey::Code(KeyCode::KeyT) => self.input.place_torch = pressed,
                     PhysicalKey::Code(KeyCode::KeyU) => self.input.editor_unbake = pressed,
                     PhysicalKey::Code(KeyCode::ArrowLeft) => self.input.editor_prev_group = pressed,
                     PhysicalKey::Code(KeyCode::ArrowRight) => self.input.editor_next_group = pressed,

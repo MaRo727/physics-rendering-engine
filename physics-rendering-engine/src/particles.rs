@@ -4,7 +4,7 @@ use glam::{Mat4, Vec3};
 
 use crate::renderer::{pack_instance_id, MESH_CUBE};
 
-const MAX_PARTICLES: usize = 512;
+const MAX_PARTICLES: usize = 1024;
 const GRAVITY: f32 = -9.81;
 const PARTICLE_OBJECT_BASE: u32 = 0xFF00;
 
@@ -15,6 +15,7 @@ pub struct Particle {
     pub scale: f32,
     pub lifetime: f32,
     pub age: f32,
+    pub gravity_scale: f32,
 }
 
 pub struct ParticleSystem {
@@ -56,7 +57,7 @@ impl ParticleSystem {
             if p.age >= p.lifetime {
                 return false;
             }
-            p.velocity.y += GRAVITY * dt;
+            p.velocity.y += GRAVITY * p.gravity_scale * dt;
             p.position += p.velocity * dt;
             true
         });
@@ -80,6 +81,7 @@ impl ParticleSystem {
                 scale,
                 lifetime: lt,
                 age: 0.0,
+                gravity_scale: 1.0,
             });
         }
     }
@@ -119,6 +121,31 @@ impl ParticleSystem {
     /// Item pickup sparkle.
     pub fn emit_pickup(&mut self, pos: Vec3) {
         self.emit(pos, 5, 1.0, 2.0, 0.05, 0.15, 0.3, 1.0);
+    }
+
+    /// Continuous fire particle for torches — slow upward drift, no gravity.
+    pub fn emit_fire(&mut self, pos: Vec3, count: usize) {
+        let budget = MAX_PARTICLES.saturating_sub(self.particles.len());
+        let count = count.min(budget);
+        for _ in 0..count {
+            let mut dir = self.rand_dir();
+            dir.y = dir.y.abs() * 0.3 + 1.0; // strongly upward
+            dir.x *= 0.3;
+            dir.z *= 0.3;
+            dir = dir.normalize_or_zero();
+            let speed = self.rand_range(0.4, 1.2);
+            let lt = self.rand_range(0.3, 0.7);
+            let sc = self.rand_range(0.02, 0.05);
+            self.particles.push(Particle {
+                position: pos,
+                velocity: dir * speed,
+                color_id: 0,
+                scale: sc,
+                lifetime: lt,
+                age: 0.0,
+                gravity_scale: -0.15, // slight upward buoyancy
+            });
+        }
     }
 
     /// Push particle transforms into the frame render arrays.

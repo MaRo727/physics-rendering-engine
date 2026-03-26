@@ -23,7 +23,7 @@ use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
-use crate::renderer::{Renderer, pack_instance_id, SHADOW_ONLY_BIT, MESH_CUBE, MESH_WATER, MESH_TERRAIN_BASE};
+use crate::renderer::{Renderer, GpuPointLight, pack_instance_id, SHADOW_ONLY_BIT, MESH_CUBE, MESH_WATER, MESH_TORCH, MESH_TERRAIN_BASE};
 use crate::renderer::context::VulkanContext;
 use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
@@ -63,6 +63,14 @@ const JUMP_VELOCITY: f32 = 6.0;
 const WATER_LEVEL: f32 = 5.0;
 const BUOYANCY_FORCE: f32 = 25.0;
 const WATER_DRAG: f32 = 12.0;
+
+const TORCH_OBJECT_BASE: u32 = 0xFF70;
+const TORCH_FLAME_HEIGHT: f32 = 0.85;
+
+pub struct TorchInstance {
+    pub position: Vec3,
+    pub flame_pos: Vec3,
+}
 
 /// Minimum interval between terrain GPU/physics rebuilds (seconds).
 const TERRAIN_REBUILD_INTERVAL: f32 = 0.1;
@@ -286,6 +294,11 @@ pub struct Engine {
     drag_hold_timer: f32,
     /// Whether the drag has activated (hold exceeded threshold).
     drag_active: bool,
+    // Torch instances placed in the world.
+    torches: Vec<TorchInstance>,
+    torch_prev: bool,
+    /// Reusable per-frame point light buffer.
+    frame_point_lights: Vec<GpuPointLight>,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -518,6 +531,9 @@ impl Engine {
             drag_end: None,
             drag_hold_timer: 0.0,
             drag_active: false,
+            torches: Vec::new(),
+            torch_prev: false,
+            frame_point_lights: Vec::new(),
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -826,6 +842,10 @@ impl Engine {
             })
             .collect();
 
+        let torches: Vec<crate::save::TorchSave> = self.torches.iter()
+            .map(|t| crate::save::TorchSave { x: t.position.x, y: t.position.y, z: t.position.z })
+            .collect();
+
         let data = crate::save::SaveData {
             player_x: player_pos.x,
             player_y: player_pos.y,
@@ -838,6 +858,7 @@ impl Engine {
             quest_states: crate::save::quests_to_save(&self.quests),
             time_of_day: self.time_of_day,
             buildings,
+            torches,
         };
         match crate::save::save(&data) {
             Ok(()) => { self.has_save_file = true; }
@@ -879,6 +900,16 @@ impl Engine {
             let bt = building::BlockType::from_u8(b.block_type);
             let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
             self.building.load_cell(&mut self.physics, b.x, b.y, b.z, bt, b.rotation, b.sub_blocks, color);
+        }
+
+        // Restore torches.
+        self.torches.clear();
+        for t in &data.torches {
+            let pos = Vec3::new(t.x, t.y, t.z);
+            self.torches.push(TorchInstance {
+                position: pos,
+                flame_pos: pos + Vec3::new(0.0, TORCH_FLAME_HEIGHT, 0.0),
+            });
         }
 
         println!("Game loaded.");
@@ -1628,6 +1659,34 @@ impl Engine {
                 ));
             }
 
+            // --- T: place a torch (grid-snapped) ---
+            if input.place_torch && !self.torch_prev {
+                if let Some((_rb, hit_point, hit_normal)) = self.physics.cast_ray_full(
+                    player_eye,
+                    look_dir,
+                    PLACE_RANGE,
+                    self.player_col,
+                ) {
+                    // Snap to grid: place on the surface cell adjacent to the hit.
+                    let target = hit_point + hit_normal * 0.5;
+                    let (gx, gy, gz) = building::snap_to_grid(target);
+                    let torch_pos = Vec3::new(gx as f32 + 0.5, gy as f32, gz as f32 + 0.5);
+                    // Don't place duplicate at same grid cell.
+                    let already = self.torches.iter().any(|t| {
+                        let (tx, ty, tz) = building::snap_to_grid(t.position);
+                        tx == gx && ty == gy && tz == gz
+                    });
+                    if !already {
+                        let flame_pos = torch_pos + Vec3::new(0.0, TORCH_FLAME_HEIGHT, 0.0);
+                        self.torches.push(TorchInstance {
+                            position: torch_pos,
+                            flame_pos,
+                        });
+                    }
+                }
+            }
+            self.torch_prev = input.place_torch;
+
             // --- Compute player derived stats once per frame ---
             {
                 let p = self.world.player();
@@ -1920,6 +1979,13 @@ impl Engine {
 
         // --- Update particles ---
         self.particles.update(dt);
+
+        // Emit fire particles for nearby torches (within 60m of player).
+        for torch in &self.torches {
+            if torch.position.distance_squared(player_pos) < 3600.0 {
+                self.particles.emit_fire(torch.flame_pos, 1);
+            }
+        }
 
         // --- Update weather system ---
         {
@@ -2275,6 +2341,7 @@ impl Engine {
         let blizzard_info = Vec4::new(0.0, 0.0, WATER_LEVEL, 0.0);
         let weather_info = Vec4::ZERO;
         let wind_info = Vec4::ZERO;
+        self.renderer.upload_point_lights(&[]);
 
         self.renderer.draw_frame(
             &self.frame_transforms,
@@ -2379,6 +2446,13 @@ impl Engine {
             pack_instance_id(body_mesh, PLAYER_MODEL_OBJECT_ID + FP_PART_COUNT as u32)
             | SHADOW_ONLY_BIT,
         );
+
+        // Torches.
+        for (i, torch) in self.torches.iter().enumerate() {
+            let t = Mat4::from_translation(torch.position);
+            self.frame_transforms.push(t);
+            self.frame_instance_ids.push(pack_instance_id(MESH_TORCH, TORCH_OBJECT_BASE + (i as u32 & 0xFF)));
+        }
 
         // Particles.
         self.particles.render(&mut self.frame_transforms, &mut self.frame_instance_ids);
@@ -2603,6 +2677,28 @@ impl Engine {
             self.surface_width,
             self.surface_height,
         );
+
+        // Collect point lights from nearest torches (cap at 8 for performance).
+        self.frame_point_lights.clear();
+        let time = self.water_time;
+        let cam_pos = if self.ghost.active { self.ghost.eye } else { self.camera.eye };
+        // Collect distances for sorting.
+        let mut torch_dists: Vec<(usize, f32)> = self.torches.iter().enumerate()
+            .map(|(i, t)| (i, t.flame_pos.distance_squared(cam_pos)))
+            .filter(|(_, d2)| *d2 < 60.0 * 60.0) // within 60m
+            .collect();
+        torch_dists.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        for &(idx, _) in torch_dists.iter().take(8) {
+            let torch = &self.torches[idx];
+            let flicker = 0.9 + 0.1 * (time * 8.0 + torch.position.x * 1.7).sin();
+            self.frame_point_lights.push(GpuPointLight {
+                position: [torch.flame_pos.x, torch.flame_pos.y, torch.flame_pos.z],
+                radius: 15.0,
+                color: [1.0, 0.6, 0.2],
+                intensity: 2.5 * flicker,
+            });
+        }
+        self.renderer.upload_point_lights(&self.frame_point_lights);
 
         self.renderer.draw_frame(
             &self.frame_transforms,

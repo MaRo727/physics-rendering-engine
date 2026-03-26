@@ -65,8 +65,9 @@ pub const MESH_CACTUS_LOD: u32 = 38;
 pub const MESH_CACTUS_SMALL_LOD: u32 = 39;
 pub const MESH_LEAF_PARTICLE: u32 = 40;
 pub const MESH_BARK_CHIP: u32 = 41;
-pub const MESH_TERRAIN_BASE: u32 = 42;
-const SHAPE_MESH_COUNT: usize = 42;
+pub const MESH_TORCH: u32 = 42;
+pub const MESH_TERRAIN_BASE: u32 = 43;
+const SHAPE_MESH_COUNT: usize = 43;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -183,6 +184,54 @@ fn create_ui_buffer(context: &VulkanContext) -> Result<UiGpuBuffer> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-frame point light buffer (host-visible, written each frame)
+// ---------------------------------------------------------------------------
+
+pub const MAX_POINT_LIGHTS: usize = 64;
+
+/// GPU-side point light (std430 layout: 32 bytes).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GpuPointLight {
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub intensity: f32,
+}
+
+/// Header: u32 count + 3 padding u32s = 16 bytes, then MAX_POINT_LIGHTS lights.
+const POINT_LIGHT_BUFFER_BYTES: usize = 16 + MAX_POINT_LIGHTS * std::mem::size_of::<GpuPointLight>();
+
+struct PointLightBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    mapped: *mut u8,
+}
+
+unsafe impl Send for PointLightBuffer {}
+
+fn create_point_light_buffer(context: &VulkanContext) -> Result<PointLightBuffer> {
+    let capacity = POINT_LIGHT_BUFFER_BYTES;
+    let (buffer, memory) = mesh::create_buffer(
+        &context.device,
+        &context.memory_properties,
+        capacity as vk::DeviceSize,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        false,
+    )?;
+    let mapped = unsafe {
+        context.device.map_memory(memory, 0, capacity as vk::DeviceSize, vk::MemoryMapFlags::empty())
+    }
+    .context("Failed to map point light buffer memory")? as *mut u8;
+
+    // Zero-initialise so the shader sees count=0 on the first frame.
+    unsafe { std::ptr::write_bytes(mapped, 0, capacity) };
+
+    Ok(PointLightBuffer { buffer, memory, mapped })
+}
+
+// ---------------------------------------------------------------------------
 // Storage image
 // ---------------------------------------------------------------------------
 
@@ -276,6 +325,7 @@ pub struct Renderer {
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     scene_ubo_buffers: [SceneUboBuffer; MAX_FRAMES_IN_FLIGHT],
     ui_buffers: [UiGpuBuffer; MAX_FRAMES_IN_FLIGHT],
+    point_light_buffers: [PointLightBuffer; MAX_FRAMES_IN_FLIGHT],
     mesh_offsets_buf: MeshOffsetsBuffer,
     current_frame: usize,
     extent: vk::Extent2D,
@@ -342,6 +392,7 @@ impl Renderer {
             shapes::cactus_small_lod(),                                       // MESH_CACTUS_SMALL_LOD = 39
             shapes::leaf_particle(),                                             // MESH_LEAF_PARTICLE = 40
             shapes::bark_chip(),                                                 // MESH_BARK_CHIP = 41
+            shapes::torch(),                                                         // MESH_TORCH = 42
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);
@@ -409,6 +460,10 @@ impl Renderer {
         let ui1 = create_ui_buffer(&context)?;
         let ui_buffers = [ui0, ui1];
 
+        let pl0 = create_point_light_buffer(&context)?;
+        let pl1 = create_point_light_buffer(&context)?;
+        let point_light_buffers = [pl0, pl1];
+
         // Descriptor pool.
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -422,7 +477,7 @@ impl Renderer {
                 .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 4), // +1 for UI SSBO
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32 * 5), // vertex, index, mesh_offsets, UI, point_lights
         ];
         let descriptor_pool = unsafe {
             context.device.create_descriptor_pool(
@@ -463,6 +518,7 @@ impl Renderer {
             descriptor_sets,
             scene_ubo_buffers,
             ui_buffers,
+            point_light_buffers,
             mesh_offsets_buf,
             current_frame: 0,
             extent,
@@ -513,6 +569,11 @@ impl Renderer {
             .offset(0)
             .range(self.ui_buffers[i].capacity as vk::DeviceSize);
 
+        let point_light_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.point_light_buffers[i].buffer)
+            .offset(0)
+            .range(POINT_LIGHT_BUFFER_BYTES as vk::DeviceSize);
+
         let set = self.descriptor_sets[i];
         let writes = [
             vk::WriteDescriptorSet::default()
@@ -551,6 +612,11 @@ impl Renderer {
                 .dst_binding(6)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&ui_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(7)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&point_light_info)),
         ];
 
         unsafe { self.context.device.update_descriptor_sets(&writes, &[]) };
@@ -600,6 +666,29 @@ impl Renderer {
                     prims.as_ptr() as *const u8,
                     prim_dst,
                     count * std::mem::size_of::<ui::UiPrimitive>(),
+                );
+            }
+        }
+    }
+
+    /// Upload point light data for the current frame.
+    /// Must be called before `draw_frame`.
+    pub fn upload_point_lights(&mut self, lights: &[GpuPointLight]) {
+        let fi = self.current_frame;
+        let buf = &self.point_light_buffers[fi];
+        let count = lights.len().min(MAX_POINT_LIGHTS);
+
+        unsafe {
+            // Header: u32 count + 3 padding u32s.
+            let header = buf.mapped as *mut u32;
+            *header = count as u32;
+
+            if count > 0 {
+                let lights_dst = buf.mapped.add(16) as *mut GpuPointLight;
+                std::ptr::copy_nonoverlapping(
+                    lights.as_ptr(),
+                    lights_dst,
+                    count,
                 );
             }
         }
@@ -1156,6 +1245,13 @@ impl Drop for Renderer {
                 self.context.device.unmap_memory(ui_buf.memory);
                 self.context.device.destroy_buffer(ui_buf.buffer, None);
                 self.context.device.free_memory(ui_buf.memory, None);
+            }
+        }
+        for pl_buf in &self.point_light_buffers {
+            unsafe {
+                self.context.device.unmap_memory(pl_buf.memory);
+                self.context.device.destroy_buffer(pl_buf.buffer, None);
+                self.context.device.free_memory(pl_buf.memory, None);
             }
         }
         unsafe {

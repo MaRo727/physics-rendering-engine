@@ -122,6 +122,12 @@ fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSe
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+        // 7: Point lights SSBO
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(7)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
     ];
 
     unsafe {

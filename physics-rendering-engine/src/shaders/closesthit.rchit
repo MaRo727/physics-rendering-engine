@@ -31,6 +31,18 @@ struct MeshOffset {
 };
 layout(set = 0, binding = 5) readonly buffer MeshOffsetBuf { MeshOffset mesh_offsets[]; };
 
+struct PointLight {
+    vec3 position;
+    float radius;
+    vec3 color;
+    float intensity;
+};
+layout(set = 0, binding = 7, std430) readonly buffer PointLightBuf {
+    uint light_count;
+    uint _pad0, _pad1, _pad2;
+    PointLight point_lights[];
+};
+
 hitAttributeEXT vec2 attribs;
 
 void main() {
@@ -61,8 +73,17 @@ void main() {
     // Read per-vertex color from the first vertex of the triangle.
     vec3 color = vec3(verts[i0 * 9u + 6u], verts[i0 * 9u + 7u], verts[i0 * 9u + 8u]);
 
-    // Shadow ray — offset origin along surface normal to avoid self-intersection.
     vec3 hitPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+
+    // Emissive torch flame — bright orange diamond, skip shadow/lighting.
+    uint TORCH_MESH_TYPE = 42u;
+    if (mesh_type == TORCH_MESH_TYPE && color.r > 0.9 && color.g > 0.5 && color.b < 0.3) {
+        float flicker = 0.85 + 0.15 * sin(scene.blizzardInfo.y * 10.0 + hitPos.x * 3.0);
+        payload = vec4(color * 2.5 * flicker, gl_HitTEXT);
+        return;
+    }
+
+    // Shadow ray — offset origin along surface normal to avoid self-intersection.
     vec3 shadowOrigin = hitPos + normal * 0.01;
     vec3 L = normalize(scene.lightDir.xyz);
     shadowed = 0.0;
@@ -91,6 +112,29 @@ void main() {
     float shadowStrength = mix(0.4, 1.0, dayFactor); // night shadows are faint
     float diffuse = max(0.0, NdotL) * mix(1.0, shadowed, shadowStrength);
     vec3 lit = color * scene.lightColor.xyz * scene.lightColor.w * (ambient + fill + diffuse);
+
+    // Point light contributions (capped at 8, skip for secondary ray bounces).
+    uint numLights = min(light_count, 8u);
+    if (numLights > 0u && gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT) {
+        for (uint li = 0u; li < numLights; li++) {
+            PointLight pl = point_lights[li];
+            vec3 toLight = pl.position - hitPos;
+            float dist2 = dot(toLight, toLight);
+            float r2 = pl.radius * pl.radius;
+            if (dist2 > r2) continue;
+
+            float dist = sqrt(dist2);
+            vec3 L_pt = toLight / dist;
+            float NdotL_pt = max(0.0, dot(normal, L_pt));
+
+            // Smooth distance attenuation.
+            float atten = 1.0 / (1.0 + dist2 * 0.3);
+            float edge = 1.0 - smoothstep(pl.radius * 0.6, pl.radius, dist);
+            atten *= edge;
+
+            lit += color * pl.color * pl.intensity * NdotL_pt * atten;
+        }
+    }
 
     // Underwater caustics on submerged terrain.
     float waterLevel = scene.blizzardInfo.z;

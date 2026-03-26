@@ -22,6 +22,8 @@ pub struct SaveData {
     pub time_of_day: f32,
     #[serde(default)]
     pub buildings: Vec<BuildingSave>,
+    #[serde(default)]
+    pub torches: Vec<TorchSave>,
 }
 
 /// Serializable building cell.
@@ -34,6 +36,14 @@ pub struct BuildingSave {
     pub rotation: u8,
     pub sub_blocks: u64,
     pub color: [f32; 3],
+}
+
+/// Serializable torch position.
+#[derive(Serialize, Deserialize)]
+pub struct TorchSave {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// Minimal quest save — just mutable state per quest ID.

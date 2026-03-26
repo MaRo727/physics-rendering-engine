@@ -1561,3 +1561,45 @@ fn add_cactus_cap(
         indices.extend_from_slice(&[base_idx + j, base_idx + j_next, top_idx]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Torch mesh data
+// ---------------------------------------------------------------------------
+
+/// Torch: dark-brown stick (base y=0, top y=0.7) with bright orange flame diamond on top.
+pub fn torch() -> (Vec<Vertex>, Vec<u32>) {
+    let wood = Vec3::new(0.40, 0.25, 0.10);
+    let flame = Vec3::new(1.0, 0.65, 0.15);
+
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+
+    // Stick: thin rectangular prism, 0.06 x 0.7 x 0.06
+    let hw = 0.03; // half-width
+    let h = 0.7;
+    // Front (+Z)
+    push_quad(&mut v, &mut i,
+        Vec3::new(-hw, 0.0,  hw), Vec3::new( hw, 0.0,  hw),
+        Vec3::new( hw, h,    hw), Vec3::new(-hw, h,    hw), wood);
+    // Back (-Z)
+    push_quad(&mut v, &mut i,
+        Vec3::new( hw, 0.0, -hw), Vec3::new(-hw, 0.0, -hw),
+        Vec3::new(-hw, h,   -hw), Vec3::new( hw, h,   -hw), wood);
+    // Left (-X)
+    push_quad(&mut v, &mut i,
+        Vec3::new(-hw, 0.0, -hw), Vec3::new(-hw, 0.0,  hw),
+        Vec3::new(-hw, h,    hw), Vec3::new(-hw, h,   -hw), wood);
+    // Right (+X)
+    push_quad(&mut v, &mut i,
+        Vec3::new( hw, 0.0,  hw), Vec3::new( hw, 0.0, -hw),
+        Vec3::new( hw, h,   -hw), Vec3::new( hw, h,    hw), wood);
+    // Top cap
+    push_quad(&mut v, &mut i,
+        Vec3::new(-hw, h,  hw), Vec3::new( hw, h,  hw),
+        Vec3::new( hw, h, -hw), Vec3::new(-hw, h, -hw), wood);
+
+    // Flame: diamond at the top of the stick
+    add_diamond(&mut v, &mut i, Vec3::new(0.0, 0.85, 0.0), 0.07, 0.25, flame);
+
+    (v, i)
+}
