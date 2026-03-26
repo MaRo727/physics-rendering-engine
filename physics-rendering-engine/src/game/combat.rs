@@ -61,6 +61,8 @@ pub struct CombatHit {
 pub struct CombatSystem {
     state: CombatState,
     attack_cooldown: f32,
+    /// True on the first frame the Active phase is entered (for env hit sync).
+    entered_active: bool,
 }
 
 impl CombatSystem {
@@ -68,6 +70,7 @@ impl CombatSystem {
         Self {
             state: CombatState::Idle,
             attack_cooldown: 0.0,
+            entered_active: false,
         }
     }
 
@@ -105,6 +108,7 @@ impl CombatSystem {
         melee_mult: f32,
     ) -> Option<CombatHit> {
         self.attack_cooldown = (self.attack_cooldown - dt).max(0.0);
+        self.entered_active = false;
 
         let mut hit_result = None;
 
@@ -128,6 +132,7 @@ impl CombatSystem {
                         if *timer >= windup {
                             *timer -= windup;
                             *phase = AttackPhase::Active;
+                            self.entered_active = true;
                         }
                     }
                     AttackPhase::Active => {
@@ -191,6 +196,11 @@ impl CombatSystem {
                 (elapsed / total).clamp(0.0, 1.0)
             }
         }
+    }
+
+    /// True on the frame the attack enters the Active (hit) phase.
+    pub fn entered_active_phase(&self) -> bool {
+        self.entered_active
     }
 
     pub fn is_attacking(&self) -> bool {

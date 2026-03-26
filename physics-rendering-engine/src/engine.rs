@@ -1570,11 +1570,7 @@ impl Engine {
                 }
             }
 
-            // --- Handle tree punch (shake + leaves) ---
-            if let Some(hit_pos) = interaction_result.tree_hit {
-                self.tree_punch_seed = self.tree_punch_seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                self.structures.punch_tree_at(hit_pos, self.tree_punch_seed);
-            }
+            // Tree punch is handled below, synced to combat active phase.
 
             // --- RMB: place held cube into building grid ---
             let place_pressed = input.place && !self.place_prev;
@@ -1676,6 +1672,23 @@ impl Engine {
                         entity.body.rigid_body,
                         hit.knockback_dir * hit.knockback_force * self.physics.body_mass(entity.body.rigid_body),
                     );
+                }
+            }
+
+            // --- Bare-fist punch: tree shake + prop knockback (synced to combat active phase) ---
+            if self.combat.entered_active_phase()
+                && self.interaction.equipped_tool == ToolType::Hands
+            {
+                if let Some(hit_pos) = self.interaction.punch_env(
+                    &mut self.physics,
+                    &self.world,
+                    player_eye,
+                    look_dir,
+                    self.player_col,
+                    &self.tree_rbs,
+                ) {
+                    self.tree_punch_seed = self.tree_punch_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    self.structures.punch_tree_at(hit_pos, self.tree_punch_seed);
                 }
             }
 

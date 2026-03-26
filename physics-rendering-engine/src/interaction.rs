@@ -91,8 +91,6 @@ pub struct InteractionResult {
     pub hammer_hit: Option<HammerHit>,
     /// What the chisel hit this frame (single sub-block removal).
     pub chisel_hit: Option<ChiselHit>,
-    /// Hit position on a tree trunk (for shake + leaf effect).
-    pub tree_hit: Option<Vec3>,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +169,6 @@ impl Interaction {
             pickaxe_hit: None,
             hammer_hit: None,
             chisel_hit: None,
-            tree_hit: None,
         };
 
         // --- E press (edge): drop held OR pick up dynamic object OR pick up item drop OR start prying ---
@@ -241,21 +238,8 @@ impl Interaction {
             } else {
                 match self.equipped_tool {
                     ToolType::Hands => {
-                        // Bare-fist punch — knock back props, or shake trees.
-                        if let Some((target_body, hit_pos, _normal)) =
-                            physics.cast_ray_full(eye, look_dir, PUNCH_RANGE, player_collider)
-                        {
-                            if tree_rbs.contains(&target_body) {
-                                result.tree_hit = Some(hit_pos);
-                            } else {
-                                let is_enemy = world.entity_by_rb(target_body).map_or(false, |e| e.kind == EntityKind::Enemy);
-                                if physics.is_dynamic(target_body) && !is_enemy {
-                                    let wc = weight_class_of(world, target_body);
-                                    let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
-                                    physics.apply_impulse(target_body, force);
-                                }
-                            }
-                        }
+                        // Bare-fist punch is handled separately via punch_env(),
+                        // synced to the combat system's active phase.
                     }
                     ToolType::Axe => {
                         // Axe swing — report hit target for engine to split.
@@ -313,6 +297,33 @@ impl Interaction {
         }
 
         result
+    }
+
+    /// Execute the bare-fist punch effect (tree shake / prop knockback).
+    /// Called by engine when the combat system enters the active phase.
+    pub fn punch_env(
+        &self,
+        physics: &mut PhysicsWorld,
+        world: &World,
+        eye: Vec3,
+        look_dir: Vec3,
+        player_collider: rapier3d::prelude::ColliderHandle,
+        tree_rbs: &HashSet<RigidBodyHandle>,
+    ) -> Option<Vec3> {
+        if let Some((target_body, hit_pos, _normal)) =
+            physics.cast_ray_full(eye, look_dir, PUNCH_RANGE, player_collider)
+        {
+            if tree_rbs.contains(&target_body) {
+                return Some(hit_pos);
+            }
+            let is_enemy = world.entity_by_rb(target_body).map_or(false, |e| e.kind == EntityKind::Enemy);
+            if physics.is_dynamic(target_body) && !is_enemy {
+                let wc = weight_class_of(world, target_body);
+                let force = look_dir * BARE_PUNCH_FORCE * wc.punch_knockback();
+                physics.apply_impulse(target_body, force);
+            }
+        }
+        None
     }
 
     /// Progress of the current pry action (0.0 to 1.0). 0 when not prying.
