@@ -599,7 +599,6 @@ impl Engine {
         engine.spawn_npcs();
         engine.spawn_world_structures();
         engine.stamp_world_blueprints();
-        engine.spawn_mining_nodes();
 
         {
             let player = engine.world.player_mut();
@@ -611,37 +610,6 @@ impl Engine {
         Ok(engine)
     }
 
-    fn spawn_mining_nodes(&mut self) {
-        let positions = [
-            Vec3::new(15.0, 0.0, 10.0),
-            Vec3::new(-20.0, 0.0, 25.0),
-            Vec3::new(30.0, 0.0, -15.0),
-            Vec3::new(-10.0, 0.0, -30.0),
-            Vec3::new(40.0, 0.0, 5.0),
-        ];
-        let sizes = [
-            (3, 2, 3),
-            (4, 3, 4),
-            (2, 2, 2),
-            (3, 3, 3),
-            (4, 2, 3),
-        ];
-        for (&pos, &size) in positions.iter().zip(sizes.iter()) {
-            let next_id = &mut self.world.next_entity_id;
-            let new_entities = self.mining.spawn_node(
-                &mut self.physics,
-                &self.terrain,
-                pos,
-                size,
-                &mut || {
-                    let id = *next_id;
-                    *next_id += 1;
-                    id
-                },
-            );
-            self.world.entities.extend(new_entities);
-        }
-    }
 
     fn spawn_npcs(&mut self) {
         use crate::game::entity::Entity;
