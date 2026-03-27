@@ -106,11 +106,13 @@ impl PathScratch {
 }
 
 /// Find a path from `start` to `goal` on the terrain heightmap.
-/// Returns world-space XZ waypoints (Y is filled from terrain height).
+/// Writes world-space XZ waypoints (Y is filled from terrain height) into `out`.
 /// The path excludes the start position and includes the goal (or nearest reachable).
 /// Uses `scratch` buffers to avoid per-call heap allocations.
-pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut PathScratch) -> Option<Vec<Vec3>> {
+/// Returns `true` if a path (or partial path) was found.
+pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut PathScratch, out: &mut Vec<Vec3>) -> bool {
     scratch.clear();
+    out.clear();
 
     let sx = world_to_cell(start.x);
     let sz = world_to_cell(start.z);
@@ -119,7 +121,7 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut P
 
     // Trivial: already at goal.
     if sx == gx && sz == gz {
-        return None;
+        return false;
     }
 
     let open = &mut scratch.open;
@@ -168,7 +170,8 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut P
 
         // Goal reached?
         if current.cx == gx && current.cz == gz {
-            return Some(reconstruct(closed, current_idx as usize, terrain));
+            reconstruct(closed, current_idx as usize, terrain, out);
+            return true;
         }
 
         let cur_h = terrain.height_at_world(cell_to_world(current.cx), cell_to_world(current.cz));
@@ -231,10 +234,11 @@ pub fn find_path(terrain: &TerrainGrid, start: Vec3, goal: Vec3, scratch: &mut P
     if let Some(bi) = best_node_idx {
         let dist_from_start = heuristic(closed[bi].cx, closed[bi].cz, sx, sz);
         if dist_from_start > 2.0 {
-            return Some(reconstruct(closed, bi, terrain));
+            reconstruct(closed, bi, terrain, out);
+            return true;
         }
     }
-    None
+    false
 }
 
 fn heuristic(ax: i32, az: i32, bx: i32, bz: i32) -> f32 {
@@ -246,30 +250,29 @@ fn heuristic(ax: i32, az: i32, bx: i32, bz: i32) -> f32 {
     mn * 1.414 + (mx - mn)
 }
 
-fn reconstruct(closed: &[Node], goal_idx: usize, terrain: &TerrainGrid) -> Vec<Vec3> {
-    let mut path = Vec::new();
+fn reconstruct(closed: &[Node], goal_idx: usize, terrain: &TerrainGrid, out: &mut Vec<Vec3>) {
+    out.clear();
     let mut idx = goal_idx;
     loop {
         let node = &closed[idx];
         let wx = cell_to_world(node.cx);
         let wz = cell_to_world(node.cz);
         let wy = terrain.height_at_world(wx, wz);
-        path.push(Vec3::new(wx, wy, wz));
+        out.push(Vec3::new(wx, wy, wz));
         if node.parent == u16::MAX {
             break;
         }
         idx = node.parent as usize;
     }
-    path.reverse();
+    out.reverse();
     // Remove start node (enemy is already there).
-    if path.len() > 1 {
-        path.remove(0);
+    if out.len() > 1 {
+        out.remove(0);
     }
     // Simplify: line-of-sight path smoothing.
-    smooth_path(&mut path, terrain);
+    smooth_path(out, terrain);
     // Cap length.
-    path.truncate(MAX_WAYPOINTS);
-    path
+    out.truncate(MAX_WAYPOINTS);
 }
 
 /// Remove intermediate waypoints that are directly reachable via line-of-sight
@@ -371,10 +374,14 @@ impl PathState {
         self.current_idx = 0;
     }
 
-    /// Set a new path.
-    pub fn set(&mut self, waypoints: Vec<Vec3>) {
-        self.waypoints = waypoints;
-        self.current_idx = 0;
+    /// Run pathfinding and write the result directly into `self.waypoints`, reusing the buffer.
+    /// Returns `true` if a path was found.
+    pub fn find_path(&mut self, terrain: &TerrainGrid, start: Vec3, goal: Vec3) -> bool {
+        let found = find_path(terrain, start, goal, &mut self.scratch, &mut self.waypoints);
+        if found {
+            self.current_idx = 0;
+        }
+        found
     }
 
     pub fn is_empty(&self) -> bool {

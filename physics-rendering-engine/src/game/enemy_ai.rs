@@ -2,11 +2,12 @@
 // To add a new enemy type: add a variant to EnemyType, add a match arm in params().
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use glam::Vec3;
 
 use crate::game::entity::{Entity, EntityId, EntityKind};
-use crate::game::pathfinding::{self, PathState};
+use crate::game::pathfinding::PathState;
 use crate::physics::body::{ColliderHandle, RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_SLIME, MESH_SKELETON, MESH_GOBLIN, MESH_GOLEM, MESH_ARROW};
@@ -64,62 +65,69 @@ pub struct EnemyParams {
     pub projectile_inaccuracy: f32, // radians of random spread
 }
 
+/// Static table of per-type params, initialized once on first access.
+static ENEMY_PARAMS: LazyLock<[EnemyParams; 4]> = LazyLock::new(|| [
+    // Slime
+    EnemyParams {
+        move_speed: 4.0, chase_speed: 5.0,
+        aggro_range: 15.0, deaggro_range: 20.0, patrol_radius: 6.0,
+        attack_range: 1.5, attack_damage: 8.0, attack_cooldown: 1.5,
+        attack_windup: 0.0, knockback_force: 3.0,
+        flee_threshold: 0.0, flee_speed: 4.0,
+        mesh: MESH_SLIME, render_scale: Vec3::new(1.0, 0.7, 1.0),
+        bounding_radius: 0.5, physics_radius: 0.5,
+        weight_class: WeightClass::Light,
+        level: 1, str_: 5, int: 1, dex: 3, vit: 10, end: 3,
+        is_ranged: false, preferred_range: 0.0, hop_movement: true,
+        projectile_speed: 0.0, projectile_inaccuracy: 0.0,
+    },
+    // Skeleton
+    EnemyParams {
+        move_speed: 3.5, chase_speed: 5.5,
+        aggro_range: 18.0, deaggro_range: 25.0, patrol_radius: 8.0,
+        attack_range: 2.5, attack_damage: 14.0, attack_cooldown: 1.2,
+        attack_windup: 0.3, knockback_force: 4.0,
+        flee_threshold: 0.15, flee_speed: 4.0,
+        mesh: MESH_SKELETON, render_scale: Vec3::ONE,
+        bounding_radius: 0.5, physics_radius: 0.4,
+        weight_class: WeightClass::Medium,
+        level: 2, str_: 9, int: 2, dex: 6, vit: 12, end: 5,
+        is_ranged: false, preferred_range: 0.0, hop_movement: false,
+        projectile_speed: 0.0, projectile_inaccuracy: 0.0,
+    },
+    // GoblinArcher
+    EnemyParams {
+        move_speed: 4.0, chase_speed: 4.5,
+        aggro_range: 25.0, deaggro_range: 30.0, patrol_radius: 10.0,
+        attack_range: 15.0, attack_damage: 12.0, attack_cooldown: 2.0,
+        attack_windup: 0.5, knockback_force: 2.0,
+        flee_threshold: 0.3, flee_speed: 5.0,
+        mesh: MESH_GOBLIN, render_scale: Vec3::splat(0.8),
+        bounding_radius: 0.4, physics_radius: 0.35,
+        weight_class: WeightClass::Light,
+        level: 3, str_: 5, int: 6, dex: 10, vit: 9, end: 4,
+        is_ranged: true, preferred_range: 10.0, hop_movement: false,
+        projectile_speed: 18.0, projectile_inaccuracy: 0.08,
+    },
+    // Golem
+    EnemyParams {
+        move_speed: 2.0, chase_speed: 3.0,
+        aggro_range: 12.0, deaggro_range: 18.0, patrol_radius: 5.0,
+        attack_range: 3.0, attack_damage: 30.0, attack_cooldown: 2.5,
+        attack_windup: 0.6, knockback_force: 10.0,
+        flee_threshold: 0.0, flee_speed: 2.0,
+        mesh: MESH_GOLEM, render_scale: Vec3::splat(1.5),
+        bounding_radius: 0.8, physics_radius: 0.7,
+        weight_class: WeightClass::Heavy,
+        level: 5, str_: 18, int: 2, dex: 3, vit: 25, end: 12,
+        is_ranged: false, preferred_range: 0.0, hop_movement: false,
+        projectile_speed: 0.0, projectile_inaccuracy: 0.0,
+    },
+]);
+
 impl EnemyType {
-    pub fn params(self) -> EnemyParams {
-        match self {
-            EnemyType::Slime => EnemyParams {
-                move_speed: 4.0, chase_speed: 5.0,
-                aggro_range: 15.0, deaggro_range: 20.0, patrol_radius: 6.0,
-                attack_range: 1.5, attack_damage: 8.0, attack_cooldown: 1.5,
-                attack_windup: 0.0, knockback_force: 3.0,
-                flee_threshold: 0.0, flee_speed: 4.0,
-                mesh: MESH_SLIME, render_scale: Vec3::new(1.0, 0.7, 1.0),
-                bounding_radius: 0.5, physics_radius: 0.5,
-                weight_class: WeightClass::Light,
-                level: 1, str_: 5, int: 1, dex: 3, vit: 10, end: 3,
-                is_ranged: false, preferred_range: 0.0, hop_movement: true,
-                projectile_speed: 0.0, projectile_inaccuracy: 0.0,
-            },
-            EnemyType::Skeleton => EnemyParams {
-                move_speed: 3.5, chase_speed: 5.5,
-                aggro_range: 18.0, deaggro_range: 25.0, patrol_radius: 8.0,
-                attack_range: 2.5, attack_damage: 14.0, attack_cooldown: 1.2,
-                attack_windup: 0.3, knockback_force: 4.0,
-                flee_threshold: 0.15, flee_speed: 4.0,
-                mesh: MESH_SKELETON, render_scale: Vec3::ONE,
-                bounding_radius: 0.5, physics_radius: 0.4,
-                weight_class: WeightClass::Medium,
-                level: 2, str_: 9, int: 2, dex: 6, vit: 12, end: 5,
-                is_ranged: false, preferred_range: 0.0, hop_movement: false,
-                projectile_speed: 0.0, projectile_inaccuracy: 0.0,
-            },
-            EnemyType::GoblinArcher => EnemyParams {
-                move_speed: 4.0, chase_speed: 4.5,
-                aggro_range: 25.0, deaggro_range: 30.0, patrol_radius: 10.0,
-                attack_range: 15.0, attack_damage: 12.0, attack_cooldown: 2.0,
-                attack_windup: 0.5, knockback_force: 2.0,
-                flee_threshold: 0.3, flee_speed: 5.0,
-                mesh: MESH_GOBLIN, render_scale: Vec3::splat(0.8),
-                bounding_radius: 0.4, physics_radius: 0.35,
-                weight_class: WeightClass::Light,
-                level: 3, str_: 5, int: 6, dex: 10, vit: 9, end: 4,
-                is_ranged: true, preferred_range: 10.0, hop_movement: false,
-                projectile_speed: 18.0, projectile_inaccuracy: 0.08,
-            },
-            EnemyType::Golem => EnemyParams {
-                move_speed: 2.0, chase_speed: 3.0,
-                aggro_range: 12.0, deaggro_range: 18.0, patrol_radius: 5.0,
-                attack_range: 3.0, attack_damage: 30.0, attack_cooldown: 2.5,
-                attack_windup: 0.6, knockback_force: 10.0,
-                flee_threshold: 0.0, flee_speed: 2.0,
-                mesh: MESH_GOLEM, render_scale: Vec3::splat(1.5),
-                bounding_radius: 0.8, physics_radius: 0.7,
-                weight_class: WeightClass::Heavy,
-                level: 5, str_: 18, int: 2, dex: 3, vit: 25, end: 12,
-                is_ranged: false, preferred_range: 0.0, hop_movement: false,
-                projectile_speed: 0.0, projectile_inaccuracy: 0.0,
-            },
-        }
+    pub fn params(self) -> &'static EnemyParams {
+        &ENEMY_PARAMS[self as usize]
     }
 }
 
@@ -407,9 +415,7 @@ pub fn update_all(
                     // Use pathfinding for patrol movement.
                     ai.path.recompute_timer -= dt;
                     if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
-                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, ai.patrol_target, &mut ai.path.scratch) {
-                            ai.path.set(waypoints);
-                        } else {
+                        if !ai.path.find_path(terrain, pos, ai.patrol_target) {
                             ai.path.clear();
                         }
                         ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL * 2.0;
@@ -446,9 +452,7 @@ pub fn update_all(
                         // Use pathfinding for longer distances.
                         ai.path.recompute_timer -= dt;
                         if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
-                            if let Some(waypoints) = pathfinding::find_path(terrain, pos, player_pos, &mut ai.path.scratch) {
-                                ai.path.set(waypoints);
-                            } else {
+                            if !ai.path.find_path(terrain, pos, player_pos) {
                                 ai.path.clear();
                             }
                             ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL;
@@ -527,9 +531,7 @@ pub fn update_all(
                     if ai.path.is_empty() || ai.path.recompute_timer <= 0.0 {
                         let flee_dir = -dir_to_player;
                         let flee_target = pos + flee_dir * params.deaggro_range;
-                        if let Some(waypoints) = pathfinding::find_path(terrain, pos, flee_target, &mut ai.path.scratch) {
-                            ai.path.set(waypoints);
-                        } else {
+                        if !ai.path.find_path(terrain, pos, flee_target) {
                             ai.path.clear();
                         }
                         ai.path.recompute_timer = PATH_RECOMPUTE_INTERVAL;
