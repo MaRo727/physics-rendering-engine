@@ -1,8 +1,10 @@
 pub mod acceleration_structure;
+pub mod animation;
 pub mod context;
 pub mod frame;
 pub mod loading;
 pub mod mesh;
+pub mod model_loader;
 pub mod rt_pipeline;
 pub mod shapes;
 pub mod swapchain;
@@ -373,13 +375,17 @@ impl Renderer {
             shapes::flower(Vec3::new(0.20, 0.30, 0.85)),  // MESH_FLOWER_BLUE = 19
             shapes::flower(Vec3::new(0.90, 0.90, 0.88)),  // MESH_FLOWER_WHITE = 20
             shapes::flower(Vec3::new(0.60, 0.20, 0.70)),  // MESH_FLOWER_PURPLE = 21
-            shapes::ball_colored(16, 24, Vec3::new(0.15, 0.75, 0.20)), // MESH_SLIME = 22
+            model_loader::load_or_fallback("assets/models/slime.glb",
+                || shapes::ball_colored(16, 24, Vec3::new(0.15, 0.75, 0.20))), // MESH_SLIME = 22
             shapes::ball_colored(8, 12, Vec3::new(0.85, 0.70, 0.55)),  // MESH_FIST = 23
             shapes::ball_colored(10, 16, Vec3::new(1.0, 0.45, 0.1)),   // MESH_FIREBALL = 24
             shapes::ball_colored(6, 8, Vec3::new(0.5, 0.8, 1.0)),     // MESH_ICESHARD = 25
-            shapes::skeleton(),                                           // MESH_SKELETON = 26
-            shapes::goblin(),                                             // MESH_GOBLIN = 27
-            shapes::golem(),                                              // MESH_GOLEM = 28
+            model_loader::load_or_fallback("assets/models/skeleton.glb",
+                || shapes::skeleton()),                                   // MESH_SKELETON = 26
+            model_loader::load_or_fallback("assets/models/goblin.glb",
+                || shapes::goblin()),                                     // MESH_GOBLIN = 27
+            model_loader::load_or_fallback("assets/models/golem.glb",
+                || shapes::golem()),                                      // MESH_GOLEM = 28
             shapes::arrow(),                                              // MESH_ARROW = 29
             shapes::block_slab(),                                             // MESH_BLOCK_SLAB = 30
             shapes::block_vertical_slab(),                                    // MESH_BLOCK_VSLAB = 31
