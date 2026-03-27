@@ -159,12 +159,16 @@ impl World {
     }
 
     /// Log player stats to console (debug).
-    pub fn log_player_stats(&self) {
+    pub fn log_player_stats(&mut self) {
+        // Compute bonuses first (needs &mut), then use immutable refs for the rest.
+        let bonuses = {
+            let player = self.player_mut();
+            player.equipment.as_mut()
+                .map(|eq| eq.total_bonuses())
+                .unwrap_or(StatBonuses::default())
+        };
         let player = self.player();
         if let Some(ref stats) = player.stats {
-            let bonuses = player.equipment.as_ref()
-                .map(|eq| eq.total_bonuses())
-                .unwrap_or(StatBonuses::default());
             let derived = stats.compute_derived(&bonuses);
             println!("=== Player Stats (Lv.{}) ===", stats.level);
             println!("  HP: {:.0}/{:.0}  MP: {:.0}/{:.0}  SP: {:.0}/{:.0}",
