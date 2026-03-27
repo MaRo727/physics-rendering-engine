@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glam::Vec3;
 use crate::physics::body::{ColliderHandle, Isometry, NaPoint3, RigidBodyHandle, SharedShape};
@@ -772,10 +772,21 @@ impl BuildingGrid {
         let mut vertices = Vec::with_capacity(estimate);
         let mut indices = Vec::with_capacity(estimate);
 
+        // Build maps for greedy meshing of unbaked pristine cubes.
+        let mut all_cells_map: HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)> =
+            HashMap::with_capacity(self.cells.len());
+        let mut cube_colors: HashMap<(i32, i32, i32), Vec3> = HashMap::new();
+
         for (&(cx, cy, cz), cell) in &self.cells {
+            all_cells_map.insert(
+                (cx, cy, cz),
+                (cell.sub_blocks, cell.block_type, cell.rotation, cell.color),
+            );
             let pristine_mask = rotate_sub_blocks(initial_sub_blocks(cell.block_type, cell.rotation), cell.rotation);
-            if cell.sub_blocks == pristine_mask {
-                // Clean mesh path — emit the geometric shape with neighbor face culling.
+            if cell.sub_blocks == pristine_mask && cell.block_type == BlockType::Cube {
+                cube_colors.insert((cx, cy, cz), cell.color);
+            } else if cell.sub_blocks == pristine_mask {
+                // Non-cube pristine block — emit with per-block neighbor culling.
                 emit_block_mesh(
                     cell.block_type, cell.rotation, cx, cy, cz,
                     &self.cells, self, cell.color, &mut vertices, &mut indices,
@@ -785,6 +796,9 @@ impl BuildingGrid {
                 self.emit_sub_block_mesh(cx, cy, cz, cell, &mut vertices, &mut indices);
             }
         }
+
+        // Greedy-mesh the pristine cubes.
+        greedy_mesh_cubes(&all_cells_map, &cube_colors, &mut vertices, &mut indices);
 
         // Append drag-to-fill preview blocks (tinted, no neighbor culling).
         for &((cx, cy, cz), block_type, rotation, color) in &self.preview_cells {
@@ -1117,12 +1131,17 @@ impl BuildingGrid {
                 group_cells.insert((b.x, b.y, b.z), (b.sub_blocks, bt, b.rotation, color));
             }
 
+            // Separate pristine cubes (greedy-meshed) from other block types.
+            let mut cube_colors: HashMap<(i32, i32, i32), Vec3> = HashMap::new();
+
             for b in &group.blocks {
                 let bt = BlockType::from_u8(b.block_type);
                 let color = Vec3::new(b.color[0], b.color[1], b.color[2]) * tint;
                 let pristine = rotate_sub_blocks(initial_sub_blocks(bt, b.rotation), b.rotation);
 
-                if b.sub_blocks == pristine {
+                if b.sub_blocks == pristine && bt == BlockType::Cube {
+                    cube_colors.insert((b.x, b.y, b.z), color);
+                } else if b.sub_blocks == pristine {
                     emit_block_mesh_with_cells(
                         bt, b.rotation, b.x, b.y, b.z,
                         &group_cells, color, vertices, indices,
@@ -1134,6 +1153,8 @@ impl BuildingGrid {
                     );
                 }
             }
+
+            greedy_mesh_cubes(&group_cells, &cube_colors, vertices, indices);
         }
     }
 }
@@ -1393,6 +1414,156 @@ fn push_tri(
     vertices.push(Vertex { position: b, normal, color });
     vertices.push(Vertex { position: c, normal, color });
     indices.extend_from_slice(&[base, base + 1, base + 2]);
+}
+
+// ---------------------------------------------------------------------------
+// Greedy meshing
+// ---------------------------------------------------------------------------
+
+/// Bit-exact color key for greedy meshing (avoids float equality issues).
+fn color_key(c: Vec3) -> (u32, u32, u32) {
+    (c.x.to_bits(), c.y.to_bits(), c.z.to_bits())
+}
+
+/// Emit a merged quad from greedy meshing.
+/// `face_idx`: 0=+Y, 1=-Y, 2=+X, 3=-X, 4=+Z, 5=-Z.
+/// Coordinate mapping: Y faces→(slice=y,u=x,v=z), X faces→(slice=x,u=z,v=y), Z faces→(slice=z,u=x,v=y).
+fn emit_greedy_quad(
+    face_idx: usize, slice: i32,
+    u0: i32, v0: i32, u1: i32, v1: i32,
+    normal: Vec3, color: Vec3,
+    vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+) {
+    let (fu0, fv0) = (u0 as f32, v0 as f32);
+    let (fu1, fv1) = (u1 as f32, v1 as f32);
+
+    let (a, b, c, d) = match face_idx {
+        0 => { // +Y: face at y+1
+            let y = (slice + 1) as f32;
+            (Vec3::new(fu0, y, fv1), Vec3::new(fu1, y, fv1),
+             Vec3::new(fu1, y, fv0), Vec3::new(fu0, y, fv0))
+        }
+        1 => { // -Y: face at y
+            let y = slice as f32;
+            (Vec3::new(fu0, y, fv0), Vec3::new(fu1, y, fv0),
+             Vec3::new(fu1, y, fv1), Vec3::new(fu0, y, fv1))
+        }
+        2 => { // +X: face at x+1
+            let x = (slice + 1) as f32;
+            (Vec3::new(x, fv0, fu1), Vec3::new(x, fv1, fu1),
+             Vec3::new(x, fv1, fu0), Vec3::new(x, fv0, fu0))
+        }
+        3 => { // -X: face at x
+            let x = slice as f32;
+            (Vec3::new(x, fv0, fu0), Vec3::new(x, fv1, fu0),
+             Vec3::new(x, fv1, fu1), Vec3::new(x, fv0, fu1))
+        }
+        4 => { // +Z: face at z+1
+            let z = (slice + 1) as f32;
+            (Vec3::new(fu0, fv0, z), Vec3::new(fu1, fv0, z),
+             Vec3::new(fu1, fv1, z), Vec3::new(fu0, fv1, z))
+        }
+        _ => { // -Z: face at z
+            let z = slice as f32;
+            (Vec3::new(fu1, fv0, z), Vec3::new(fu0, fv0, z),
+             Vec3::new(fu0, fv1, z), Vec3::new(fu1, fv1, z))
+        }
+    };
+
+    push_quad(vertices, indices, a, b, c, d, normal, color);
+}
+
+/// Greedy-mesh visible faces of pristine cubes.
+/// `all_cells` is the full block map (for occlusion checks against any block type).
+/// `cube_colors` maps only pristine-cube positions to their (tinted) colors.
+fn greedy_mesh_cubes(
+    all_cells: &HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)>,
+    cube_colors: &HashMap<(i32, i32, i32), Vec3>,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) {
+    if cube_colors.is_empty() { return; }
+
+    // (neighbor_dx, dy, dz, neighbor_face_mask, face_idx)
+    const FACE_DIRS: [(i32, i32, i32, u64, usize); 6] = [
+        ( 0,  1,  0, BOTTOM_LAYER_MASK, 0), // +Y
+        ( 0, -1,  0, TOP_LAYER_MASK,    1), // -Y
+        ( 1,  0,  0, NEG_X_FACE_MASK,   2), // +X
+        (-1,  0,  0, POS_X_FACE_MASK,   3), // -X
+        ( 0,  0,  1, NEG_Z_FACE_MASK,   4), // +Z
+        ( 0,  0, -1, POS_Z_FACE_MASK,   5), // -Z
+    ];
+    const NORMALS: [Vec3; 6] = [
+        Vec3::Y, Vec3::NEG_Y, Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z,
+    ];
+
+    for &(dx, dy, dz, mask, fi) in &FACE_DIRS {
+        // Collect visible faces grouped by slice coordinate.
+        let mut slices: HashMap<i32, Vec<(i32, i32, Vec3)>> = HashMap::new();
+
+        for (&(cx, cy, cz), &color) in cube_colors {
+            let occluded = all_cells.get(&(cx + dx, cy + dy, cz + dz))
+                .map_or(false, |(subs, _, _, _)| subs & mask == mask);
+            if !occluded {
+                let (slice, u, v) = match fi {
+                    0 | 1 => (cy, cx, cz),
+                    2 | 3 => (cx, cz, cy),
+                    _     => (cz, cx, cy),
+                };
+                slices.entry(slice).or_default().push((u, v, color));
+            }
+        }
+
+        let normal = NORMALS[fi];
+
+        for (&slice, faces) in &slices {
+            let mut face_map: HashMap<(i32, i32), Vec3> = HashMap::with_capacity(faces.len());
+            for &(u, v, color) in faces {
+                face_map.insert((u, v), color);
+            }
+
+            let mut visited = HashSet::with_capacity(faces.len());
+            let mut sorted: Vec<(i32, i32)> = face_map.keys().copied().collect();
+            sorted.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+            for (u, v) in sorted {
+                if visited.contains(&(u, v)) { continue; }
+                let color = face_map[&(u, v)];
+                let ck = color_key(color);
+
+                // Extend width in u direction.
+                let mut w = 1i32;
+                while face_map.get(&(u + w, v))
+                    .map_or(false, |c| color_key(*c) == ck && !visited.contains(&(u + w, v)))
+                {
+                    w += 1;
+                }
+
+                // Extend height in v direction.
+                let mut h = 1i32;
+                'extend: loop {
+                    for du in 0..w {
+                        let key = (u + du, v + h);
+                        if !face_map.get(&key)
+                            .map_or(false, |c| color_key(*c) == ck && !visited.contains(&key))
+                        {
+                            break 'extend;
+                        }
+                    }
+                    h += 1;
+                }
+
+                // Mark cells as visited.
+                for dv in 0..h {
+                    for du in 0..w {
+                        visited.insert((u + du, v + dv));
+                    }
+                }
+
+                emit_greedy_quad(fi, slice, u, v, u + w, v + h, normal, color, vertices, indices);
+            }
+        }
+    }
 }
 
 /// Rotate a vertex position around cell center (0.5, y, 0.5) by rotation*90° CW.
