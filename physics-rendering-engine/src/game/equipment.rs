@@ -14,6 +14,9 @@ pub struct EquipmentSlots {
     pub boots: Option<ItemId>,
     pub accessory1: Option<ItemId>,
     pub accessory2: Option<ItemId>,
+    /// Cached stat bonuses — invalidated on equip/unequip.
+    #[serde(skip)]
+    cached_bonuses: Option<StatBonuses>,
 }
 
 impl EquipmentSlots {
@@ -25,6 +28,7 @@ impl EquipmentSlots {
             ItemKind::Weapon => {
                 let prev = self.weapon.take();
                 self.weapon = Some(item_id);
+                self.cached_bonuses = None;
                 Ok(prev)
             }
             ItemKind::Armor => {
@@ -39,6 +43,7 @@ impl EquipmentSlots {
                 };
                 let prev = slot.take();
                 *slot = Some(item_id);
+                self.cached_bonuses = None;
                 Ok(prev)
             }
             _ => Err("Item is not equippable"),
@@ -55,11 +60,18 @@ impl EquipmentSlots {
             EquipSlotKind::Boots => &mut self.boots,
             EquipSlotKind::Accessory => &mut self.accessory1,
         };
-        s.take()
+        let item = s.take();
+        if item.is_some() {
+            self.cached_bonuses = None;
+        }
+        item
     }
 
-    /// Sum all stat bonuses from equipped armor.
-    pub fn total_bonuses(&self) -> StatBonuses {
+    /// Sum all stat bonuses from equipped armor. Returns cached value if equipment hasn't changed.
+    pub fn total_bonuses(&mut self) -> StatBonuses {
+        if let Some(ref cached) = self.cached_bonuses {
+            return cached.clone();
+        }
         let mut total = StatBonuses::default();
         let slots = [self.head, self.chest, self.legs, self.boots, self.accessory1, self.accessory2];
         for slot in slots.iter().flatten() {
@@ -76,6 +88,7 @@ impl EquipmentSlots {
                 }
             }
         }
+        self.cached_bonuses = Some(total.clone());
         total
     }
 

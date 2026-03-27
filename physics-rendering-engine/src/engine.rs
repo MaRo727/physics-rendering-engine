@@ -1722,8 +1722,8 @@ impl Engine {
 
             // --- Compute player derived stats once per frame ---
             {
-                let p = self.world.player();
-                let bonuses = p.equipment.as_ref()
+                let p = self.world.player_mut();
+                let bonuses = p.equipment.as_mut()
                     .map(|eq| eq.total_bonuses())
                     .unwrap_or_default();
                 self.player_derived = p.stats.as_ref()
@@ -1859,17 +1859,22 @@ impl Engine {
                 }
             }
 
-            // --- Remove dead enemies + award XP + loot ---
+            // --- Remove dead enemies + award XP + loot; daytime despawn (single pass) ---
+            let is_daytime = !enemy_ai::is_night(self.time_of_day);
             self.dead_ids.clear();
-            self.dead_ids.extend(
-                self.world.entities.iter()
-                    .filter(|e| e.kind == EntityKind::Enemy)
-                    .filter(|e| e.stats.as_ref().map_or(false, |s| s.is_dead()))
-                    .map(|e| {
-                        let level = e.stats.as_ref().map_or(1, |s| s.level);
-                        (e.id, level)
-                    }),
-            );
+            self.despawn_ids.clear();
+            for e in self.world.entities.iter() {
+                if e.kind != EntityKind::Enemy { continue; }
+                if e.stats.as_ref().map_or(false, |s| s.is_dead()) {
+                    let level = e.stats.as_ref().map_or(1, |s| s.level);
+                    self.dead_ids.push((e.id, level));
+                } else if is_daytime {
+                    let epos = self.physics.body_position(e.body.rigid_body);
+                    if (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5 {
+                        self.despawn_ids.push(e.id);
+                    }
+                }
+            }
             for i in 0..self.dead_ids.len() {
                 let (dead_id, enemy_level) = self.dead_ids[i];
                 // Grab enemy type before removing.
@@ -1917,33 +1922,21 @@ impl Engine {
                     }
                 }
             }
+            for i in 0..self.despawn_ids.len() {
+                let id = self.despawn_ids[i];
+                if let Some(entity) = self.world.remove_by_id(id) {
+                    self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
+                    self.enemy_ais.remove(&id);
+                }
+            }
 
             // --- Night enemy spawning ---
-            if enemy_ai::is_night(self.time_of_day) {
+            if !is_daytime {
                 self.spawn_timer -= dt;
                 if self.spawn_timer <= 0.0 {
                     self.try_spawn_enemy(player_pos);
                     // Spawn interval: 2-4 seconds.
                     self.spawn_timer = 2.0 + enemy_ai::cheap_rand_pub(&mut self.spawn_seed) * 2.0;
-                }
-            } else {
-                // Daytime: despawn enemies far from player.
-                self.despawn_ids.clear();
-                self.despawn_ids.extend(
-                    self.world.entities.iter()
-                        .filter(|e| e.kind == EntityKind::Enemy)
-                        .filter(|e| {
-                            let epos = self.physics.body_position(e.body.rigid_body);
-                            (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5
-                        })
-                        .map(|e| e.id),
-                );
-                for i in 0..self.despawn_ids.len() {
-                    let id = self.despawn_ids[i];
-                    if let Some(entity) = self.world.remove_by_id(id) {
-                        self.physics.remove_body(entity.body.rigid_body, entity.body.collider);
-                        self.enemy_ais.remove(&id);
-                    }
                 }
             }
 
@@ -3157,7 +3150,8 @@ impl Engine {
             let pr = map_y + half * map_pixel;
             self.ui.rect(pc - 2.0, pr - 2.0, 4.0, 4.0, [1.0, 1.0, 1.0, 1.0]);
 
-            // NPC and enemy dots.
+            // NPC and enemy dots — precompute world-space radius to skip distant entities cheaply.
+            let minimap_world_radius = half * world_scale; // 200 world units
             for e in self.world.entities.iter() {
                 let (size, color) = match e.kind {
                     EntityKind::Npc => (2.0, [0.2, 0.8, 1.0, 1.0]),
@@ -3165,13 +3159,17 @@ impl Engine {
                     _ => continue,
                 };
                 let epos = self.physics.body_position(e.body.rigid_body);
-                let dx = (epos.x - player_pos.x) / world_scale;
-                let dz = (epos.z - player_pos.z) / world_scale;
-                if dx.abs() < half && dz.abs() < half {
-                    let mx = map_x + (dx + half) * map_pixel;
-                    let my = map_y + (dz + half) * map_pixel;
-                    self.ui.rect(mx - size, my - size, size * 2.0, size * 2.0, color);
+                // Quick world-space distance reject (avoids division for far entities).
+                let wx = epos.x - player_pos.x;
+                let wz = epos.z - player_pos.z;
+                if wx.abs() > minimap_world_radius || wz.abs() > minimap_world_radius {
+                    continue;
                 }
+                let dx = wx / world_scale;
+                let dz = wz / world_scale;
+                let mx = map_x + (dx + half) * map_pixel;
+                let my = map_y + (dz + half) * map_pixel;
+                self.ui.rect(mx - size, my - size, size * 2.0, size * 2.0, color);
             }
         }
 
