@@ -316,7 +316,10 @@ pub struct Renderer {
     base_mesh_data: Vec<(Vec<mesh::Vertex>, Vec<u32>)>,
     base_mesh_count: usize,
     sub_mesh_infos: Vec<mesh::SubMeshInfo>,
-    building_data: Option<(Vec<mesh::Vertex>, Vec<u32>)>,
+    /// Pre-allocated reusable buffers for building mesh data.
+    /// Empty buffers mean "no building data". Capacity is retained across updates.
+    building_verts_buf: Vec<mesh::Vertex>,
+    building_indices_buf: Vec<u32>,
     /// Allocated capacity (verts, indices) for the building slot in the combined buffer.
     building_capacity: Option<(u32, u32)>,
     blas_list: Vec<Blas>,
@@ -532,7 +535,8 @@ impl Renderer {
             base_mesh_data,
             base_mesh_count,
             sub_mesh_infos,
-            building_data: None,
+            building_verts_buf: Vec::new(),
+            building_indices_buf: Vec::new(),
             building_capacity: Some((BUILDING_INITIAL_VERTS, BUILDING_INITIAL_INDICES)),
             blas_list,
             tlas,
@@ -783,7 +787,7 @@ impl Renderer {
         building_indices: &[u32],
     ) -> Result<()> {
         if building_verts.is_empty() {
-            if self.building_data.is_some() {
+            if !self.building_verts_buf.is_empty() {
                 // All buildings removed — remove building BLAS but keep the
                 // pre-allocated slot so future placements still use the fast path.
                 unsafe { self.context.device.device_wait_idle()? };
@@ -792,7 +796,8 @@ impl Renderer {
                 }
                 self.sub_mesh_infos[self.base_mesh_count].vertex_count = 0;
                 self.sub_mesh_infos[self.base_mesh_count].index_count = 0;
-                self.building_data = None;
+                self.building_verts_buf.clear();
+                self.building_indices_buf.clear();
             }
             return Ok(());
         }
@@ -821,14 +826,19 @@ impl Renderer {
                     Blas::from_range(&self.context, &self.mesh, building_info)?;
                 self.blas_list.push(building_blas);
 
-                self.building_data =
-                    Some((building_verts.to_vec(), building_indices.to_vec()));
+                self.building_verts_buf.clear();
+                self.building_verts_buf.extend_from_slice(building_verts);
+                self.building_indices_buf.clear();
+                self.building_indices_buf.extend_from_slice(building_indices);
                 return Ok(());
             }
         }
 
         // Slow path: first building or mesh grew — full rebuild.
-        self.building_data = Some((building_verts.to_vec(), building_indices.to_vec()));
+        self.building_verts_buf.clear();
+        self.building_verts_buf.extend_from_slice(building_verts);
+        self.building_indices_buf.clear();
+        self.building_indices_buf.extend_from_slice(building_indices);
         self.rebuild_combined_mesh(&[])
     }
 
@@ -879,8 +889,8 @@ impl Renderer {
         // Build combined mesh directly from references — no cloning base_mesh_data.
         let total_verts: usize = self.base_mesh_data.iter().map(|(v, _)| v.len()).sum();
         let total_indices: usize = self.base_mesh_data.iter().map(|(_, i)| i.len()).sum();
-        let extra_verts = self.building_data.as_ref().map_or(0, |bd| bd.0.len());
-        let extra_indices = self.building_data.as_ref().map_or(0, |bd| bd.1.len());
+        let extra_verts = self.building_verts_buf.len();
+        let extra_indices = self.building_indices_buf.len();
         // Allocate 2x headroom for building so future growth uses the fast path.
         let building_vert_cap = (extra_verts * 2).max(BUILDING_INITIAL_VERTS as usize);
         let building_idx_cap = (extra_indices * 2).max(BUILDING_INITIAL_INDICES as usize);
@@ -904,22 +914,15 @@ impl Renderer {
         // Building slot — always present, with pre-allocated capacity.
         let building_vert_offset = combined_verts.len() as u32;
         let building_idx_offset = combined_indices.len() as u32;
-        if let Some(ref bd) = self.building_data {
-            sub_mesh_infos.push(mesh::SubMeshInfo {
-                vertex_offset: building_vert_offset,
-                index_offset: building_idx_offset,
-                vertex_count: bd.0.len() as u32,
-                index_count: bd.1.len() as u32,
-            });
-            combined_verts.extend_from_slice(&bd.0);
-            combined_indices.extend_from_slice(&bd.1);
-        } else {
-            sub_mesh_infos.push(mesh::SubMeshInfo {
-                vertex_offset: building_vert_offset,
-                index_offset: building_idx_offset,
-                vertex_count: 0,
-                index_count: 0,
-            });
+        sub_mesh_infos.push(mesh::SubMeshInfo {
+            vertex_offset: building_vert_offset,
+            index_offset: building_idx_offset,
+            vertex_count: self.building_verts_buf.len() as u32,
+            index_count: self.building_indices_buf.len() as u32,
+        });
+        if !self.building_verts_buf.is_empty() {
+            combined_verts.extend_from_slice(&self.building_verts_buf);
+            combined_indices.extend_from_slice(&self.building_indices_buf);
         }
         // Pad to full capacity.
         let zero_vert = mesh::Vertex { position: glam::Vec3::ZERO, normal: glam::Vec3::ZERO, color: glam::Vec3::ZERO };
@@ -942,7 +945,7 @@ impl Renderer {
         }
 
         // Add building BLAS if we have building data.
-        if self.building_data.is_some() {
+        if !self.building_verts_buf.is_empty() {
             let building_info = &self.sub_mesh_infos[self.base_mesh_count];
             let building_blas = Blas::from_range(&self.context, &self.mesh, building_info)?;
             self.blas_list.push(building_blas);

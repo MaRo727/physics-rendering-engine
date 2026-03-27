@@ -1115,6 +1115,10 @@ impl BuildingGrid {
         &self, vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
         ghost: bool, selected: Option<usize>,
     ) {
+        // Pre-allocate a single HashMap and reuse it across all groups to avoid
+        // per-group heap allocation. `.clear()` retains the allocated capacity.
+        let mut group_cells: HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)> = HashMap::new();
+
         for (gi, group) in self.groups.iter().enumerate() {
             // Determine tint: ghost mode dims groups, selected group is brighter.
             let tint = if ghost {
@@ -1123,8 +1127,8 @@ impl BuildingGrid {
                 1.0
             };
 
-            // Build a temporary cell map for neighbor culling within the group.
-            let mut group_cells: HashMap<(i32, i32, i32), (u64, BlockType, u8, Vec3)> = HashMap::new();
+            // Clear and reuse the HashMap for neighbor culling within the group.
+            group_cells.clear();
             for b in &group.blocks {
                 let bt = BlockType::from_u8(b.block_type);
                 let color = Vec3::new(b.color[0], b.color[1], b.color[2]);
