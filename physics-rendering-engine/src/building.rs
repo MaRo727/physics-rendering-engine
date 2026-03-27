@@ -418,6 +418,8 @@ pub struct BakedGroup {
 pub struct BuildingGrid {
     cells: HashMap<(i32, i32, i32), CellData>,
     groups: Vec<BakedGroup>,
+    /// Reverse lookup: rigid body handle → index into `groups`.
+    group_body_map: HashMap<RigidBodyHandle, usize>,
     dirty: bool,
     /// Temporary preview cells for drag-to-fill (position + color). No physics bodies.
     preview_cells: Vec<((i32, i32, i32), BlockType, u8, Vec3)>,
@@ -428,6 +430,7 @@ impl BuildingGrid {
         Self {
             cells: HashMap::new(),
             groups: Vec::new(),
+            group_body_map: HashMap::new(),
             dirty: false,
             preview_cells: Vec::new(),
         }
@@ -985,11 +988,13 @@ impl BuildingGrid {
         // Create compound physics body for the group.
         let (rb, col) = build_group_physics(physics, &blocks);
 
+        let idx = self.groups.len();
         self.groups.push(BakedGroup {
             blocks,
             rigid_body: Some(rb),
             collider: Some(col),
         });
+        self.group_body_map.insert(rb, idx);
         self.dirty = true;
         true
     }
@@ -997,11 +1002,13 @@ impl BuildingGrid {
     /// Add a pre-built group (from blueprint load). Creates compound physics.
     pub fn load_group(&mut self, physics: &mut PhysicsWorld, blocks: Vec<crate::blueprint::BlockEntry>) {
         let (rb, col) = build_group_physics(physics, &blocks);
+        let idx = self.groups.len();
         self.groups.push(BakedGroup {
             blocks,
             rigid_body: Some(rb),
             collider: Some(col),
         });
+        self.group_body_map.insert(rb, idx);
         self.dirty = true;
     }
 
@@ -1025,7 +1032,17 @@ impl BuildingGrid {
 
     /// Check if a rigid body belongs to a baked group. Returns group index if found.
     pub fn group_for_body(&self, rb: RigidBodyHandle) -> Option<usize> {
-        self.groups.iter().position(|g| g.rigid_body == Some(rb))
+        self.group_body_map.get(&rb).copied()
+    }
+
+    /// Rebuild the group_body_map after a removal shifts indices.
+    fn rebuild_group_body_map(&mut self) {
+        self.group_body_map.clear();
+        for (i, g) in self.groups.iter().enumerate() {
+            if let Some(rb) = g.rigid_body {
+                self.group_body_map.insert(rb, i);
+            }
+        }
     }
 
     /// Unbake a group back into individual editable cells. Returns number of blocks restored.
@@ -1033,8 +1050,10 @@ impl BuildingGrid {
         let group = self.groups.remove(group_idx);
         // Remove the compound physics body.
         if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+            self.group_body_map.remove(&rb);
             physics.remove_body(rb, col);
         }
+        self.rebuild_group_body_map();
         // Restore blocks as individual cells.
         let count = group.blocks.len();
         for b in &group.blocks {
@@ -1050,8 +1069,10 @@ impl BuildingGrid {
     pub fn destroy_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize) {
         let group = self.groups.remove(group_idx);
         if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+            self.group_body_map.remove(&rb);
             physics.remove_body(rb, col);
         }
+        self.rebuild_group_body_map();
         self.dirty = true;
     }
 

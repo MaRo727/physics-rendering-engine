@@ -178,7 +178,7 @@ pub fn capsule_colored(radius: f32, height: f32, stacks: u32, slices: u32, color
 pub fn water_plane() -> (Vec<Vertex>, Vec<u32>) {
     let color = Vec3::new(0.1, 0.3, 0.6);
     let half = 1920.0; // covers 3840x3840 for the 3600x3600 world
-    let res = 160; // 160x160 grid
+    let res = 512; // 512x512 grid — finer tessellation hides edge artifacts
     let step = (half * 2.0) / res as f32;
 
     let mut vertices = Vec::with_capacity((res + 1) * (res + 1));

@@ -2581,9 +2581,8 @@ impl Engine {
         // Grass and flowers disabled for performance.
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
-        // Wave period ~52.36 (2*PI/0.12), so wrap offset to stay seamless.
-        let wave_period = std::f32::consts::TAU / 0.12;
-        let water_offset = (self.water_time * 2.0) % wave_period;
+        const WAVE_PERIOD: f32 = std::f32::consts::TAU / 0.12;
+        let water_offset = (self.water_time * 2.0) % WAVE_PERIOD;
         self.frame_transforms.push(Mat4::from_translation(Vec3::new(water_offset, WATER_LEVEL, water_offset * 0.6)));
         self.frame_instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
 

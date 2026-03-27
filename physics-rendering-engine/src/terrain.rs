@@ -373,9 +373,10 @@ impl TerrainGrid {
         let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
         let dirty_chunks = vec![false; num_chunks];
 
+        let original_heights = heights.clone();
         Self {
             heights,
-            original_heights: None,
+            original_heights: Some(original_heights),
             biomes,
             dirty_chunks,
         }
@@ -469,9 +470,10 @@ impl TerrainGrid {
         let num_chunks = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize;
         let dirty_chunks = vec![false; num_chunks];
 
+        let original_heights = heights.clone();
         Some(Self {
             heights,
-            original_heights: None,
+            original_heights: Some(original_heights),
             biomes,
             dirty_chunks,
         })
@@ -492,10 +494,8 @@ impl TerrainGrid {
         let col = (gx + GRID_HALF) as usize;
         let row = (gz + GRID_HALF) as usize;
         let idx = row * GRID_SIZE + col;
-        match &self.original_heights {
-            Some(orig) => orig[idx],
-            None => self.heights[idx],
-        }
+        // original_heights is always pre-allocated at init.
+        self.original_heights.as_ref().unwrap()[idx]
     }
 
     fn biome_at_grid(&self, gx: i32, gz: i32) -> Biome {
@@ -552,10 +552,7 @@ impl TerrainGrid {
 
     /// Lower terrain within `radius` of `point` by up to `amount` (with linear falloff).
     pub fn deform_ground(&mut self, point: Vec3, radius: f32, amount: f32) {
-        // Lazily snapshot original heights on first deformation.
-        if self.original_heights.is_none() {
-            self.original_heights = Some(self.heights.clone());
-        }
+        // original_heights is pre-allocated at terrain init — no lazy allocation stall.
         let step = CELL_SIZE as f32;
         let min_gx = ((point.x - radius) / step).floor() as i32;
         let max_gx = ((point.x + radius) / step).ceil() as i32;
