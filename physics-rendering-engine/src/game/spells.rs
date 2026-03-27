@@ -1,5 +1,7 @@
 /// Spell definitions, cooldown tracking, projectile management, and casting.
 
+use std::collections::HashSet;
+
 use glam::Vec3;
 use crate::physics::body::ColliderHandle;
 use crate::renderer::{MESH_FIREBALL, MESH_ICESHARD};
@@ -273,13 +275,15 @@ impl SpellSystem {
                         }
                     }
                     // AoE: damage nearby enemies.
+                    // Collect already-hit IDs into a HashSet for O(1) dedup lookups.
+                    let already_hit: HashSet<EntityId> = hits.iter().map(|h| h.entity_id).collect();
                     for entity in world.entities.iter().filter(|e| e.kind == EntityKind::Enemy) {
+                        if already_hit.contains(&entity.id) {
+                            continue;
+                        }
                         let epos = physics.body_position(entity.body.rigid_body);
                         let dist = (epos - hit_pos).length();
                         if dist < FIREBALL_AOE_RADIUS && dist > 0.1 {
-                            if hits.iter().any(|h| h.entity_id == entity.id) {
-                                continue;
-                            }
                             let falloff = 1.0 - (dist / FIREBALL_AOE_RADIUS);
                             hits.push(SpellHit {
                                 entity_id: entity.id,
