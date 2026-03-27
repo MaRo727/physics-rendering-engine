@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::mpsc;
 
 use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
@@ -71,6 +72,21 @@ fn world_panels() -> &'static [PanelDef] {
 
 fn find_panel(gx: i32, gz: i32) -> Option<&'static PanelDef> {
     world_panels().iter().find(|p| p.grid_x == gx && p.grid_z == gz)
+}
+
+/// Distance from panel edge at which we start preloading the adjacent panel.
+const PRELOAD_DISTANCE: f32 = 300.0;
+
+/// CPU-side data pre-generated on a background thread for an adjacent panel.
+struct PreloadedPanel {
+    gx: i32,
+    gz: i32,
+    terrain: TerrainGrid,
+    chunk_meshes: Vec<(Vec<crate::renderer::mesh::Vertex>, Vec<u32>)>,
+    terrain_chunks: Vec<TerrainChunkInfo>,
+    structures: StructureGrid,
+    grass: GrassGrid,
+    trunk_colliders: Vec<(usize, Vec<(Vec3, Vec3)>)>,
 }
 
 /// Editor color palette (12 colors).
@@ -349,6 +365,10 @@ pub struct Engine {
     fire_particle_timer: f32,
     /// Cached player biome from update(), reused in render() to avoid redundant lookups.
     cached_player_biome: Biome,
+    // Panel preloading: background thread generates CPU data for adjacent panels.
+    panel_preload: Option<PreloadedPanel>,
+    panel_preload_rx: Option<mpsc::Receiver<PreloadedPanel>>,
+    preloading_panel: Option<(i32, i32)>,
 }
 
 /// Number of progress steps reported by `init_world`.
@@ -595,6 +615,9 @@ impl Engine {
             frame_torch_dists: Vec::new(),
             fire_particle_timer: 0.0,
             cached_player_biome: Biome::Plains,
+            panel_preload: None,
+            panel_preload_rx: None,
+            preloading_panel: None,
         };
         engine.spawn_npcs();
         engine.spawn_world_structures();
@@ -2175,6 +2198,82 @@ impl Engine {
         }
     }
 
+    /// Spawn a background thread to pre-generate CPU-side data for an adjacent panel.
+    fn start_panel_preload(&mut self, gx: i32, gz: i32) {
+        let panel = match find_panel(gx, gz) {
+            Some(p) => p,
+            None => return,
+        };
+        // Already preloading or preloaded this panel — skip.
+        if self.preloading_panel == Some((gx, gz)) {
+            return;
+        }
+        if let Some(ref p) = self.panel_preload {
+            if p.gx == gx && p.gz == gz {
+                return;
+            }
+        }
+
+        log::info!("Preloading panel ({}, {}) in background…", gx, gz);
+        let island = panel.island.clone();
+        let (tx, rx) = mpsc::channel();
+        self.panel_preload_rx = Some(rx);
+        self.preloading_panel = Some((gx, gz));
+        // Discard any previously completed preload for a different panel.
+        self.panel_preload = None;
+
+        std::thread::spawn(move || {
+            let terrain = TerrainGrid::generate_or_load(&island);
+            let (chunk_meshes, terrain_chunks, _) =
+                terrain.generate_chunks(MESH_TERRAIN_BASE);
+            let structures = StructureGrid::generate(island.seed, &terrain);
+            let grass = GrassGrid::generate(island.seed, &terrain);
+            let trunk_colliders = structures.trunk_colliders();
+            let _ = tx.send(PreloadedPanel {
+                gx, gz,
+                terrain,
+                chunk_meshes,
+                terrain_chunks,
+                structures,
+                grass,
+                trunk_colliders,
+            });
+        });
+    }
+
+    /// Poll the preload channel and trigger preloads for nearby panels.
+    fn poll_panel_preload(&mut self) {
+        // Check if background thread has finished.
+        if let Some(ref rx) = self.panel_preload_rx {
+            if let Ok(data) = rx.try_recv() {
+                log::info!("Panel ({}, {}) preloaded and ready", data.gx, data.gz);
+                self.panel_preload = Some(data);
+                self.panel_preload_rx = None;
+                self.preloading_panel = None;
+            }
+        }
+
+        // Determine which boundary the player is closest to and whether to
+        // start preloading an adjacent panel.
+        let pos = self.physics.body_position(self.player_rb);
+        let half = TERRAIN_HALF as f32;
+        let threshold = half - PRELOAD_DISTANCE;
+
+        // Pick the axis where the player is closest to the edge.
+        let candidates = [
+            (pos.x > threshold,  self.panel_x + 1, self.panel_z),
+            (pos.x < -threshold, self.panel_x - 1, self.panel_z),
+            (pos.z > threshold,  self.panel_x, self.panel_z + 1),
+            (pos.z < -threshold, self.panel_x, self.panel_z - 1),
+        ];
+        for &(near, gx, gz) in &candidates {
+            if near {
+                self.start_panel_preload(gx, gz);
+                return; // one preload at a time
+            }
+        }
+    }
+
     /// Switch to a different ocean panel, regenerating terrain, physics, and
     /// structures. `new_x`/`new_z` are the player's position in the new panel.
     fn load_panel(&mut self, gx: i32, gz: i32, new_x: f32, new_z: f32) {
@@ -2189,21 +2288,79 @@ impl Engine {
         self.panel_x = gx;
         self.panel_z = gz;
 
-        // 1. Generate new terrain.
-        self.terrain = TerrainGrid::generate_or_load(&panel.island);
+        // Try to use preloaded data from the background thread.
+        let preloaded = self.panel_preload.take().filter(|p| p.gx == gx && p.gz == gz)
+            .or_else(|| {
+                // If the background thread is still running for this panel, block on it.
+                if self.preloading_panel == Some((gx, gz)) {
+                    if let Some(rx) = self.panel_preload_rx.take() {
+                        self.preloading_panel = None;
+                        rx.recv().ok().filter(|p| p.gx == gx && p.gz == gz)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
 
-        // 2. Generate chunk meshes and update renderer.
-        let (chunk_meshes, terrain_chunks, _) =
-            self.terrain.generate_chunks(MESH_TERRAIN_BASE);
-        self.terrain_chunks = terrain_chunks;
+        if let Some(data) = preloaded {
+            log::info!("Using preloaded data for panel ({}, {})", gx, gz);
+            self.terrain = data.terrain;
+            self.terrain_chunks = data.terrain_chunks;
 
-        let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> =
-            chunk_meshes.into_iter().enumerate().map(|(i, (v, idx))| (i, v, idx)).collect();
-        if let Err(e) = self.renderer.update_terrain_chunks(updates) {
-            log::error!("Failed to update terrain chunks on panel swap: {}", e);
+            // Upload chunk meshes to GPU.
+            let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> =
+                data.chunk_meshes.into_iter().enumerate().map(|(i, (v, idx))| (i, v, idx)).collect();
+            if let Err(e) = self.renderer.update_terrain_chunks(updates) {
+                log::error!("Failed to update terrain chunks on panel swap: {}", e);
+            }
+
+            // Remove old tree physics, apply new structures + grass.
+            for &rb in &self.tree_rbs {
+                self.physics.remove_body_with_colliders(rb);
+            }
+            self.tree_rbs.clear();
+            self.structures = data.structures;
+            self.grass = data.grass;
+            for (_, trunks) in &data.trunk_colliders {
+                if !trunks.is_empty() {
+                    let rb = self.physics.add_compound_static(trunks);
+                    self.tree_rbs.insert(rb);
+                }
+            }
+        } else {
+            log::info!("No preloaded data, generating synchronously");
+            // 1. Generate new terrain.
+            self.terrain = TerrainGrid::generate_or_load(&panel.island);
+
+            // 2. Generate chunk meshes and update renderer.
+            let (chunk_meshes, terrain_chunks, _) =
+                self.terrain.generate_chunks(MESH_TERRAIN_BASE);
+            self.terrain_chunks = terrain_chunks;
+
+            let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> =
+                chunk_meshes.into_iter().enumerate().map(|(i, (v, idx))| (i, v, idx)).collect();
+            if let Err(e) = self.renderer.update_terrain_chunks(updates) {
+                log::error!("Failed to update terrain chunks on panel swap: {}", e);
+            }
+
+            // 4. Regenerate structures.
+            for &rb in &self.tree_rbs {
+                self.physics.remove_body_with_colliders(rb);
+            }
+            self.tree_rbs.clear();
+            self.structures = StructureGrid::generate(panel.island.seed, &self.terrain);
+            self.grass = GrassGrid::generate(panel.island.seed, &self.terrain);
+            for (_, trunks) in self.structures.trunk_colliders() {
+                if !trunks.is_empty() {
+                    let rb = self.physics.add_compound_static(&trunks);
+                    self.tree_rbs.insert(rb);
+                }
+            }
         }
 
-        // 3. Update physics heightfields in-place.
+        // 3. Update physics heightfields in-place (always needed).
         let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
         let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
         for i in 0..self.terrain.chunk_count() {
@@ -2215,21 +2372,6 @@ impl Engine {
                 ncols,
                 chunk_scale,
             );
-        }
-
-        // 4. Regenerate structures (trees / crystals) for the new island.
-        // Remove old tree physics.
-        for &rb in &self.tree_rbs {
-            self.physics.remove_body_with_colliders(rb);
-        }
-        self.tree_rbs.clear();
-        self.structures = StructureGrid::generate(panel.island.seed, &self.terrain);
-        self.grass = GrassGrid::generate(panel.island.seed, &self.terrain);
-        for (_, trunks) in self.structures.trunk_colliders() {
-            if !trunks.is_empty() {
-                let rb = self.physics.add_compound_static(&trunks);
-                self.tree_rbs.insert(rb);
-            }
         }
 
         // 5. Despawn all enemies.
@@ -2247,10 +2389,18 @@ impl Engine {
         self.physics.set_body_position(self.player_rb, Vec3::new(new_x, spawn_y, new_z));
         // Zero velocity so the player doesn't keep sliding.
         self.physics.set_body_linvel(self.player_rb, Vec3::ZERO);
+
+        // Clear any in-flight preload state (we just switched panels).
+        self.panel_preload = None;
+        self.panel_preload_rx = None;
+        self.preloading_panel = None;
     }
 
     /// Check if the player has crossed a panel boundary and swap if needed.
     fn check_panel_boundary(&mut self) {
+        // Poll background preloads and trigger new ones based on proximity.
+        self.poll_panel_preload();
+
         let pos = self.physics.body_position(self.player_rb);
         let half = TERRAIN_HALF as f32;
         let margin = 20.0; // spawn this far from the edge of the new panel

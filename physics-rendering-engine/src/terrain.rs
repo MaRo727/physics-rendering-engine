@@ -22,6 +22,7 @@ const OCEAN_FLOOR: f32 = -18.0;
 // Island definitions — each panel holds one island centered at (0,0).
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct IslandDef {
     pub radius: f64,
     pub noise_amp: f64,
