@@ -174,13 +174,9 @@ fn choose_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
         .unwrap_or(formats[0])
 }
 
-fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    // Prefer MAILBOX: non-blocking like IMMEDIATE but replaces queued
-    // images instead of tearing, so the compositor still gets whole
-    // frames.  Falls back to FIFO (vsync) when unavailable.
-    if modes.contains(&vk::PresentModeKHR::MAILBOX) {
-        return vk::PresentModeKHR::MAILBOX;
-    }
+fn choose_present_mode(_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    // FIFO is the only mode guaranteed tear-free by the Vulkan spec.
+    // MAILBOX can tear on some drivers/compositors (especially Linux).
     vk::PresentModeKHR::FIFO
 }
 

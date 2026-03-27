@@ -662,8 +662,23 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
+    /// Wait for the GPU to finish the previous use of this frame's resources.
+    /// Must be called before writing any per-frame mapped buffers (UI, point
+    /// lights) that are uploaded outside of `draw_frame`.
+    pub fn wait_for_frame(&self) -> Result<()> {
+        let frame = &self.frames[self.current_frame];
+        unsafe {
+            self.context.device.wait_for_fences(
+                std::slice::from_ref(&frame.in_flight),
+                true,
+                u64::MAX,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Upload UI primitives for the current frame.
-    /// Must be called before `draw_frame`.
+    /// Must be called after `wait_for_frame` and before `draw_frame`.
     /// Font bitmap data is written once at init; only the header and dynamic
     /// primitives are memcpy'd here.
     pub fn upload_ui(&mut self, prims: &[ui::UiPrimitive], screen_w: u32, screen_h: u32) {
@@ -1004,8 +1019,20 @@ impl Renderer {
         }
 
         let fi = self.current_frame;
+        let frame = &self.frames[fi];
 
-        // Write UBO.
+        // Wait for the GPU to finish the previous use of this frame's resources
+        // BEFORE writing any per-frame buffers (UBO, UI, point lights are
+        // uploaded before this call and share the same frame index).
+        unsafe {
+            self.context.device.wait_for_fences(
+                std::slice::from_ref(&frame.in_flight),
+                true,
+                u64::MAX,
+            )?;
+        }
+
+        // Write UBO — safe now that the fence guarantees the GPU is done.
         unsafe {
             *self.scene_ubo_buffers[fi].mapped = SceneUBO {
                 inv_view: view.inverse(),
@@ -1022,16 +1049,6 @@ impl Renderer {
                 weather_info,
                 wind_info,
             };
-        }
-
-        let frame = &self.frames[fi];
-
-        unsafe {
-            self.context.device.wait_for_fences(
-                std::slice::from_ref(&frame.in_flight),
-                true,
-                u64::MAX,
-            )?;
         }
 
         let image_index = match unsafe {

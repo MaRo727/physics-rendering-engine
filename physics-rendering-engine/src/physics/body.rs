@@ -5,7 +5,7 @@ use rapier3d::prelude::*;
 pub use rapier3d::prelude::{ColliderHandle, RigidBodyHandle, Isometry, SharedShape};
 pub use rapier3d::na::Point3 as NaPoint3;
 
-use super::world::PhysicsWorld;
+use super::world::{PhysicsWorld, cg_player, cg_enemy, cg_prop, cg_static};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WeightClass {
@@ -71,6 +71,7 @@ impl PhysicsBody {
 
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .restitution(0.4)
+            .collision_groups(cg_prop())
             .build();
         let collider =
             world
@@ -93,6 +94,7 @@ impl PhysicsBody {
 
         let collider = ColliderBuilder::capsule_y(half_height, radius)
             .friction(0.0)
+            .collision_groups(cg_player())
             .build();
         let collider =
             world
@@ -117,6 +119,7 @@ impl PhysicsBody {
 
         let collider = ColliderBuilder::ball(radius)
             .restitution(0.6)
+            .collision_groups(cg_prop())
             .build();
         let collider =
             world
@@ -142,6 +145,7 @@ impl PhysicsBody {
 
         let collider = ColliderBuilder::ball(radius)
             .restitution(0.3)
+            .collision_groups(cg_enemy())
             .build();
         let collider =
             world
@@ -171,6 +175,7 @@ impl PhysicsBody {
         let collider = ColliderBuilder::convex_hull(&rapier_points)
             .unwrap_or_else(|| ColliderBuilder::cuboid(0.5, 0.5, 0.5))
             .restitution(0.4)
+            .collision_groups(cg_prop())
             .build();
         let collider =
             world
@@ -188,6 +193,7 @@ impl PhysicsBody {
         let rigid_body = world.rigid_body_set.insert(rigid_body);
 
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+            .collision_groups(cg_static())
             .build();
         let collider =
             world

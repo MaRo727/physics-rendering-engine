@@ -1,12 +1,55 @@
 use glam::{Mat4, Quat, Vec3};
 use rapier3d::prelude::*;
-use rapier3d::geometry::Ray;
+use rapier3d::geometry::{InteractionGroups, Group, Ray};
 use smallvec::SmallVec;
 
 /// Maximum physics timestep — clamp to avoid instability on frame spikes
 /// while keeping exactly one step per frame (the game sets velocities
 /// directly each frame and expects a single integration step).
 const MAX_DT: f32 = 1.0 / 30.0;
+
+// ---------------------------------------------------------------------------
+// Collision groups — static objects must never test against each other.
+// Membership = which group this collider belongs to.
+// Filter     = which groups this collider can collide WITH.
+// ---------------------------------------------------------------------------
+
+const G_TERRAIN:  Group = Group::GROUP_1;
+const G_STATIC:   Group = Group::GROUP_2; // trees, world props, NPCs
+const G_BUILDING: Group = Group::GROUP_3;
+const G_PLAYER:   Group = Group::GROUP_4;
+const G_ENEMY:    Group = Group::GROUP_5;
+const G_PROP:     Group = Group::GROUP_6; // thrown/dropped dynamic objects
+
+/// All groups that move (player, enemies, dynamic props).
+fn dynamic_filter() -> Group {
+    G_PLAYER | G_ENEMY | G_PROP
+}
+
+/// Collision groups for terrain heightfields.
+pub fn cg_terrain() -> InteractionGroups {
+    InteractionGroups::new(G_TERRAIN, dynamic_filter())
+}
+/// Collision groups for static environment (trees, world props, NPCs).
+pub fn cg_static() -> InteractionGroups {
+    InteractionGroups::new(G_STATIC, dynamic_filter())
+}
+/// Collision groups for player-placed buildings.
+pub fn cg_building() -> InteractionGroups {
+    InteractionGroups::new(G_BUILDING, dynamic_filter())
+}
+/// Collision groups for the player.
+pub fn cg_player() -> InteractionGroups {
+    InteractionGroups::new(G_PLAYER, G_TERRAIN | G_STATIC | G_BUILDING | G_ENEMY | G_PROP)
+}
+/// Collision groups for enemies.
+pub fn cg_enemy() -> InteractionGroups {
+    InteractionGroups::new(G_ENEMY, G_TERRAIN | G_STATIC | G_BUILDING | G_PLAYER | G_PROP)
+}
+/// Collision groups for dynamic props (thrown blocks, etc.).
+pub fn cg_prop() -> InteractionGroups {
+    InteractionGroups::new(G_PROP, G_TERRAIN | G_STATIC | G_BUILDING | G_PLAYER | G_ENEMY | G_PROP)
+}
 
 pub struct PhysicsWorld {
     pub rigid_body_set: RigidBodySet,
@@ -224,6 +267,7 @@ impl PhysicsWorld {
         &mut self,
         position: Vec3,
         half_extents: Vec3,
+        groups: InteractionGroups,
     ) -> (RigidBodyHandle, ColliderHandle) {
         let rb = RigidBodyBuilder::fixed()
             .translation(vector![position.x, position.y, position.z])
@@ -231,6 +275,7 @@ impl PhysicsWorld {
         let rb_handle = self.rigid_body_set.insert(rb);
 
         let col = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+            .collision_groups(groups)
             .build();
         let col_handle =
             self.collider_set
@@ -244,13 +289,16 @@ impl PhysicsWorld {
         &mut self,
         position: Vec3,
         shape: SharedShape,
+        groups: InteractionGroups,
     ) -> (RigidBodyHandle, ColliderHandle) {
         let rb = RigidBodyBuilder::fixed()
             .translation(vector![position.x, position.y, position.z])
             .build();
         let rb_handle = self.rigid_body_set.insert(rb);
 
-        let col = ColliderBuilder::new(shape).build();
+        let col = ColliderBuilder::new(shape)
+            .collision_groups(groups)
+            .build();
         let col_handle =
             self.collider_set
                 .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
@@ -264,6 +312,7 @@ impl PhysicsWorld {
         position: Vec3,
         shape: SharedShape,
         mass: f32,
+        groups: InteractionGroups,
     ) -> (RigidBodyHandle, ColliderHandle) {
         let rb = RigidBodyBuilder::dynamic()
             .translation(vector![position.x, position.y, position.z])
@@ -273,6 +322,7 @@ impl PhysicsWorld {
 
         let col = ColliderBuilder::new(shape)
             .restitution(0.2)
+            .collision_groups(groups)
             .build();
         let col_handle =
             self.collider_set
@@ -283,7 +333,7 @@ impl PhysicsWorld {
 
     /// Add a compound static collider made of multiple cuboids on a single fixed body.
     /// Returns the rigid body handle so callers can identify hits on this body.
-    pub fn add_compound_static(&mut self, boxes: &[(Vec3, Vec3)]) -> RigidBodyHandle {
+    pub fn add_compound_static(&mut self, boxes: &[(Vec3, Vec3)], groups: InteractionGroups) -> RigidBodyHandle {
         let rb = RigidBodyBuilder::fixed().build();
         let rb_handle = self.rigid_body_set.insert(rb);
 
@@ -292,7 +342,9 @@ impl PhysicsWorld {
             (iso, SharedShape::cuboid(half.x, half.y, half.z))
         }).collect();
 
-        let col = ColliderBuilder::compound(shapes).build();
+        let col = ColliderBuilder::compound(shapes)
+            .collision_groups(groups)
+            .build();
         self.collider_set
             .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
         rb_handle
@@ -337,6 +389,7 @@ impl PhysicsWorld {
         let rb = RigidBodyBuilder::fixed().build();
         let rb_handle = self.rigid_body_set.insert(rb);
         let col = ColliderBuilder::heightfield(mat, vector![scale.x, scale.y, scale.z])
+            .collision_groups(cg_terrain())
             .build();
         let col_handle = self.collider_set
             .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);
@@ -379,6 +432,7 @@ impl PhysicsWorld {
             .build();
         let rb_handle = self.rigid_body_set.insert(rb);
         let col = ColliderBuilder::heightfield(mat, vector![scale.x, scale.y, scale.z])
+            .collision_groups(cg_terrain())
             .build();
         let col_handle = self.collider_set
             .insert_with_parent(col, rb_handle, &mut self.rigid_body_set);

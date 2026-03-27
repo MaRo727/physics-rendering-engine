@@ -452,7 +452,7 @@ pub fn init_world(
     let mut tree_rbs = std::collections::HashSet::new();
     for (_, trunks) in structures.trunk_colliders() {
         if !trunks.is_empty() {
-            let rb = physics.add_compound_static(&trunks);
+            let rb = physics.add_compound_static(&trunks, crate::physics::world::cg_static());
             tree_rbs.insert(rb);
         }
     }
@@ -643,7 +643,7 @@ impl Engine {
             let pos = Vec3::new(def.world_x, y, def.world_z);
             let id = self.world.alloc_id();
             let half = Vec3::new(0.4, 0.6, 0.4);
-            let (rb, col) = self.physics.add_static_box(pos, half);
+            let (rb, col) = self.physics.add_static_box(pos, half, crate::physics::world::cg_static());
             let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
             let entity = Entity::npc(id, body, MESH_CAPSULE, def.scale, 1.5, def.kind as u8);
             self.world.add_entity(entity);
@@ -661,7 +661,7 @@ impl Engine {
             let y = terrain.height_at_world(x, z) + y_offset + scale.y * 0.5;
             let id = world.alloc_id();
             let half = scale * 0.5;
-            let (rb, col) = physics.add_static_box(Vec3::new(x, y, z), half);
+            let (rb, col) = physics.add_static_box(Vec3::new(x, y, z), half, crate::physics::world::cg_static());
             let body = PhysicsBody { rigid_body: rb, collider: col, weight_class: WeightClass::Heavy };
             let entity = Entity::prop(id, body, mesh, scale, scale.length());
             world.add_entity(entity);
@@ -1028,6 +1028,7 @@ impl Engine {
             self.editor_physics.add_static_shape(
                 Vec3::new(0.0, -0.5, 0.0),
                 SharedShape::cuboid(half_ext.x, half_ext.y, half_ext.z),
+                crate::physics::world::cg_terrain(),
             );
             self.editor_physics.step(0.0); // build query pipeline
         }
@@ -2325,7 +2326,7 @@ impl Engine {
             self.grass = data.grass;
             for (_, trunks) in &data.trunk_colliders {
                 if !trunks.is_empty() {
-                    let rb = self.physics.add_compound_static(trunks);
+                    let rb = self.physics.add_compound_static(trunks, crate::physics::world::cg_static());
                     self.tree_rbs.insert(rb);
                 }
             }
@@ -2354,7 +2355,7 @@ impl Engine {
             self.grass = GrassGrid::generate(panel.island.seed, &self.terrain);
             for (_, trunks) in self.structures.trunk_colliders() {
                 if !trunks.is_empty() {
-                    let rb = self.physics.add_compound_static(&trunks);
+                    let rb = self.physics.add_compound_static(&trunks, crate::physics::world::cg_static());
                     self.tree_rbs.insert(rb);
                 }
             }
@@ -2607,6 +2608,7 @@ impl Engine {
 
         // Editor UI.
         self.build_editor_ui();
+        self.renderer.wait_for_frame()?;
         self.renderer.upload_ui(
             self.ui.primitives(),
             self.surface_width,
@@ -2968,6 +2970,9 @@ impl Engine {
         } else {
             self.build_ui(hp_frac, mana_frac, stam_frac, level, biome_id, player_pos);
         }
+        // Ensure the GPU finished the previous use of this frame's buffers
+        // before writing UI / point-light data into the mapped memory.
+        self.renderer.wait_for_frame()?;
         self.renderer.upload_ui(
             self.ui.primitives(),
             self.surface_width,

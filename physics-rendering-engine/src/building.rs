@@ -549,7 +549,7 @@ impl BuildingGrid {
         let sub_blocks = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
         let center = cell_center(cx, cy, cz);
         let shape = build_block_shape(block_type, rotation);
-        let (rigid_body, collider) = physics.add_static_shape(center, shape);
+        let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
 
         self.cells.insert(
             (cx, cy, cz),
@@ -576,7 +576,7 @@ impl BuildingGrid {
         let sub_blocks = rotate_sub_blocks(initial_sub_blocks(block_type, rotation), rotation);
         let center = cell_center(cx, cy, cz);
         let shape = build_block_shape(block_type, rotation);
-        let (rigid_body, collider) = physics.add_static_shape(center, shape);
+        let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
 
         self.cells.insert(
             (cx, cy, cz),
@@ -949,7 +949,7 @@ impl BuildingGrid {
         } else {
             build_compound_shape(sub_blocks)
         };
-        let (rigid_body, collider) = physics.add_static_shape(center, shape);
+        let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
         self.cells.insert((cx, cy, cz), CellData {
             rigid_body, collider, sub_blocks, block_type, rotation, color,
         });
@@ -1228,7 +1228,7 @@ fn build_group_physics(physics: &mut PhysicsWorld, blocks: &[crate::blueprint::B
     }
 
     let compound = SharedShape::compound(shapes);
-    physics.add_static_shape(center, compound)
+    physics.add_static_shape(center, compound, crate::physics::world::cg_building())
 }
 
 /// Emit block mesh using a group-local cell map for neighbor culling.
