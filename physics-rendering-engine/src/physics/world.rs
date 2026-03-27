@@ -502,6 +502,30 @@ impl PhysicsWorld {
         );
     }
 
+    /// Remove a rigid body and all its attached colliders (for compound bodies
+    /// where individual collider handles are not tracked).
+    pub fn remove_body_with_colliders(&mut self, rb: RigidBodyHandle) {
+        if let Some(body) = self.rigid_body_set.get(rb) {
+            let cols: Vec<ColliderHandle> = body.colliders().to_vec();
+            for col in cols {
+                self.collider_set.remove(
+                    col,
+                    &mut self.island_manager,
+                    &mut self.rigid_body_set,
+                    true,
+                );
+            }
+        }
+        self.rigid_body_set.remove(
+            rb,
+            &mut self.island_manager,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            true,
+        );
+    }
+
     /// Cast a ray and return the distance to the first hit (excluding `exclude`).
     pub fn cast_ray_distance(
         &self,

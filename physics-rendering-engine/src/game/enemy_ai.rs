@@ -160,6 +160,11 @@ fn spawn_table(biome: Biome) -> &'static [(EnemyType, u32)] {
             (EnemyType::GoblinArcher, 30),
             (EnemyType::Golem, 30),
         ],
+        Biome::Crystal => &[
+            (EnemyType::Golem, 45),
+            (EnemyType::Skeleton, 30),
+            (EnemyType::GoblinArcher, 25),
+        ],
     }
 }
 

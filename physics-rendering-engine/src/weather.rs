@@ -214,6 +214,7 @@ impl Weather {
             Biome::Desert => [0.45, 0.15, 0.02, 0.02, 0.06, 0.30],
             Biome::Mountains => [0.20, 0.15, 0.15, 0.10, 0.20, 0.20],
             Biome::Dungeon => [0.10, 0.15, 0.10, 0.05, 0.50, 0.10],
+            Biome::Crystal => [0.35, 0.20, 0.05, 0.02, 0.18, 0.20],
         };
 
         // Reduce chance of repeating the same weather.

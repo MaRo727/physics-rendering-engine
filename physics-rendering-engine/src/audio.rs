@@ -81,6 +81,7 @@ impl AudioManager {
             (Biome::Mountains, "mountain.mp3"),
             (Biome::Desert, "desert.mp3"),
             (Biome::Dungeon, "dungeon.mp3"),
+            (Biome::Crystal, "dungeon.mp3"),
         ];
 
         for &(biome, filename) in biome_files {

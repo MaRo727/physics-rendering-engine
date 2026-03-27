@@ -14,14 +14,23 @@ const GRID_HALF: i32 = TERRAIN_HALF / CELL_SIZE; // 900
 const GRID_SIZE: usize = (GRID_HALF * 2 + 1) as usize; // 1801
 const CELLS_PER_CHUNK: i32 = (GRID_HALF * 2) / CHUNKS_PER_SIDE; // 150
 
-const TERRAIN_CACHE_FILE: &str = "terrain_cache.bin";
-const TERRAIN_CACHE_MAGIC: u32 = 0x5452_4E32; // "TRN2" – island terrain
+const TERRAIN_CACHE_MAGIC: u32 = 0x5452_4E34; // "TRN4" – panel-based
 
-// Island shape parameters
-const ISLAND_RADIUS: f64 = 1400.0; // base radius where coastline begins
-const ISLAND_NOISE_AMP: f64 = 350.0; // how much noise varies the coastline
-const ISLAND_FALLOFF: f64 = 300.0; // width of land-to-ocean transition
-const OCEAN_FLOOR: f32 = -18.0; // depth of ocean floor
+const OCEAN_FLOOR: f32 = -18.0;
+
+// ---------------------------------------------------------------------------
+// Island definitions — each panel holds one island centered at (0,0).
+// ---------------------------------------------------------------------------
+
+pub struct IslandDef {
+    pub radius: f64,
+    pub noise_amp: f64,
+    pub falloff: f64,
+    /// If set, the entire island uses this biome instead of temperature/moisture.
+    pub forced_biome: Option<Biome>,
+    /// Unique seed for terrain generation + caching.
+    pub seed: u32,
+}
 
 // ---------------------------------------------------------------------------
 // Biomes
@@ -34,6 +43,7 @@ pub enum Biome {
     Desert,
     Mountains,
     Dungeon,
+    Crystal,
 }
 
 struct BiomeParams {
@@ -75,6 +85,12 @@ impl Biome {
                 max_height: 15.0,
                 frequency: 0.012,
                 power: 1.0,
+            },
+            Biome::Crystal => BiomeParams {
+                min_height: -10.0,
+                max_height: 55.0,
+                frequency: 0.009,
+                power: 2.8,
             },
         }
     }
@@ -138,6 +154,21 @@ impl Biome {
                     Vec3::new(0.35, 0.30, 0.35) // mossy rock
                 } else {
                     Vec3::new(0.4, 0.38, 0.42) // weathered stone
+                }
+            }
+            Biome::Crystal => {
+                if y <= 2.0 {
+                    Vec3::new(0.18, 0.22, 0.35) // submerged crystal bed
+                } else if y <= 6.5 {
+                    Vec3::new(0.72, 0.74, 0.82) // silver-lavender crystal dust shore
+                } else if y <= 16.0 {
+                    Vec3::new(0.52, 0.38, 0.62) // muted purple-violet ground
+                } else if y <= 30.0 {
+                    Vec3::new(0.38, 0.55, 0.70) // slate blue mineral rock
+                } else if y <= 44.0 {
+                    Vec3::new(0.70, 0.80, 0.90) // pale icy blue-white
+                } else {
+                    Vec3::new(0.92, 0.94, 0.98) // near-white crystal summit
                 }
             }
         }
@@ -209,6 +240,7 @@ fn biome_to_u8(b: Biome) -> u8 {
         Biome::Desert => 2,
         Biome::Mountains => 3,
         Biome::Dungeon => 4,
+        Biome::Crystal => 5,
     }
 }
 
@@ -219,12 +251,16 @@ fn u8_to_biome(v: u8) -> Biome {
         2 => Biome::Desert,
         3 => Biome::Mountains,
         4 => Biome::Dungeon,
+        5 => Biome::Crystal,
         _ => Biome::Plains,
     }
 }
 
 impl TerrainGrid {
-    pub fn generate(seed: u32) -> Self {
+    /// Generate terrain for a single island panel. The island is always
+    /// centered at (0,0) within the panel.
+    pub fn generate(island: &IslandDef) -> Self {
+        let seed = island.seed;
         let fbm = Fbm::<Perlin>::new(seed)
             .set_octaves(5)
             .set_frequency(0.008)
@@ -240,7 +276,7 @@ impl TerrainGrid {
             .set_frequency(0.002)
             .set_persistence(0.5);
 
-        // Island shape noise – low-frequency for natural coastline variation.
+        // Coastline shape noise for this island.
         let shape_noise = Fbm::<Perlin>::new(seed.wrapping_add(300))
             .set_octaves(4)
             .set_frequency(0.0015)
@@ -256,9 +292,13 @@ impl TerrainGrid {
                 let wx = (gx as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
                 let wz = (gz as i32 - GRID_HALF) as f32 * CELL_SIZE as f32;
 
-                let temperature = temp_noise.get([wx as f64, wz as f64]);
-                let moisture = moist_noise.get([wx as f64, wz as f64]);
-                let biome = pick_biome(temperature, moisture);
+                let biome = if let Some(forced) = island.forced_biome {
+                    forced
+                } else {
+                    let temperature = temp_noise.get([wx as f64, wz as f64]);
+                    let moisture = moist_noise.get([wx as f64, wz as f64]);
+                    pick_biome(temperature, moisture)
+                };
 
                 let idx = gz * GRID_SIZE + gx;
                 biomes[idx] = biome;
@@ -347,21 +387,19 @@ impl TerrainGrid {
             }
         }
 
-        // Pass 4: Island mask – lower terrain near world edges to form ocean.
-        // Uses noise-distorted distance from center for an irregular coastline.
+        // Pass 4: Island mask – lower terrain near panel edges to form ocean.
         for gz in 0..GRID_SIZE {
             for gx in 0..GRID_SIZE {
                 let wx = (gx as i32 - GRID_HALF) as f64 * CELL_SIZE as f64;
                 let wz = (gz as i32 - GRID_HALF) as f64 * CELL_SIZE as f64;
                 let dist = (wx * wx + wz * wz).sqrt();
 
-                // Shape noise varies the effective coastline radius.
                 let shape_val = shape_noise.get([wx, wz]);
-                let effective_radius = ISLAND_RADIUS + shape_val * ISLAND_NOISE_AMP;
+                let effective_radius = island.radius + shape_val * island.noise_amp;
 
                 if dist > effective_radius {
                     let over = dist - effective_radius;
-                    let t = (over / ISLAND_FALLOFF).min(1.0);
+                    let t = (over / island.falloff).min(1.0);
                     let t = t * t * (3.0 - 2.0 * t); // smoothstep
 
                     let idx = gz * GRID_SIZE + gx;
@@ -383,23 +421,23 @@ impl TerrainGrid {
     }
 
     /// Load terrain from cache if available, otherwise generate and save.
-    pub fn generate_or_load(seed: u32) -> Self {
-        if let Some(grid) = Self::load_cache(seed) {
-            log::info!("Loaded terrain from cache");
+    pub fn generate_or_load(island: &IslandDef) -> Self {
+        if let Some(grid) = Self::load_cache(island.seed) {
+            log::info!("Loaded terrain from cache (seed={})", island.seed);
             return grid;
         }
-        log::info!("Generating terrain (no cache found)...");
-        let grid = Self::generate(seed);
-        grid.save_cache(seed);
+        log::info!("Generating terrain (seed={})...", island.seed);
+        let grid = Self::generate(island);
+        grid.save_cache(island.seed);
         grid
     }
 
-    fn cache_path() -> std::path::PathBuf {
-        Path::new(TERRAIN_CACHE_FILE).to_path_buf()
+    fn cache_path(seed: u32) -> std::path::PathBuf {
+        Path::new(&format!("terrain_cache_{}.bin", seed)).to_path_buf()
     }
 
     fn save_cache(&self, seed: u32) {
-        let path = Self::cache_path();
+        let path = Self::cache_path(seed);
         let Ok(mut file) = std::fs::File::create(&path) else {
             log::warn!("Failed to create terrain cache file");
             return;
@@ -434,7 +472,7 @@ impl TerrainGrid {
     }
 
     fn load_cache(seed: u32) -> Option<Self> {
-        let path = Self::cache_path();
+        let path = Self::cache_path(seed);
         let mut file = std::fs::File::open(&path).ok()?;
 
         let mut buf4 = [0u8; 4];

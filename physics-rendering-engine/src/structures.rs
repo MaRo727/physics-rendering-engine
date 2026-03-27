@@ -153,7 +153,7 @@ impl StructureGrid {
                             if height <= 6.0 || height > 30.0 { continue; }
                             (0.3, MESH_TREE_PINE)
                         }
-                        Biome::Dungeon => continue,
+                        Biome::Dungeon | Biome::Crystal => continue,
                     };
 
                     // Density check.
@@ -687,7 +687,7 @@ impl GrassGrid {
                         if center_height <= 6.0 || center_height > 15.0 { continue; }
                         0.02
                     }
-                    Biome::Desert | Biome::Dungeon => continue,
+                    Biome::Desert | Biome::Dungeon | Biome::Crystal => continue,
                 };
 
                 if hash_f32(h0.wrapping_add(1)) > patch_probability {

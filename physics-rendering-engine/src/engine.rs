@@ -28,7 +28,7 @@ use crate::renderer::context::VulkanContext;
 use crate::renderer::swapchain::Swapchain;
 use crate::scene::{self, UNIT_BOUNDING_RADIUS};
 use crate::structures::{StructureGrid, GrassGrid};
-use crate::terrain::{Biome, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
+use crate::terrain::{Biome, IslandDef, TerrainGrid, TerrainChunkInfo, TERRAIN_HALF, CHUNKS_PER_SIDE};
 use crate::particles::ParticleSystem;
 use crate::ui::{Ui, UiPrimitive};
 use crate::weather::Weather;
@@ -37,6 +37,41 @@ use crate::game::npc::{self, ActiveDialogue};
 use crate::game::quest::{self, Quest, QuestState};
 
 const PLACE_RANGE: f32 = 8.0;
+
+// ---------------------------------------------------------------------------
+// Ocean panel grid — each panel is TERRAIN_HALF*2 wide and holds one island.
+// ---------------------------------------------------------------------------
+
+struct PanelDef {
+    grid_x: i32,
+    grid_z: i32,
+    island: IslandDef,
+}
+
+fn world_panels() -> &'static [PanelDef] {
+    use std::sync::OnceLock;
+    static PANELS: OnceLock<Vec<PanelDef>> = OnceLock::new();
+    PANELS.get_or_init(|| vec![
+        PanelDef {
+            grid_x: 0, grid_z: 0,
+            island: IslandDef {
+                radius: 1400.0, noise_amp: 350.0, falloff: 300.0,
+                forced_biome: None, seed: 42,
+            },
+        },
+        PanelDef {
+            grid_x: 1, grid_z: 0,
+            island: IslandDef {
+                radius: 750.0, noise_amp: 180.0, falloff: 250.0,
+                forced_biome: Some(Biome::Crystal), seed: 137,
+            },
+        },
+    ])
+}
+
+fn find_panel(gx: i32, gz: i32) -> Option<&'static PanelDef> {
+    world_panels().iter().find(|p| p.grid_x == gx && p.grid_z == gz)
+}
 
 /// Editor color palette (12 colors).
 const EDITOR_PALETTE: [Vec3; 12] = [
@@ -197,6 +232,8 @@ pub struct Engine {
     terrain_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     terrain_chunk_cols: Vec<rapier3d::prelude::ColliderHandle>,
     terrain_rebuild_timer: f32,
+    panel_x: i32,
+    panel_z: i32,
     mesh_building_id: u32,
     building: BuildingGrid,
     mining: MiningSystem,
@@ -349,8 +386,9 @@ pub fn init_world(
     let (entities, player_id, next_id) = scene::build_scene(&mut physics);
     progress.store(1, Ordering::Relaxed);
 
-    // Generate terrain chunks.
-    let terrain = TerrainGrid::generate_or_load(42);
+    // Generate terrain for the starter island panel.
+    let starter_panel = find_panel(0, 0).expect("starter panel must exist");
+    let terrain = TerrainGrid::generate_or_load(&starter_panel.island);
     progress.store(2, Ordering::Relaxed);
 
     let (chunk_meshes, terrain_chunks, _full_mesh) =
@@ -456,6 +494,8 @@ impl Engine {
             terrain_rbs: data.terrain_rbs,
             terrain_chunk_cols: data.terrain_chunk_cols,
             terrain_rebuild_timer: 0.0,
+            panel_x: 0,
+            panel_z: 0,
             mesh_building_id,
             building: BuildingGrid::new(),
             mining,
@@ -1381,6 +1421,10 @@ impl Engine {
         }
 
         self.water_time += dt;
+
+        // Check if the player crossed an ocean panel boundary.
+        self.check_panel_boundary();
+
         // Day/night cycle: ~4 minutes per full day, F4 speeds up 10x.
         if input.fast_time && !self.fast_time_prev {
             self.fast_time = !self.fast_time;
@@ -2170,6 +2214,97 @@ impl Engine {
         }
     }
 
+    /// Switch to a different ocean panel, regenerating terrain, physics, and
+    /// structures. `new_x`/`new_z` are the player's position in the new panel.
+    fn load_panel(&mut self, gx: i32, gz: i32, new_x: f32, new_z: f32) {
+        let panel = match find_panel(gx, gz) {
+            Some(p) => p,
+            None => {
+                log::warn!("No panel at ({}, {}), staying put", gx, gz);
+                return;
+            }
+        };
+        log::info!("Loading panel ({}, {})…", gx, gz);
+        self.panel_x = gx;
+        self.panel_z = gz;
+
+        // 1. Generate new terrain.
+        self.terrain = TerrainGrid::generate_or_load(&panel.island);
+
+        // 2. Generate chunk meshes and update renderer.
+        let (chunk_meshes, terrain_chunks, _) =
+            self.terrain.generate_chunks(MESH_TERRAIN_BASE);
+        self.terrain_chunks = terrain_chunks;
+
+        let updates: Vec<(usize, Vec<crate::renderer::mesh::Vertex>, Vec<u32>)> =
+            chunk_meshes.into_iter().enumerate().map(|(i, (v, idx))| (i, v, idx)).collect();
+        if let Err(e) = self.renderer.update_terrain_chunks(updates) {
+            log::error!("Failed to update terrain chunks on panel swap: {}", e);
+        }
+
+        // 3. Update physics heightfields in-place.
+        let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;
+        let chunk_scale = Vec3::new(chunk_world_size, 1.0, chunk_world_size);
+        for i in 0..self.terrain.chunk_count() {
+            let (heights, nrows, ncols, _cx, _cz) = self.terrain.chunk_heightfield_data(i);
+            self.physics.update_heightfield_chunk(
+                self.terrain_chunk_cols[i],
+                &heights,
+                nrows,
+                ncols,
+                chunk_scale,
+            );
+        }
+
+        // 4. Regenerate structures (trees / crystals) for the new island.
+        // Remove old tree physics.
+        for &rb in &self.tree_rbs {
+            self.physics.remove_body_with_colliders(rb);
+        }
+        self.tree_rbs.clear();
+        self.structures = StructureGrid::generate(panel.island.seed, &self.terrain);
+        self.grass = GrassGrid::generate(panel.island.seed, &self.terrain);
+        for (_, trunks) in self.structures.trunk_colliders() {
+            if !trunks.is_empty() {
+                let rb = self.physics.add_compound_static(&trunks);
+                self.tree_rbs.insert(rb);
+            }
+        }
+
+        // 5. Despawn all enemies.
+        let enemy_ids: Vec<u32> = self.enemy_ais.keys().copied().collect();
+        for id in enemy_ids {
+            if let Some(e) = self.world.remove_by_id(id) {
+                self.physics.remove_body(e.body.rigid_body, e.body.collider);
+            }
+            self.enemy_ais.remove(&id);
+        }
+        self.enemy_projectiles.clear();
+
+        // 6. Reposition player.
+        let spawn_y = self.terrain.height_at_world(new_x, new_z).max(6.0) + 2.0;
+        self.physics.set_body_position(self.player_rb, Vec3::new(new_x, spawn_y, new_z));
+        // Zero velocity so the player doesn't keep sliding.
+        self.physics.set_body_linvel(self.player_rb, Vec3::ZERO);
+    }
+
+    /// Check if the player has crossed a panel boundary and swap if needed.
+    fn check_panel_boundary(&mut self) {
+        let pos = self.physics.body_position(self.player_rb);
+        let half = TERRAIN_HALF as f32;
+        let margin = 20.0; // spawn this far from the edge of the new panel
+
+        if pos.x > half {
+            self.load_panel(self.panel_x + 1, self.panel_z, -half + margin, pos.z);
+        } else if pos.x < -half {
+            self.load_panel(self.panel_x - 1, self.panel_z, half - margin, pos.z);
+        } else if pos.z > half {
+            self.load_panel(self.panel_x, self.panel_z + 1, pos.x, -half + margin);
+        } else if pos.z < -half {
+            self.load_panel(self.panel_x, self.panel_z - 1, pos.x, half - margin);
+        }
+    }
+
     /// Apply camera-relative movement to the player rigid body.
     fn apply_player_movement(&mut self, input: &InputState) {
         let forward = self.camera.forward_flat();
@@ -2610,6 +2745,7 @@ impl Engine {
             crate::terrain::Biome::Desert => 2.0,
             crate::terrain::Biome::Mountains => 3.0,
             crate::terrain::Biome::Dungeon => 4.0,
+            crate::terrain::Biome::Crystal => 5.0,
         };
         let (hp_frac, mana_frac, stam_frac, level) = if let Some(stats) = &self.world.player().stats {
             (
@@ -3041,14 +3177,16 @@ impl Engine {
                 1 => "FOREST",
                 2 => "DESERT",
                 3 => "MOUNTAIN",
-                _ => "DUNGEON",
+                4 => "DUNGEON",
+                _ => "CRYSTAL",
             };
             let biome_color = match biome_id as u32 {
                 0 => [0.5, 0.8, 0.3, 1.0],
                 1 => [0.2, 0.6, 0.2, 1.0],
                 2 => [0.9, 0.8, 0.4, 1.0],
                 3 => [0.7, 0.7, 0.9, 1.0],
-                _ => [0.6, 0.4, 0.7, 1.0],
+                4 => [0.6, 0.4, 0.7, 1.0],
+                _ => [0.7, 0.8, 0.95, 1.0],
             };
             let dy = perf_offset;
             self.ui.text(ox, oy + dy * line_h, "BIOME: ", scale, white);
@@ -3140,7 +3278,8 @@ impl Engine {
                             1 => [0.15, 0.35, 0.12, 0.8], // Forest
                             2 => [0.7, 0.6, 0.35, 0.8],   // Desert
                             3 => [0.5, 0.5, 0.55, 0.8],   // Mountains
-                            _ => [0.3, 0.2, 0.35, 0.8],   // Dungeon
+                            4 => [0.3, 0.2, 0.35, 0.8],   // Dungeon
+                            _ => [0.55, 0.5, 0.75, 0.8],   // Crystal
                         };
                         self.minimap_prims.push(UiPrimitive {
                             rect: [
