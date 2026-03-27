@@ -214,6 +214,16 @@ pub fn extract_frustum_planes(vp: Mat4) -> [Vec4; 6] {
     planes
 }
 
+/// Expand frustum planes outward by `margin` units.
+/// Keeps nearby off-screen objects that may cast ray-traced shadows into view.
+pub fn expand_frustum_planes(planes: &[Vec4; 6], margin: f32) -> [Vec4; 6] {
+    let mut expanded = *planes;
+    for p in &mut expanded {
+        p.w += margin;
+    }
+    expanded
+}
+
 /// Test whether a bounding sphere is at least partially inside the frustum.
 pub fn is_sphere_in_frustum(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
     for plane in planes {
