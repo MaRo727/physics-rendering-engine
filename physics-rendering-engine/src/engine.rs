@@ -22,7 +22,7 @@ use crate::interaction::{Interaction, ToolType, PickaxeHit, HammerHit, ChiselHit
 use crate::mining::MiningSystem;
 use crate::physics::body::{PhysicsBody, WeightClass};
 use crate::physics::world::PhysicsWorld;
-use crate::player::{GhostCamera, extract_frustum_planes, is_sphere_in_frustum};
+use crate::player::{GhostCamera, extract_frustum_planes, expand_frustum_planes, is_sphere_in_frustum};
 use crate::renderer::{Renderer, GpuPointLight, pack_instance_id, SHADOW_ONLY_BIT, MESH_CUBE, MESH_WATER, MESH_TORCH, MESH_TERRAIN_BASE};
 use crate::renderer::context::VulkanContext;
 use crate::renderer::swapchain::Swapchain;
@@ -2422,13 +2422,14 @@ impl Engine {
         let vp = cull_proj * cull_view;
         let frustum_planes = extract_frustum_planes(vp);
 
-        // In ghost mode, frustum-cull to the frozen camera so only visible
-        // geometry appears.  In normal mode, skip culling so off-screen
-        // entities can still cast shadows.
-        let ghost_frustum = if self.ghost.active {
-            Some(&frustum_planes)
+        // Always frustum-cull instances to reduce TLAS size.
+        // In normal mode, expand the frustum by a margin so nearby off-screen
+        // objects that cast ray-traced shadows are kept.
+        // In ghost mode, use the tight frustum for precise debug visualization.
+        let cull_planes = if self.ghost.active {
+            frustum_planes
         } else {
-            None
+            expand_frustum_planes(&frustum_planes, 100.0)
         };
 
         // World entities (skip the player entity — we render the model instead).
@@ -2436,10 +2437,8 @@ impl Engine {
             if entity.kind == EntityKind::Player { continue; }
 
             let pos = self.physics.body_position(entity.body.rigid_body);
-            if let Some(planes) = ghost_frustum {
-                if !is_sphere_in_frustum(planes, pos, entity.bounding_radius) {
-                    continue;
-                }
+            if !is_sphere_in_frustum(&cull_planes, pos, entity.bounding_radius) {
+                continue;
             }
 
             let t = self.physics.body_transform(entity.body.rigid_body)
@@ -2478,6 +2477,9 @@ impl Engine {
 
         // Torches.
         for (i, torch) in self.torches.iter().enumerate() {
+            if !is_sphere_in_frustum(&cull_planes, torch.position, 2.0) {
+                continue;
+            }
             let t = Mat4::from_translation(torch.position);
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(MESH_TORCH, TORCH_OBJECT_BASE + (i as u32 & 0xFF)));
@@ -2489,6 +2491,9 @@ impl Engine {
         // Spell projectiles.
         let projectile_object_base: u32 = 0xFFA0;
         for (i, proj) in self.spells.projectiles.iter().enumerate() {
+            if !is_sphere_in_frustum(&cull_planes, proj.position, proj.scale * 2.0) {
+                continue;
+            }
             let t = Mat4::from_translation(proj.position) * Mat4::from_scale(Vec3::splat(proj.scale));
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(proj.mesh_type, projectile_object_base + i as u32));
@@ -2497,6 +2502,9 @@ impl Engine {
         // Enemy projectiles (arrows).
         let enemy_proj_object_base: u32 = 0xFF90;
         for (i, proj) in self.enemy_projectiles.iter().enumerate() {
+            if !is_sphere_in_frustum(&cull_planes, proj.position, proj.scale * 2.0) {
+                continue;
+            }
             // Orient arrow along its velocity.
             let dir = proj.velocity.normalize_or_zero();
             let rot = if dir.length_squared() > 0.001 {
@@ -2517,7 +2525,7 @@ impl Engine {
             self.frame_instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
 
-        // Terrain chunks — distance cull + frustum cull in ghost mode.
+        // Terrain chunks — distance cull + frustum cull.
         const TERRAIN_CULL_DIST_SQ: f32 = 1500.0 * 1500.0;
         for chunk in &self.terrain_chunks {
             let dx = chunk.center.x - player_pos.x;
@@ -2525,10 +2533,8 @@ impl Engine {
             if dx * dx + dz * dz > TERRAIN_CULL_DIST_SQ {
                 continue;
             }
-            if let Some(planes) = ghost_frustum {
-                if !is_sphere_in_frustum(planes, chunk.center, chunk.radius) {
-                    continue;
-                }
+            if !is_sphere_in_frustum(&cull_planes, chunk.center, chunk.radius) {
+                continue;
             }
             self.frame_transforms.push(Mat4::IDENTITY);
             self.frame_instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
