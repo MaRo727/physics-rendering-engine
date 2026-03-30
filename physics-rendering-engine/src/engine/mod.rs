@@ -777,6 +777,8 @@ impl Engine {
                 }
                 s if s == settings_idx => {
                     self.settings_selection = 0;
+                    // Pre-set E as "already pressed" so it doesn't immediately trigger back.
+                    self.settings_nav_prev = [false, false, false, false, true];
                     self.game_state = GameState::Settings;
                 }
                 s if s == quit_idx => {
