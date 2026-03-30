@@ -145,12 +145,50 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F10) => self.input.editor_load = pressed,
                     PhysicalKey::Code(KeyCode::F11) => self.input.toggle_perf = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
-                    PhysicalKey::Code(KeyCode::KeyV) => self.input.rotate_block = pressed,
+                    PhysicalKey::Code(KeyCode::KeyV) => {
+                        if pressed && self.input.ctrl_held {
+                            self.input.editor_paste = true;
+                        } else {
+                            self.input.rotate_block = pressed;
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::KeyT) => self.input.place_torch = pressed,
                     PhysicalKey::Code(KeyCode::KeyU) => self.input.editor_unbake = pressed,
                     PhysicalKey::Code(KeyCode::KeyP) => self.input.toggle_teleport = pressed,
-                    PhysicalKey::Code(KeyCode::ArrowLeft) => self.input.editor_prev_group = pressed,
-                    PhysicalKey::Code(KeyCode::ArrowRight) => self.input.editor_next_group = pressed,
+                    PhysicalKey::Code(KeyCode::ControlLeft) => self.input.ctrl_held = pressed,
+                    PhysicalKey::Code(KeyCode::KeyC) => {
+                        if pressed && self.input.ctrl_held {
+                            self.input.editor_copy = true;
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::KeyZ) => {
+                        if pressed && self.input.ctrl_held {
+                            self.input.editor_undo = true;
+                        } else if pressed {
+                            self.input.editor_mirror_z = true;
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::KeyY) => {
+                        if pressed && self.input.ctrl_held {
+                            self.input.editor_redo = true;
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::KeyX) => {
+                        if pressed && !self.input.ctrl_held {
+                            self.input.editor_mirror_x = true;
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::KeyH) => {
+                        if pressed {
+                            self.input.editor_replace_color = true;
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowUp) => self.input.editor_arrow_up = pressed,
+                    PhysicalKey::Code(KeyCode::ArrowDown) => self.input.editor_arrow_down = pressed,
+                    PhysicalKey::Code(KeyCode::ArrowLeft) => self.input.editor_arrow_left = pressed,
+                    PhysicalKey::Code(KeyCode::ArrowRight) => self.input.editor_arrow_right = pressed,
+                    PhysicalKey::Code(KeyCode::PageUp) => self.input.editor_prev_group = pressed,
+                    PhysicalKey::Code(KeyCode::PageDown) => self.input.editor_next_group = pressed,
                     PhysicalKey::Code(KeyCode::Digit1) => {
                         if pressed { self.input.editor_color_slot = Some(0); }
                     }
@@ -281,6 +319,13 @@ impl ApplicationHandler for App {
                     self.input.mouse_dy = 0.0;
                     self.input.scroll_delta = 0.0;
                     self.input.editor_color_slot = None;
+                    self.input.editor_undo = false;
+                    self.input.editor_redo = false;
+                    self.input.editor_copy = false;
+                    self.input.editor_paste = false;
+                    self.input.editor_mirror_x = false;
+                    self.input.editor_mirror_z = false;
+                    self.input.editor_replace_color = false;
 
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();

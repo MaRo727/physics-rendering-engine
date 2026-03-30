@@ -52,7 +52,7 @@ impl Engine {
         let debug_info = Vec4::ZERO;
         let debug_info2 = Vec4::ZERO;
         let perf_flag = if self.perf_mode { 1.0 } else { 0.0 };
-        let blizzard_info = Vec4::new(0.0, 0.0, WATER_LEVEL, perf_flag);
+        let blizzard_info = Vec4::new(0.0, 0.0, -1000.0, perf_flag); // no water in editor
         let weather_info = Vec4::ZERO;
         let wind_info = Vec4::ZERO;
         self.renderer.upload_point_lights(&[]);

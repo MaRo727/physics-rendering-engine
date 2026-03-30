@@ -236,6 +236,73 @@ impl BuildingGrid {
         }
     }
 
+    /// Remove a cell and return its data (for undo). Returns None if cell doesn't exist.
+    pub fn remove_and_return(&mut self, physics: &mut PhysicsWorld, cx: i32, cy: i32, cz: i32)
+        -> Option<(BlockType, u8, u64, Vec3)>
+    {
+        if let Some(cell) = self.cells.remove(&(cx, cy, cz)) {
+            self.cell_body_set.remove(&cell.rigid_body);
+            physics.remove_body(cell.rigid_body, cell.collider);
+            self.dirty = true;
+            Some((cell.block_type, cell.rotation, cell.sub_blocks, cell.color))
+        } else {
+            None
+        }
+    }
+
+    /// Recolor all loose cells matching `old_color` to `new_color`.
+    /// Returns positions and their old colors (for undo).
+    pub fn recolor_matching(&mut self, old_color: Vec3, new_color: Vec3) -> Vec<((i32, i32, i32), Vec3)> {
+        let tolerance = 0.01;
+        let mut changed = Vec::new();
+        for (&pos, cell) in self.cells.iter_mut() {
+            if (cell.color - old_color).length() < tolerance {
+                changed.push((pos, cell.color));
+                cell.color = new_color;
+            }
+        }
+        if !changed.is_empty() { self.dirty = true; }
+        changed
+    }
+
+    /// Recolor blocks in a baked group matching `old_color`. Returns old colors per block index (for undo).
+    pub fn recolor_group_matching(&mut self, group_idx: usize, old_color: Vec3, new_color: Vec3) -> Vec<(usize, [f32; 3])> {
+        let tolerance = 0.01;
+        let mut changed = Vec::new();
+        let group = &mut self.groups[group_idx];
+        for (i, b) in group.blocks.iter_mut().enumerate() {
+            let bc = Vec3::new(b.color[0], b.color[1], b.color[2]);
+            if (bc - old_color).length() < tolerance {
+                changed.push((i, b.color));
+                b.color = [new_color.x, new_color.y, new_color.z];
+            }
+        }
+        if !changed.is_empty() { self.dirty = true; }
+        changed
+    }
+
+    /// Move a baked group by a delta. Destroys and recreates the physics body.
+    pub fn move_group(&mut self, physics: &mut PhysicsWorld, group_idx: usize, dx: i32, dy: i32, dz: i32) {
+        let group = &mut self.groups[group_idx];
+        // Remove old physics body.
+        if let (Some(rb), Some(col)) = (group.rigid_body, group.collider) {
+            self.group_body_map.remove(&rb);
+            physics.remove_body(rb, col);
+        }
+        // Offset all block positions.
+        for b in &mut group.blocks {
+            b.x += dx;
+            b.y += dy;
+            b.z += dz;
+        }
+        // Rebuild physics body.
+        let (rb, col) = build_group_physics(physics, &group.blocks);
+        group.rigid_body = Some(rb);
+        group.collider = Some(col);
+        self.group_body_map.insert(rb, group_idx);
+        self.dirty = true;
+    }
+
     /// Check if a rigid body belongs to a building cell or baked group.
     pub fn has_body(&self, rb: RigidBodyHandle) -> bool {
         self.cell_body_set.contains(&rb)
@@ -735,6 +802,11 @@ impl BuildingGrid {
     /// Access baked groups (for save).
     pub fn groups(&self) -> &[BakedGroup] {
         &self.groups
+    }
+
+    /// Mutable access to baked groups (for recolor undo).
+    pub fn groups_mut(&mut self) -> &mut [BakedGroup] {
+        &mut self.groups
     }
 
     /// Remove all baked groups and their physics.

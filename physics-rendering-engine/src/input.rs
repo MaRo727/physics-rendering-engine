@@ -33,10 +33,22 @@ pub struct InputState {
     pub toggle_editor: bool,        // F8 — toggle structure editor
     pub editor_save: bool,          // F9 — save blueprint (in editor)
     pub editor_load: bool,          // F10 — load blueprint (in editor)
-    pub editor_prev_group: bool,     // Left arrow — select prev baked group
-    pub editor_next_group: bool,     // Right arrow — select next baked group
+    pub editor_prev_group: bool,     // PageUp — select prev baked group
+    pub editor_next_group: bool,     // PageDown — select next baked group
     pub editor_unbake: bool,         // U — unbake selected group back to cells
     pub editor_color_slot: Option<u8>, // 1-9 number keys
+    pub ctrl_held: bool,               // Left Ctrl state
+    pub editor_undo: bool,             // Ctrl+Z — undo
+    pub editor_redo: bool,             // Ctrl+Y — redo
+    pub editor_copy: bool,             // Ctrl+C — copy group
+    pub editor_paste: bool,            // Ctrl+V — paste group
+    pub editor_mirror_x: bool,        // X — mirror clipboard on X axis
+    pub editor_mirror_z: bool,        // Z — mirror clipboard on Z axis
+    pub editor_replace_color: bool,    // H — replace color under cursor
+    pub editor_arrow_up: bool,         // Arrow Up — extrude up / move group -Z
+    pub editor_arrow_down: bool,       // Arrow Down — extrude down / move group +Z
+    pub editor_arrow_left: bool,       // Arrow Left — move group -X
+    pub editor_arrow_right: bool,      // Arrow Right — move group +X
     pub place_torch: bool,              // T — place a torch
     pub toggle_perf: bool,              // F11 — toggle performance mode
     pub toggle_teleport: bool,           // P — toggle teleport menu
@@ -81,6 +93,18 @@ impl Default for InputState {
             editor_prev_group: false,
             editor_next_group: false,
             editor_unbake: false,
+            ctrl_held: false,
+            editor_undo: false,
+            editor_redo: false,
+            editor_copy: false,
+            editor_paste: false,
+            editor_mirror_x: false,
+            editor_mirror_z: false,
+            editor_replace_color: false,
+            editor_arrow_up: false,
+            editor_arrow_down: false,
+            editor_arrow_left: false,
+            editor_arrow_right: false,
             place_torch: false,
             toggle_perf: false,
             toggle_teleport: false,

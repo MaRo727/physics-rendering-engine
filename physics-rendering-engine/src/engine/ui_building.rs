@@ -42,18 +42,35 @@ impl Engine {
             }
         }
 
-        // Help text.
-        let help = "1-0: Color  RMB: Place (drag to fill)  LMB: Remove  B: Block  V: Rotate  G: Bake  U: Unbake  </>: Groups  F9: Save  F10: Load  F8: Exit";
-        let help_w = help.len() as f32 * cell * 0.5;
-        self.ui.text((sw - help_w) * 0.5, sh - 28.0, help, scale * 0.5, [0.7, 0.7, 0.7, 1.0]);
+        // Help text (two lines).
+        let help1 = "RMB: Place  LMB: Remove  B: Block  V: Rotate  G: Bake  U: Unbake  PgUp/Dn: Groups  H: Recolor";
+        let help2 = "Ctrl+Z/Y: Undo/Redo  Ctrl+C/V: Copy/Paste  X/Z: Mirror  Arrows: Move  Ctrl+Arrows: Y  F9: Save  F10: Load";
+        let hs = scale * 0.5;
+        let help1_w = help1.len() as f32 * 8.0 * hs;
+        let help2_w = help2.len() as f32 * 8.0 * hs;
+        let help_color = [0.7, 0.7, 0.7, 1.0];
+        self.ui.text((sw - help1_w) * 0.5, sh - 40.0, help1, hs, help_color);
+        self.ui.text((sw - help2_w) * 0.5, sh - 24.0, help2, hs, help_color);
 
-        // Block count and type.
+        // Block count, type, and indicators.
         self.hud_buf.clear();
         let gc = self.editor_grid.group_count();
         if let Some(sel) = self.editor_selected_group {
             let _ = write!(self.hud_buf, "Blocks: {}  Group: {}/{}  [{}] r:{}", self.editor_grid.cell_count(), sel + 1, gc, self.selected_block_type.name(), self.selected_rotation);
         } else {
             let _ = write!(self.hud_buf, "Blocks: {}  Groups: {}  [{}] r:{}", self.editor_grid.cell_count(), gc, self.selected_block_type.name(), self.selected_rotation);
+        }
+        // Undo/redo depth.
+        if !self.undo_stack.is_empty() || !self.redo_stack.is_empty() {
+            let _ = write!(self.hud_buf, "  Undo:{} Redo:{}", self.undo_stack.len(), self.redo_stack.len());
+        }
+        // Clipboard indicator.
+        if let Some(ref clip) = self.editor_clipboard {
+            let _ = write!(self.hud_buf, "  Clip:{}", clip.len());
+        }
+        // Extrude indicator.
+        if self.editor_extrude_height > 0 {
+            let _ = write!(self.hud_buf, "  Ext:+{}", self.editor_extrude_height);
         }
         self.ui.text(16.0, 16.0, &self.hud_buf, scale, white);
 

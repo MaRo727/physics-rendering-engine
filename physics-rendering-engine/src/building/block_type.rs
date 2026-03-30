@@ -286,6 +286,36 @@ pub(super) fn rotate_isometry(iso: Isometry<f32>, rotation: u8) -> Isometry<f32>
     Isometry::translation(nx, t.y, nz)
 }
 
+/// Mirror a sub-block bitmask on the X axis (flip sx: 0<->3, 1<->2).
+pub fn mirror_sub_blocks_x(mask: u64) -> u64 {
+    let mut result = 0u64;
+    for sy in 0..4i32 {
+        for sz in 0..4i32 {
+            for sx in 0..4i32 {
+                if mask & sub_bit(sx, sy, sz) != 0 {
+                    result |= sub_bit(3 - sx, sy, sz);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Mirror a sub-block bitmask on the Z axis (flip sz: 0<->3, 1<->2).
+pub fn mirror_sub_blocks_z(mask: u64) -> u64 {
+    let mut result = 0u64;
+    for sy in 0..4i32 {
+        for sz in 0..4i32 {
+            for sx in 0..4i32 {
+                if mask & sub_bit(sx, sy, sz) != 0 {
+                    result |= sub_bit(sx, sy, 3 - sz);
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Rotate an array of [x,y,z] points around Y by rotation*90deg CW.
 pub(super) fn rotate_points(pts: &[[f32; 3]], rotation: u8) -> Vec<[f32; 3]> {
     if rotation == 0 { return pts.to_vec(); }
