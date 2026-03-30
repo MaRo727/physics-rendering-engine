@@ -11,7 +11,7 @@ use crate::game::pathfinding::PathState;
 use crate::physics::body::{ColliderHandle, RigidBodyHandle, WeightClass};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::{MESH_SLIME, MESH_SKELETON, MESH_GOBLIN, MESH_GOLEM, MESH_ARROW};
-use crate::terrain::{Biome, TerrainGrid};
+use crate::world::{Biome, TerrainGrid};
 
 // ---------------------------------------------------------------------------
 // Enemy type definitions

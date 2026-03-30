@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::game::inventory::Inventory;
 use crate::game::equipment::EquipmentSlots;
-use crate::game::quest::{self, Quest, QuestObjective, QuestState};
+use crate::game::quest::{Quest, QuestObjective, QuestState};
 use crate::game::stats::StatBlock;
 
 /// Serializable snapshot of game state.

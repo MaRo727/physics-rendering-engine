@@ -4,7 +4,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-use crate::terrain::Biome;
+use crate::world::Biome;
 
 // ---------------------------------------------------------------------------
 // Music context – determines what music should be playing

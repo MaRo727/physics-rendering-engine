@@ -8,6 +8,9 @@ use crate::game::inventory::Inventory;
 use crate::game::equipment::EquipmentSlots;
 use crate::game::items::ItemId;
 
+/// Half-diagonal of a unit cube -- conservative bounding sphere for any unit mesh.
+pub const UNIT_BOUNDING_RADIUS: f32 = 0.87; // sqrt(3)/2
+
 pub type EntityId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

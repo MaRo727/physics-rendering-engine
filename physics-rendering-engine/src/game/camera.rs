@@ -4,7 +4,7 @@ use glam::{Mat4, Vec3, Vec4};
 
 use crate::physics::world::PhysicsWorld;
 use crate::input::InputState;
-use crate::player::perspective_vk;
+use super::player::perspective_vk;
 
 const MOUSE_SENSITIVITY: f32 = 0.002;
 const EYE_HEIGHT: f32 = 1.6; // eye height above physics body base

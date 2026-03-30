@@ -1,4 +1,4 @@
-use crate::terrain::Biome;
+use crate::world::terrain::Biome;
 
 // ---------------------------------------------------------------------------
 // Weather system — state machine with smooth transitions and world effects

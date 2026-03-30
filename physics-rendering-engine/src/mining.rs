@@ -4,7 +4,7 @@ use crate::game::entity::{Entity, EntityId};
 use crate::physics::body::{PhysicsBody, RigidBodyHandle};
 use crate::physics::world::PhysicsWorld;
 use crate::renderer::MESH_ROCK;
-use crate::terrain::TerrainGrid;
+use crate::world::TerrainGrid;
 
 const CHUNK_HALF: f32 = 0.4;
 const CHUNK_SIZE: f32 = CHUNK_HALF * 2.0;

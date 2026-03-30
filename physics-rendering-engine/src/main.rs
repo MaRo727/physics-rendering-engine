@@ -1,22 +1,16 @@
 mod app;
 mod audio;
-mod blueprint;
 mod building;
 mod engine;
 mod game;
 mod input;
-mod interaction;
 mod mining;
 mod physics;
-mod player;
 mod renderer;
-mod scene;
-mod structures;
 mod particles;
-mod save;
-mod terrain;
+mod persistence;
 mod ui;
-mod weather;
+mod world;
 
 use app::App;
 use winit::event_loop::EventLoop;

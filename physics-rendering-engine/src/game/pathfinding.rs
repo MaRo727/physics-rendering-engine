@@ -6,7 +6,7 @@ use std::collections::BinaryHeap;
 
 use glam::Vec3;
 
-use crate::terrain::{TerrainGrid, CELL_SIZE};
+use crate::world::{TerrainGrid, CELL_SIZE};
 
 /// Maximum cells A* will explore before giving up.
 const MAX_OPEN: usize = 2048;

@@ -13,3 +13,5 @@ pub mod pathfinding;
 pub mod spells;
 pub mod quest;
 pub mod npc;
+pub mod player;
+pub mod interaction;
