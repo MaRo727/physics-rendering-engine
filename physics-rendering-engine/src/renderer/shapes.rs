@@ -1,5 +1,5 @@
 use glam::Vec3;
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 
 use super::mesh::Vertex;
 
@@ -1602,4 +1602,70 @@ pub fn torch() -> (Vec<Vertex>, Vec<u32>) {
     add_diamond(&mut v, &mut i, Vec3::new(0.0, 0.85, 0.0), 0.07, 0.25, flame);
 
     (v, i)
+}
+
+// ---------------------------------------------------------------------------
+// Crystal shard — hexagonal prism with pyramidal tip
+// ---------------------------------------------------------------------------
+
+/// Hexagonal crystal shard, ~1 unit tall, 0.4 radius.
+/// Purple base fading to pale ice-blue tip.
+pub fn crystal_shard() -> (Vec<Vertex>, Vec<u32>) {
+    let mut v = Vec::new();
+    let mut idx = Vec::new();
+
+    let sides = 6usize;
+    let radius = 0.35;
+    let body_h = 0.65;
+    let tip_h = 1.0;
+
+    let base_col = Vec3::new(0.35, 0.25, 0.55);
+    let body_col = Vec3::new(0.50, 0.45, 0.72);
+    let tip_col  = Vec3::new(0.80, 0.85, 0.95);
+
+    // Precompute hex ring positions.
+    let hex: Vec<(f32, f32)> = (0..sides)
+        .map(|i| {
+            let a = i as f32 * TAU / sides as f32;
+            (a.cos() * radius, a.sin() * radius)
+        })
+        .collect();
+
+    // --- Bottom cap (hex fan, normal down) ---
+    let b0 = v.len() as u32;
+    for &(x, z) in &hex {
+        v.push(Vertex { position: Vec3::new(x, 0.0, z), normal: Vec3::NEG_Y, color: base_col });
+    }
+    for i in 1..sides - 1 {
+        idx.extend_from_slice(&[b0, b0 + i as u32, b0 + (i + 1) as u32]);
+    }
+
+    // --- Side faces (6 quads) ---
+    for i in 0..sides {
+        let ni = (i + 1) % sides;
+        let (x0, z0) = hex[i];
+        let (x1, z1) = hex[ni];
+        push_quad(
+            &mut v, &mut idx,
+            Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1),
+            Vec3::new(x1, body_h, z1), Vec3::new(x0, body_h, z0),
+            body_col,
+        );
+    }
+
+    // --- Pyramidal tip (6 triangles) ---
+    let tip = Vec3::new(0.0, tip_h, 0.0);
+    for i in 0..sides {
+        let ni = (i + 1) % sides;
+        let v0 = Vec3::new(hex[i].0, body_h, hex[i].1);
+        let v1 = Vec3::new(hex[ni].0, body_h, hex[ni].1);
+        let n = (v1 - v0).cross(tip - v0).normalize();
+        let bi = v.len() as u32;
+        v.push(Vertex { position: v0, normal: n, color: tip_col });
+        v.push(Vertex { position: v1, normal: n, color: tip_col });
+        v.push(Vertex { position: tip, normal: n, color: tip_col });
+        idx.extend_from_slice(&[bi, bi + 1, bi + 2]);
+    }
+
+    (v, idx)
 }
