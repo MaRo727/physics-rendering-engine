@@ -138,36 +138,6 @@ void main() {
         }
     }
 
-    // --- Crystal transparency ---
-    uint CRYSTAL_MESH_TYPE = 43u;
-    if (mesh_type == CRYSTAL_MESH_TYPE) {
-        vec3 viewDir = normalize(gl_WorldRayDirectionEXT);
-        float NdotV = max(0.0, dot(normal, -viewDir));
-
-        // Fresnel: transparent at head-on, reflective at grazing angles
-        float fresnel = 0.06 + 0.94 * pow(1.0 - NdotV, 4.0);
-        float alpha = mix(0.25, 0.80, fresnel);
-
-        // See-through ray: skip detail, shadow-only, water, and other crystals
-        vec3 contOrigin = hitPos + viewDir * 0.02;
-        float contDist = 10000.0;
-        vec3 behindColor;
-        if (!perfMode && gl_HitTEXT < 300.0) {
-            traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xF0,
-                        0, 1, 0, contOrigin, 0.01, viewDir, contDist, 0);
-            behindColor = payload.xyz;
-        } else {
-            // Distant/perf: approximate with crystal surface color
-            behindColor = lit;
-        }
-
-        // Tint transmitted light with crystal hue
-        behindColor *= mix(vec3(1.0), color * 1.4, 0.2);
-
-        // Combine: blend crystal surface with see-through
-        lit = mix(behindColor, lit, alpha);
-    }
-
     // Underwater caustics on submerged terrain (skipped in perf mode).
     float waterLevel = scene.blizzardInfo.z;
     uint WATER_MESH_TYPE = 6u;

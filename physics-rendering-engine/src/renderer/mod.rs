@@ -68,9 +68,8 @@ pub const MESH_CACTUS_SMALL_LOD: u32 = 39;
 pub const MESH_LEAF_PARTICLE: u32 = 40;
 pub const MESH_BARK_CHIP: u32 = 41;
 pub const MESH_TORCH: u32 = 42;
-pub const MESH_CRYSTAL: u32 = 43;
-pub const MESH_TERRAIN_BASE: u32 = 44;
-const SHAPE_MESH_COUNT: usize = 44;
+pub const MESH_TERRAIN_BASE: u32 = 43;
+const SHAPE_MESH_COUNT: usize = MESH_TERRAIN_BASE as usize;
 
 /// Pre-allocated capacity for the building mesh slot in the combined buffer.
 const BUILDING_INITIAL_VERTS: u32 = 65536;
@@ -404,7 +403,6 @@ impl Renderer {
             shapes::leaf_particle(),                                             // MESH_LEAF_PARTICLE = 40
             shapes::bark_chip(),                                                 // MESH_BARK_CHIP = 41
             shapes::torch(),                                                         // MESH_TORCH = 42
-            shapes::crystal_shard(),                                                     // MESH_CRYSTAL = 43
         ];
         // Terrain chunks follow the shape meshes.
         base_mesh_data.extend(terrain_chunks);
@@ -1104,7 +1102,6 @@ impl Renderer {
                 let clean_id = packed_id & !SHADOW_ONLY_BIT;
                 let mesh_type = ((clean_id >> 16) as usize).min(blas_max);
                 let is_water = mesh_type == MESH_WATER as usize;
-                let is_crystal = mesh_type == MESH_CRYSTAL as usize;
                 // Detail geometry (grass, flowers, LOD billboards, particles):
                 // mask 0x01 so water bounce rays (mask 0xF8) skip them.
                 let is_detail = matches!(mesh_type,
@@ -1112,7 +1109,6 @@ impl Renderer {
                 );
                 let mask = if shadow_only { 0x02u8 }
                            else if is_water { 0x04u8 }
-                           else if is_crystal { 0x08u8 }
                            else if is_detail { 0x01u8 }
                            else { 0xFFu8 };
                 mapped[i] = vk::AccelerationStructureInstanceKHR {

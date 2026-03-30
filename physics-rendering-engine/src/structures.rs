@@ -5,7 +5,7 @@ use crate::renderer::{pack_instance_id, MESH_TREE_OAK, MESH_TREE_PINE, MESH_TREE
     MESH_CACTUS, MESH_CACTUS_SMALL, MESH_CACTUS_LOD, MESH_CACTUS_SMALL_LOD,
     MESH_GRASS_A, MESH_GRASS_B, MESH_GRASS_C, MESH_LEAF_PARTICLE, MESH_BARK_CHIP,
     MESH_FLOWER_RED, MESH_FLOWER_YELLOW, MESH_FLOWER_BLUE, MESH_FLOWER_WHITE, MESH_FLOWER_PURPLE,
-    MESH_CRYSTAL};
+};
 use crate::terrain::{Biome, TerrainGrid, TERRAIN_HALF, CHUNKS_PER_SIDE};
 
 const TREE_OBJECT_ID: u32 = 0xFFE0;
@@ -155,11 +155,7 @@ impl StructureGrid {
                             (0.3, MESH_TREE_PINE)
                         }
                         Biome::Dungeon => continue,
-                        Biome::Crystal => {
-                            if pass > 0 { continue; }
-                            if height <= 6.5 || height > 20.0 { continue; }
-                            (0.40, MESH_CRYSTAL)
-                        }
+                        Biome::Crystal => continue,
                     };
 
                     // Density check.
@@ -168,19 +164,7 @@ impl StructureGrid {
                     }
 
                     // Random scale and rotation.
-                    let scale_factor = if mesh_type == MESH_CRYSTAL {
-                        // Crystals: mostly player-sized, some medium, rare humongous
-                        let r = hash_f32(h.wrapping_add(3));
-                        if r < 0.05 {
-                            8.0 + hash_f32(h.wrapping_add(10)) * 7.0  // 8-15: humongous
-                        } else if r < 0.20 {
-                            3.0 + hash_f32(h.wrapping_add(10)) * 3.0  // 3-6: medium
-                        } else {
-                            0.8 + hash_f32(h.wrapping_add(10)) * 1.2  // 0.8-2.0: player-sized
-                        }
-                    } else {
-                        0.8 + hash_f32(h.wrapping_add(3)) * 0.6
-                    };
+                    let scale_factor = 0.8 + hash_f32(h.wrapping_add(3)) * 0.6;
                     let rotation_y = hash_f32(h.wrapping_add(4)) * std::f32::consts::TAU;
 
                     let pos = Vec3::new(jx, height, jz);
@@ -294,9 +278,6 @@ impl StructureGrid {
 
                     let shake = self.shake_angle(tree_idx);
 
-                    // Crystals are rigid — skip wind sway.
-                    let is_crystal = tree.mesh_type == MESH_CRYSTAL;
-
                     // Wind sway: use angle-addition identity sin(A+B) = sinA cosB + cosA sinB
                     // to derive per-tree sway from precomputed base trig values + precomputed per-tree phase.
                     let [(sp, cp), (sp13, cp13), (sp07, cp07), (sp11, cp11)] = tree.phase_sc;
@@ -307,8 +288,8 @@ impl StructureGrid {
                     let sway_z = (base_sin_0_9 * cp07 + base_cos_0_9 * sp07) * sway_amount * 0.6
                         + (base_sin_2_1 * cp11 + base_cos_2_1 * sp11) * sway_amount * 0.2;
 
-                    let total_sway_x = if is_crystal { 0.0 } else { sway_x + wind_dir.0 * wind_bias };
-                    let total_sway_z = if is_crystal { 0.0 } else { sway_z + wind_dir.1 * wind_bias };
+                    let total_sway_x = sway_x + wind_dir.0 * wind_bias;
+                    let total_sway_z = sway_z + wind_dir.1 * wind_bias;
 
                     // Start from pre-computed base (translation * rotation_y).
                     // Apply sway and shake dynamically, then scale last.
@@ -354,12 +335,11 @@ impl StructureGrid {
                 let tree = &self.trees[tree_idx];
                 let s = tree.scale.x; // uniform scale
                 // Trunk collider: thin box at base of tree
-                let half_w = if tree.mesh_type == MESH_CRYSTAL { 0.35 * s } else { 0.3 * s };
+                let half_w = 0.3 * s;
                 let half_h = match tree.mesh_type {
                     MESH_TREE_OAK => 1.5 * s,
                     MESH_TREE_PINE => 2.5 * s,
                     MESH_TREE_DEAD => 2.0 * s,
-                    MESH_CRYSTAL => 0.5 * s,
                     _ => 1.5 * s,
                 };
                 let trunk_center = tree.position + Vec3::new(0.0, half_h, 0.0);
