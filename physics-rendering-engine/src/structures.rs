@@ -238,8 +238,18 @@ impl StructureGrid {
         let base_sin_2_1 = (time * 2.1).sin();
         let base_cos_2_1 = (time * 2.1).cos();
 
+        // Bounding sphere covers half-diagonal of the chunk + tallest tree.
+        let chunk_cull_radius: f32 = CHUNK_WORLD_SIZE * 0.75 + TREE_BOUNDING_RADIUS;
+
         for cx in min_cx..max_cx {
             for cz in min_cz..max_cz {
+                // Chunk-level frustum cull: skip entire bucket if chunk sphere is outside frustum.
+                let chunk_center_x = (cx as f32 + 0.5) * CHUNK_WORLD_SIZE - half;
+                let chunk_center_z = (cz as f32 + 0.5) * CHUNK_WORLD_SIZE - half;
+                let chunk_center = Vec3::new(chunk_center_x, 15.0, chunk_center_z);
+                if !sphere_in_frustum(frustum, chunk_center, chunk_cull_radius) {
+                    continue;
+                }
                 let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
                 for &tree_idx in &self.chunk_buckets[bucket] {
                     let tree = &self.trees[tree_idx];

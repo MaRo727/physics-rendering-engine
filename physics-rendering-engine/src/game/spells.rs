@@ -277,18 +277,21 @@ impl SpellSystem {
                     // AoE: damage nearby enemies.
                     // Collect already-hit IDs into a HashSet for O(1) dedup lookups.
                     let already_hit: HashSet<EntityId> = hits.iter().map(|h| h.entity_id).collect();
+                    let aoe_sq = FIREBALL_AOE_RADIUS * FIREBALL_AOE_RADIUS;
                     for entity in world.entities.iter().filter(|e| e.kind == EntityKind::Enemy) {
                         if already_hit.contains(&entity.id) {
                             continue;
                         }
                         let epos = physics.body_position(entity.body.rigid_body);
-                        let dist = (epos - hit_pos).length();
-                        if dist < FIREBALL_AOE_RADIUS && dist > 0.1 {
+                        let diff = epos - hit_pos;
+                        let dist_sq = diff.length_squared();
+                        if dist_sq < aoe_sq && dist_sq > 0.01 {
+                            let dist = dist_sq.sqrt();
                             let falloff = 1.0 - (dist / FIREBALL_AOE_RADIUS);
                             hits.push(SpellHit {
                                 entity_id: entity.id,
                                 damage: proj.base_damage * falloff * 0.5,
-                                knockback_dir: (epos - hit_pos).normalize_or_zero(),
+                                knockback_dir: diff.normalize_or_zero(),
                             });
                         }
                     }

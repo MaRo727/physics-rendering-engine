@@ -1899,6 +1899,7 @@ impl Engine {
             let is_daytime = !enemy_ai::is_night(self.time_of_day);
             self.dead_ids.clear();
             self.despawn_ids.clear();
+            let despawn_dist_sq = (enemy_ai::MAX_SPAWN_DIST * 1.5) * (enemy_ai::MAX_SPAWN_DIST * 1.5);
             for e in self.world.entities.iter() {
                 if e.kind != EntityKind::Enemy { continue; }
                 if e.stats.as_ref().map_or(false, |s| s.is_dead()) {
@@ -1906,7 +1907,7 @@ impl Engine {
                     self.dead_ids.push((e.id, level));
                 } else if is_daytime {
                     let epos = self.physics.body_position(e.body.rigid_body);
-                    if (epos - player_pos).length() > enemy_ai::MAX_SPAWN_DIST * 1.5 {
+                    if (epos - player_pos).length_squared() > despawn_dist_sq {
                         self.despawn_ids.push(e.id);
                     }
                 }

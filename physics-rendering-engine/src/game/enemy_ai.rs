@@ -333,6 +333,10 @@ fn cheap_rand(seed: &mut u32) -> f32 {
     ((*seed >> 16) & 0x7FFF) as f32 / 32768.0
 }
 
+/// Distance beyond which idle/patrolling enemies stop updating.
+/// Well beyond max aggro range (30) so enemies wake up before the player reaches them.
+const DORMANT_DIST_SQ: f32 = 100.0 * 100.0;
+
 /// Update all enemy AIs. Fills `hits` with attacks that should be applied to the player.
 pub fn update_all(
     ais: &mut HashMap<EntityId, EnemyAi>,
@@ -359,7 +363,15 @@ pub fn update_all(
         let params = ai.enemy_type.params();
         let pos = physics.body_position(entity.body.rigid_body);
         let to_player = player_pos - pos;
-        let dist = to_player.length();
+        let dist_sq = to_player.length_squared();
+
+        // Skip AI for distant non-combat enemies. Without velocity updates,
+        // Rapier will naturally sleep the physics body, saving broad/narrow-phase work.
+        if dist_sq > DORMANT_DIST_SQ && matches!(ai.state, AiState::Idle | AiState::Patrol) {
+            continue;
+        }
+
+        let dist = dist_sq.sqrt();
         let dir_to_player = if dist > 0.1 {
             Vec3::new(to_player.x, 0.0, to_player.z).normalize_or_zero()
         } else {

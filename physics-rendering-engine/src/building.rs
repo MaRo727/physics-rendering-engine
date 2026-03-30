@@ -420,6 +420,8 @@ pub struct BuildingGrid {
     groups: Vec<BakedGroup>,
     /// Reverse lookup: rigid body handle → index into `groups`.
     group_body_map: HashMap<RigidBodyHandle, usize>,
+    /// O(1) lookup for whether a rigid body belongs to any cell (not group).
+    cell_body_set: HashSet<RigidBodyHandle>,
     dirty: bool,
     /// Temporary preview cells for drag-to-fill (position + color). No physics bodies.
     preview_cells: Vec<((i32, i32, i32), BlockType, u8, Vec3)>,
@@ -431,6 +433,7 @@ impl BuildingGrid {
             cells: HashMap::new(),
             groups: Vec::new(),
             group_body_map: HashMap::new(),
+            cell_body_set: HashSet::new(),
             dirty: false,
             preview_cells: Vec::new(),
         }
@@ -551,6 +554,7 @@ impl BuildingGrid {
         let shape = build_block_shape(block_type, rotation);
         let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
 
+        self.cell_body_set.insert(rigid_body);
         self.cells.insert(
             (cx, cy, cz),
             CellData {
@@ -578,6 +582,7 @@ impl BuildingGrid {
         let shape = build_block_shape(block_type, rotation);
         let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
 
+        self.cell_body_set.insert(rigid_body);
         self.cells.insert(
             (cx, cy, cz),
             CellData {
@@ -596,6 +601,7 @@ impl BuildingGrid {
     /// Remove the cube at grid position (cx, cy, cz). Returns true if removed.
     pub fn remove(&mut self, physics: &mut PhysicsWorld, cx: i32, cy: i32, cz: i32) -> bool {
         if let Some(cell) = self.cells.remove(&(cx, cy, cz)) {
+            self.cell_body_set.remove(&cell.rigid_body);
             physics.remove_body(cell.rigid_body, cell.collider);
             self.dirty = true;
             true
@@ -606,8 +612,8 @@ impl BuildingGrid {
 
     /// Check if a rigid body belongs to a building cell or baked group.
     pub fn has_body(&self, rb: RigidBodyHandle) -> bool {
-        self.cells.values().any(|c| c.rigid_body == rb)
-            || self.groups.iter().any(|g| g.rigid_body == Some(rb))
+        self.cell_body_set.contains(&rb)
+            || self.group_body_map.contains_key(&rb)
     }
 
     /// Mine sub-blocks near `hit_pos`. Returns all affected cell coordinates
@@ -666,6 +672,7 @@ impl BuildingGrid {
             if cell.sub_blocks == 0 {
                 // Fully destroyed — remove the cell.
                 let cell = self.cells.remove(&(cx, cy, cz)).unwrap();
+                self.cell_body_set.remove(&cell.rigid_body);
                 physics.remove_body(cell.rigid_body, cell.collider);
             } else {
                 // Rebuild collider as compound shape of remaining sub-blocks.
@@ -725,6 +732,7 @@ impl BuildingGrid {
 
         if cell.sub_blocks == 0 {
             let cell = self.cells.remove(&key).unwrap();
+            self.cell_body_set.remove(&cell.rigid_body);
             physics.remove_body(cell.rigid_body, cell.collider);
         } else {
             let shape = build_compound_shape(cell.sub_blocks);
@@ -950,6 +958,7 @@ impl BuildingGrid {
             build_compound_shape(sub_blocks)
         };
         let (rigid_body, collider) = physics.add_static_shape(center, shape, crate::physics::world::cg_building());
+        self.cell_body_set.insert(rigid_body);
         self.cells.insert((cx, cy, cz), CellData {
             rigid_body, collider, sub_blocks, block_type, rotation, color,
         });
@@ -958,6 +967,7 @@ impl BuildingGrid {
 
     /// Remove all cells and physics bodies.
     pub fn clear(&mut self, physics: &mut PhysicsWorld) {
+        self.cell_body_set.clear();
         let keys: Vec<_> = self.cells.keys().copied().collect();
         for (x, y, z) in keys {
             if let Some(cell) = self.cells.remove(&(x, y, z)) {
@@ -992,6 +1002,7 @@ impl BuildingGrid {
         }).collect();
 
         // Remove individual physics bodies.
+        self.cell_body_set.clear();
         let keys: Vec<_> = self.cells.keys().copied().collect();
         for (x, y, z) in keys {
             if let Some(cell) = self.cells.remove(&(x, y, z)) {
