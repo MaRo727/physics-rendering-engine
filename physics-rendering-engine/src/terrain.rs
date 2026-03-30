@@ -210,6 +210,9 @@ fn pick_biome(temperature: f64, moisture: f64) -> Biome {
 
 /// Sample terrain height for a given world position and biome.
 fn sample_height(fbm: &Fbm<Perlin>, wx: f32, wz: f32, biome: Biome) -> f32 {
+    if biome == Biome::Crystal {
+        return sample_crystal_height(fbm, wx, wz);
+    }
     let p = biome.params();
     // Use the FBM at the biome's frequency (scale world coords).
     let scale = p.frequency / 0.008; // relative to base FBM frequency
@@ -219,6 +222,32 @@ fn sample_height(fbm: &Fbm<Perlin>, wx: f32, wz: f32, biome: Biome) -> f32 {
     let range = (p.max_height - p.min_height) as f64;
     let h = p.min_height as f64 + (shaped + 1.0) * 0.5 * range;
     h.clamp(p.min_height as f64, p.max_height as f64) as f32
+}
+
+/// Crystal biome: flat plateau base with sharp crystal spires.
+fn sample_crystal_height(fbm: &Fbm<Perlin>, wx: f32, wz: f32) -> f32 {
+    // Gentle base plateau
+    let base_scale = 0.5; // low frequency for broad, flat terrain
+    let base_val = fbm.get([wx as f64 * base_scale, wz as f64 * base_scale]);
+    let base = 8.0 + base_val as f32 * 3.0; // height ~5..11
+
+    // Crystal spires: high-frequency noise, offset coords to decorrelate from base
+    let spire_scale = 2.5;
+    let sv = fbm.get([
+        wx as f64 * spire_scale + 1000.0,
+        wz as f64 * spire_scale + 1000.0,
+    ]);
+
+    // Only positive peaks above threshold become spires — cubic curve for sharp narrow shapes
+    let threshold = 0.2;
+    let spire = if sv > threshold {
+        let t = ((sv - threshold) / (1.0 - threshold)) as f32;
+        t * t * t * 45.0
+    } else {
+        0.0
+    };
+
+    (base + spire).clamp(-10.0, 55.0)
 }
 
 /// Color a terrain vertex, blending toward dirt brown if it has been dug.

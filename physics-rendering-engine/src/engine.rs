@@ -46,6 +46,7 @@ const PLACE_RANGE: f32 = 8.0;
 struct PanelDef {
     grid_x: i32,
     grid_z: i32,
+    name: &'static str,
     island: IslandDef,
 }
 
@@ -55,6 +56,7 @@ fn world_panels() -> &'static [PanelDef] {
     PANELS.get_or_init(|| vec![
         PanelDef {
             grid_x: 0, grid_z: 0,
+            name: "Starter Island",
             island: IslandDef {
                 radius: 1400.0, noise_amp: 350.0, falloff: 300.0,
                 forced_biome: None, seed: 42,
@@ -62,6 +64,7 @@ fn world_panels() -> &'static [PanelDef] {
         },
         PanelDef {
             grid_x: 1, grid_z: 0,
+            name: "Crystal Island",
             island: IslandDef {
                 radius: 750.0, noise_amp: 180.0, falloff: 250.0,
                 forced_biome: Some(Biome::Crystal), seed: 137,
@@ -273,6 +276,8 @@ pub struct Engine {
     frame_time_idx: usize,
     show_inventory: bool,
     inventory_prev: bool,
+    show_teleport: bool,
+    teleport_prev: bool,
     mute_prev: bool,
     fast_time: bool,
     fast_time_prev: bool,
@@ -538,6 +543,8 @@ impl Engine {
             frame_time_idx: 0,
             show_inventory: false,
             inventory_prev: false,
+            show_teleport: false,
+            teleport_prev: false,
             mute_prev: false,
             fast_time: false,
             fast_time_prev: false,
@@ -1473,6 +1480,26 @@ impl Engine {
             self.show_inventory = !self.show_inventory;
         }
         self.inventory_prev = input.toggle_inventory;
+
+        // --- Teleport menu toggle (P) ---
+        if input.toggle_teleport && !self.teleport_prev {
+            self.show_teleport = !self.show_teleport;
+        }
+        self.teleport_prev = input.toggle_teleport;
+
+        // --- Teleport selection (digit keys while menu open) ---
+        if self.show_teleport {
+            if let Some(slot) = input.editor_color_slot {
+                let panels = world_panels();
+                // slot 0 = Digit1 = first island, slot 1 = Digit2 = second, etc.
+                if let Some(panel) = panels.get(slot as usize) {
+                    if panel.grid_x != self.panel_x || panel.grid_z != self.panel_z {
+                        self.load_panel(panel.grid_x, panel.grid_z, 0.0, 0.0);
+                    }
+                    self.show_teleport = false;
+                }
+            }
+        }
 
         // --- Quick save (F5) ---
         if input.quick_save && !self.save_prev {
@@ -3516,10 +3543,57 @@ impl Engine {
             self.ui.text(dx + 8.0, dy + dh - cell - 4.0, "[E] Continue", scale, [0.6, 0.6, 0.6, 1.0]);
         }
 
+        // -- Teleport menu (P key) --
+        if self.show_teleport {
+            self.build_teleport_ui(scale, cell);
+        }
+
         // -- Inventory screen (I key) --
         if self.show_inventory {
             self.build_inventory_ui(scale, cell);
         }
+    }
+
+    fn build_teleport_ui(&mut self, scale: f32, cell: f32) {
+        let (sw, sh) = self.ui.screen_size();
+        let line_h = cell + 2.0;
+        let panels = world_panels();
+
+        let panel_w = 20.0 * cell;
+        let panel_h = (panels.len() as f32 + 2.5) * line_h + 12.0;
+        let px = sw * 0.5 - panel_w * 0.5;
+        let py = sh * 0.5 - panel_h * 0.5;
+
+        self.ui.panel(px - 6.0, py - 6.0, panel_w + 12.0, panel_h + 12.0);
+
+        let yellow = [1.0, 1.0, 0.5, 1.0];
+        let white = [0.9, 0.9, 0.9, 1.0];
+        let gray = [0.5, 0.5, 0.5, 1.0];
+        let cyan = [0.4, 0.9, 1.0, 1.0];
+
+        self.ui.text(px, py, "= TELEPORT =", scale, yellow);
+
+        for (i, panel) in panels.iter().enumerate() {
+            let y = py + (i as f32 + 1.5) * line_h;
+            let is_current = panel.grid_x == self.panel_x && panel.grid_z == self.panel_z;
+
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "{}. {}", i + 1, panel.name);
+            if is_current {
+                self.hud_buf.push_str(" (here)");
+            }
+
+            let color = if is_current { cyan } else { white };
+            self.ui.text(px, y, &self.hud_buf, scale, color);
+        }
+
+        self.ui.text(
+            px,
+            py + panel_h - line_h,
+            "Press 1-9 to teleport, P to close",
+            scale,
+            gray,
+        );
     }
 
     fn build_inventory_ui(&mut self, scale: f32, cell: f32) {
