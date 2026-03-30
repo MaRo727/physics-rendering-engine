@@ -1,6 +1,7 @@
 pub(crate) mod panels;
 pub(crate) mod editor;
 pub(crate) mod rendering;
+pub(crate) mod settings;
 pub(crate) mod ui_building;
 pub(crate) mod save_load;
 
@@ -103,13 +104,17 @@ pub struct EngineConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
     MainMenu,
+    Settings,
     Playing,
 }
 
 pub struct Engine {
     pub config: EngineConfig,
     pub(crate) game_state: GameState,
-    pub(crate) menu_selection: u8, // 0=New Game, 1=Continue, 2=Quit
+    pub(crate) menu_selection: u8, // 0=New Game, 1=Continue, 2=Settings, 3=Quit
+    pub(crate) settings: settings::GameSettings,
+    pub(crate) settings_selection: u8,
+    pub(crate) settings_nav_prev: [bool; 5], // W, S, A, D, E edge detection
     pub(crate) physics: PhysicsWorld,
     pub(crate) world: World,
     pub(crate) player_rb: rapier3d::prelude::RigidBodyHandle,
@@ -394,10 +399,14 @@ impl Engine {
         let mesh_building_id = renderer.mesh_building_id();
 
         let mining = MiningSystem::new();
+        let settings = settings::GameSettings::load();
         let mut engine = Self {
             config: data.config,
             game_state: GameState::MainMenu,
             menu_selection: 0,
+            settings,
+            settings_selection: 0,
+            settings_nav_prev: [false; 5],
             physics: data.physics,
             world: data.world,
             player_rb: data.player_rb,
@@ -540,6 +549,13 @@ impl Engine {
         engine.spawn_npcs();
         engine.spawn_world_structures();
         engine.stamp_world_blueprints();
+
+        // Apply loaded settings.
+        engine.renderer.set_render_scale(engine.settings.render_scale);
+        if let Some(audio) = &mut engine.audio {
+            audio.set_volume(engine.settings.music_volume);
+            audio.set_sfx_volume(engine.settings.sfx_volume);
+        }
 
         {
             let player = engine.world.player_mut();
@@ -737,12 +753,11 @@ impl Engine {
     fn update_menu(&mut self, input: &InputState) {
         // Navigate with W/S (reuse forward/backward).
         if input.forward && !self.save_prev {
-            // Reusing save_prev as "up_prev" for edge detection in menu.
             if self.menu_selection > 0 { self.menu_selection -= 1; }
         }
-        // Reusing load_prev as "down_prev".
         if input.backward && !self.load_prev {
-            let max = if self.has_save_file { 2 } else { 1 }; // New Game, [Continue], Quit
+            // New Game, [Continue], Settings, Quit
+            let max = if self.has_save_file { 3 } else { 2 };
             if self.menu_selection < max { self.menu_selection += 1; }
         }
         self.save_prev = input.forward;
@@ -750,22 +765,80 @@ impl Engine {
 
         // Confirm with E or Space.
         if input.interact || input.jump {
+            let settings_idx: u8 = if self.has_save_file { 2 } else { 1 };
+            let quit_idx: u8 = settings_idx + 1;
             match self.menu_selection {
                 0 => {
-                    // New Game.
                     self.game_state = GameState::Playing;
                 }
                 1 if self.has_save_file => {
-                    // Continue — load save.
                     self.do_load();
                     self.game_state = GameState::Playing;
                 }
-                s if s == (if self.has_save_file { 2 } else { 1 }) => {
-                    // Quit — signal via sentinel.
+                s if s == settings_idx => {
+                    self.settings_selection = 0;
+                    self.game_state = GameState::Settings;
+                }
+                s if s == quit_idx => {
                     self.menu_selection = 255;
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn update_settings(&mut self, input: &InputState) {
+        use settings::SETTINGS_ENTRIES;
+        let count = SETTINGS_ENTRIES.len() as u8;
+
+        // W/S navigate settings rows.
+        if input.forward && !self.settings_nav_prev[0] {
+            if self.settings_selection > 0 { self.settings_selection -= 1; }
+        }
+        if input.backward && !self.settings_nav_prev[1] {
+            if self.settings_selection < count - 1 { self.settings_selection += 1; }
+        }
+
+        // A/D adjust value.
+        let entry = &SETTINGS_ENTRIES[self.settings_selection as usize];
+        if input.left && !self.settings_nav_prev[2] {
+            let cur = (entry.get)(&self.settings);
+            let new_val = (cur - entry.step).max(entry.min);
+            (entry.set)(&mut self.settings, new_val);
+            self.apply_setting(self.settings_selection);
+        }
+        if input.right && !self.settings_nav_prev[3] {
+            let cur = (entry.get)(&self.settings);
+            let new_val = (cur + entry.step).min(entry.max);
+            (entry.set)(&mut self.settings, new_val);
+            self.apply_setting(self.settings_selection);
+        }
+
+        // E to go back (edge-triggered to avoid instant exit on entering settings).
+        let back_pressed = input.interact;
+        if back_pressed && !self.settings_nav_prev[4] {
+            self.settings.save();
+            self.game_state = GameState::MainMenu;
+        }
+
+        self.settings_nav_prev = [input.forward, input.backward, input.left, input.right, back_pressed];
+    }
+
+    /// Apply a single changed setting immediately.
+    fn apply_setting(&mut self, idx: u8) {
+        match idx {
+            0 => self.renderer.set_render_scale(self.settings.render_scale),
+            7 => {
+                if let Some(audio) = &mut self.audio {
+                    audio.set_volume(self.settings.music_volume);
+                }
+            }
+            8 => {
+                if let Some(audio) = &mut self.audio {
+                    audio.set_sfx_volume(self.settings.sfx_volume);
+                }
+            }
+            _ => {} // Other settings are read each frame.
         }
     }
 
@@ -847,9 +920,13 @@ impl Engine {
         self.frame_times[self.frame_time_idx] = dt;
         self.frame_time_idx = (self.frame_time_idx + 1) % self.frame_times.len();
 
-        // --- Main menu ---
+        // --- Main menu / Settings ---
         if self.game_state == GameState::MainMenu {
             self.update_menu(input);
+            return;
+        }
+        if self.game_state == GameState::Settings {
+            self.update_settings(input);
             return;
         }
 
@@ -926,7 +1003,8 @@ impl Engine {
         // --- Performance mode toggle (F11) ---
         if input.toggle_perf && !self.perf_prev {
             self.perf_mode = !self.perf_mode;
-            self.renderer.set_render_scale(if self.perf_mode { 0.5 } else { 1.0 });
+            let scale = if self.perf_mode { (self.settings.render_scale * 0.5).max(0.25) } else { self.settings.render_scale };
+            self.renderer.set_render_scale(scale);
             log::info!("Performance mode: {}", self.perf_mode);
         }
         self.perf_prev = input.toggle_perf;
@@ -1032,7 +1110,7 @@ impl Engine {
 
         } else {
             // --- First-person camera ---
-            self.camera.look(input);
+            self.camera.look_with_sensitivity(input, self.settings.mouse_sensitivity);
             let player_pos = self.physics.body_position(self.player_rb);
             self.camera.update(player_pos);
 

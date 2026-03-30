@@ -220,20 +220,21 @@ impl StructureGrid {
         wind_strength: f32,
         wind_dir: (f32, f32),
         time: f32,
+        draw_distance: f32,
         transforms: &mut Vec<Mat4>,
         instance_ids: &mut Vec<u32>,
     ) {
         let half = TERRAIN_HALF as f32;
-        let dist_sq = TREE_RENDER_DISTANCE * TREE_RENDER_DISTANCE;
+        let dist_sq = draw_distance * draw_distance;
 
         // Determine which chunk buckets are within range.
-        let min_cx = ((player_pos.x - TREE_RENDER_DISTANCE + half) / CHUNK_WORLD_SIZE)
+        let min_cx = ((player_pos.x - draw_distance + half) / CHUNK_WORLD_SIZE)
             .floor().max(0.0) as usize;
-        let max_cx = ((player_pos.x + TREE_RENDER_DISTANCE + half) / CHUNK_WORLD_SIZE)
+        let max_cx = ((player_pos.x + draw_distance + half) / CHUNK_WORLD_SIZE)
             .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
-        let min_cz = ((player_pos.z - TREE_RENDER_DISTANCE + half) / CHUNK_WORLD_SIZE)
+        let min_cz = ((player_pos.z - draw_distance + half) / CHUNK_WORLD_SIZE)
             .floor().max(0.0) as usize;
-        let max_cz = ((player_pos.z + TREE_RENDER_DISTANCE + half) / CHUNK_WORLD_SIZE)
+        let max_cz = ((player_pos.z + draw_distance + half) / CHUNK_WORLD_SIZE)
             .ceil().min(CHUNKS_PER_SIDE as f32) as usize;
 
         // Precompute shared wind trig values used across all trees.

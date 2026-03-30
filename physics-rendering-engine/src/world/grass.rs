@@ -255,11 +255,12 @@ impl GrassGrid {
         wind_strength: f32,
         wind_dir: (f32, f32),
         time: f32,
+        draw_distance: f32,
         transforms: &mut Vec<Mat4>,
         instance_ids: &mut Vec<u32>,
     ) {
         let half = TERRAIN_HALF as f32;
-        let render_dist = GRASS_RENDER_DISTANCE;
+        let render_dist = draw_distance;
 
         let min_cx = ((player_pos.x - render_dist + half) / CHUNK_WORLD_SIZE)
             .floor().max(0.0) as usize;

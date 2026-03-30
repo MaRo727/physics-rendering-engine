@@ -92,10 +92,11 @@ impl Engine {
 
         let aspect = self.surface_width as f32 / self.surface_height.max(1) as f32;
 
+        let fov = self.settings.fov_radians();
         let (cull_view, cull_proj) = if self.ghost.active {
             (self.ghost.frozen_view, self.ghost.frozen_proj)
         } else {
-            self.camera.camera_matrices(aspect)
+            self.camera.camera_matrices_fov(fov, aspect)
         };
 
         let (render_view, render_proj) = if self.ghost.active {
@@ -215,7 +216,8 @@ impl Engine {
         }
 
         // Terrain chunks -- distance cull + frustum cull.
-        let terrain_cull_dist_sq: f32 = if self.perf_mode { 750.0 * 750.0 } else { 1500.0 * 1500.0 };
+        let td = self.settings.terrain_draw_distance;
+        let terrain_cull_dist_sq: f32 = td * td;
         for chunk in &self.terrain_chunks {
             let dx = chunk.center.x - player_pos.x;
             let dz = chunk.center.z - player_pos.z;
@@ -238,6 +240,7 @@ impl Engine {
         self.structures.render_nearby(
             player_pos, &tree_frustum,
             wind_strength, wind_dir, weather_time,
+            self.settings.tree_draw_distance,
             &mut self.frame_transforms, &mut self.frame_instance_ids,
         );
 
@@ -395,6 +398,8 @@ impl Engine {
         // Build UI for this frame.
         if self.game_state == GameState::MainMenu {
             self.build_menu_ui();
+        } else if self.game_state == GameState::Settings {
+            self.build_settings_ui();
         } else {
             self.build_ui(hp_frac, mana_frac, stam_frac, level, biome_id, player_pos);
         }

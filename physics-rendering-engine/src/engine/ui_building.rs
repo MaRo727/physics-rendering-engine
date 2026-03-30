@@ -112,9 +112,9 @@ impl Engine {
 
         // Menu options.
         let options: &[&str] = if self.has_save_file {
-            &["New Game", "Continue", "Quit"]
+            &["New Game", "Continue", "Settings", "Quit"]
         } else {
-            &["New Game", "Quit"]
+            &["New Game", "Settings", "Quit"]
         };
 
         let menu_scale = 2.0;
@@ -145,6 +145,76 @@ impl Engine {
         let hint = "W/S Navigate   E Select   ESC Quit";
         let hint_w = hint.len() as f32 * 8.0 * 1.5;
         self.ui.text(sw * 0.5 - hint_w * 0.5, sh * 0.85, hint, 1.5, [0.4, 0.4, 0.4, 1.0]);
+    }
+
+    pub(crate) fn build_settings_ui(&mut self) {
+        use super::settings::SETTINGS_ENTRIES;
+
+        let sw = self.surface_width as f32;
+        let sh = self.surface_height as f32;
+        self.ui.begin_frame(sw, sh);
+
+        // Dark overlay.
+        self.ui.rect(0.0, 0.0, sw, sh, [0.02, 0.02, 0.05, 0.95]);
+
+        // Title.
+        let scale = 3.0;
+        let cell = 8.0 * scale;
+        let title = "SETTINGS";
+        let title_w = title.len() as f32 * cell;
+        self.ui.text(sw * 0.5 - title_w * 0.5, sh * 0.12, title, scale, [0.9, 0.75, 0.2, 1.0]);
+
+        // Settings entries.
+        let entry_scale = 2.0;
+        let entry_cell = 8.0 * entry_scale;
+        let line_h = entry_cell + 14.0;
+        let start_y = sh * 0.25;
+        let label_x = sw * 0.25;
+        let value_x = sw * 0.65;
+        let bar_w = sw * 0.2;
+        let bar_h = entry_cell;
+
+        let gold = [1.0, 0.85, 0.3, 1.0];
+        let white = [0.85, 0.85, 0.85, 1.0];
+        let gray = [0.5, 0.5, 0.5, 1.0];
+        let bar_fill = [0.4, 0.6, 0.9, 1.0];
+        let bar_bg = [0.15, 0.15, 0.2, 1.0];
+
+        for (i, entry) in SETTINGS_ENTRIES.iter().enumerate() {
+            let y = start_y + i as f32 * line_h;
+            let selected = i as u8 == self.settings_selection;
+            let label_color = if selected { gold } else { white };
+
+            // Selection indicator.
+            if selected {
+                self.ui.text(label_x - entry_cell * 2.0, y, ">", entry_scale, gold);
+            }
+
+            // Label.
+            self.ui.text(label_x, y, entry.label, entry_scale, label_color);
+
+            // Value bar.
+            let cur = (entry.get)(&self.settings);
+            let frac = (cur - entry.min) / (entry.max - entry.min);
+            self.ui.bar(value_x, y + 2.0, bar_w, bar_h - 4.0, frac, bar_fill, bar_bg);
+
+            // Arrows for selected.
+            if selected {
+                self.ui.text(value_x - entry_cell * 1.5, y, "<", entry_scale, gold);
+                self.ui.text(value_x + bar_w + entry_cell * 0.5, y, ">", entry_scale, gold);
+            }
+
+            // Value text.
+            let val_str = (entry.format)(cur);
+            let val_w = val_str.len() as f32 * entry_cell;
+            self.ui.text(value_x + (bar_w - val_w) * 0.5, y, &val_str, entry_scale,
+                if selected { gold } else { gray });
+        }
+
+        // Controls hint.
+        let hint = "W/S Navigate   A/D Adjust   E Back";
+        let hint_w = hint.len() as f32 * 8.0 * 1.5;
+        self.ui.text(sw * 0.5 - hint_w * 0.5, sh * 0.90, hint, 1.5, [0.4, 0.4, 0.4, 1.0]);
     }
 
     pub(crate) fn build_ui(
