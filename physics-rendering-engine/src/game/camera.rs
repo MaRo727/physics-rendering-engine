@@ -61,10 +61,23 @@ impl FirstPersonCamera {
 
     /// Compute view and projection matrices.
     pub fn camera_matrices(&self, aspect: f32) -> (Mat4, Mat4) {
+        self.camera_matrices_fov(std::f32::consts::FRAC_PI_4, aspect)
+    }
+
+    /// Compute view and projection with custom FOV (radians).
+    pub fn camera_matrices_fov(&self, fov_y: f32, aspect: f32) -> (Mat4, Mat4) {
         let target = self.eye + self.look_dir();
         let view = Mat4::look_at_rh(self.eye, target, Vec3::Y);
-        let proj = perspective_vk(std::f32::consts::FRAC_PI_4, aspect, 0.1, 5000.0);
+        let proj = perspective_vk(fov_y, aspect, 0.1, 5000.0);
         (view, proj)
+    }
+
+    /// Update camera angles from mouse input with sensitivity multiplier.
+    pub fn look_with_sensitivity(&mut self, input: &InputState, sensitivity: f32) {
+        let sens = MOUSE_SENSITIVITY * sensitivity;
+        self.yaw -= input.mouse_dx * sens;
+        self.pitch = (self.pitch + input.mouse_dy * sens)
+            .clamp(-89_f32.to_radians(), 89_f32.to_radians());
     }
 }
 

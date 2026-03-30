@@ -301,11 +301,14 @@ impl AudioManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_volume(&mut self, volume: f32) {
         self.music_volume = volume.clamp(0.0, 1.0);
         if !self.muted && self.fade_state == FadeState::None {
             self.sink.set_volume(self.music_volume);
         }
+    }
+
+    pub fn set_sfx_volume(&mut self, volume: f32) {
+        self.sfx_volume = volume.clamp(0.0, 1.0);
     }
 }
