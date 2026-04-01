@@ -57,6 +57,41 @@ pub(super) struct PreloadedPanel {
 }
 
 impl Engine {
+    /// Re-evaluate LOD level for each terrain chunk based on distance to the player.
+    /// Regenerates meshes and uploads to GPU only for chunks whose LOD changed.
+    pub(crate) fn update_terrain_lod(&mut self) {
+        let player_pos = self.physics.body_position(self.player_rb);
+
+        let mut updates: Vec<(usize, Vec<mesh::Vertex>, Vec<u32>)> = Vec::new();
+
+        for (idx, chunk) in self.terrain_chunks.iter().enumerate() {
+            let dx = chunk.center.x - player_pos.x;
+            let dz = chunk.center.z - player_pos.z;
+            let dist_sq = dx * dx + dz * dz;
+
+            // Find the appropriate LOD step for this distance.
+            let mut new_step = LOD_THRESHOLDS.last().unwrap().1;
+            for &(threshold_sq, step) in &LOD_THRESHOLDS {
+                if dist_sq < threshold_sq {
+                    new_step = step;
+                    break;
+                }
+            }
+
+            if new_step != self.chunk_lod_levels[idx] {
+                self.chunk_lod_levels[idx] = new_step;
+                let (verts, indices) = self.terrain.regenerate_chunk_lod(idx, new_step);
+                updates.push((idx, verts, indices));
+            }
+        }
+
+        if !updates.is_empty() {
+            if let Err(e) = self.renderer.update_terrain_chunks(updates) {
+                log::error!("Failed to update terrain LOD: {}", e);
+            }
+        }
+    }
+
     /// Rebuild terrain chunk meshes, BLASes, and physics heightfield for dirty chunks.
     pub(crate) fn rebuild_dirty_terrain(&mut self) {
         self.terrain.drain_dirty_chunks(&mut self.dirty_chunk_buf);
@@ -64,11 +99,12 @@ impl Engine {
             return;
         }
 
-        // Regenerate chunk meshes.
+        // Regenerate chunk meshes at their current LOD level.
         let updates: Vec<(usize, Vec<mesh::Vertex>, Vec<u32>)> = self.dirty_chunk_buf
             .iter()
             .map(|&idx| {
-                let (verts, indices) = self.terrain.regenerate_chunk(idx);
+                let lod_step = self.chunk_lod_levels[idx];
+                let (verts, indices) = self.terrain.regenerate_chunk_lod(idx, lod_step);
                 (idx, verts, indices)
             })
             .collect();
@@ -254,6 +290,9 @@ impl Engine {
                 }
             }
         }
+
+        // Reset LOD levels — the next LOD update tick will assign proper levels.
+        self.chunk_lod_levels.fill(1);
 
         // 3. Update physics heightfields in-place (always needed).
         let chunk_world_size = (TERRAIN_HALF * 2) as f32 / CHUNKS_PER_SIDE as f32;

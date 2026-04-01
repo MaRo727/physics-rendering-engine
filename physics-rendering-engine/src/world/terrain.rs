@@ -689,9 +689,24 @@ impl TerrainGrid {
     // -----------------------------------------------------------------------
 
     /// Generate all terrain chunks. Returns (chunk_meshes, chunk_infos, full_mesh).
+    /// `lod_steps` optionally provides a per-chunk LOD step (1=full res, 2=half, 4=quarter, etc.).
+    /// If `None`, all chunks are generated at full resolution.
     pub fn generate_chunks(
         &self,
         mesh_type_base: u32,
+    ) -> (
+        Vec<(Vec<Vertex>, Vec<u32>)>,
+        Vec<TerrainChunkInfo>,
+        (Vec<Vertex>, Vec<u32>),
+    ) {
+        self.generate_chunks_lod(mesh_type_base, None)
+    }
+
+    /// Generate all terrain chunks with per-chunk LOD steps.
+    pub fn generate_chunks_lod(
+        &self,
+        mesh_type_base: u32,
+        lod_steps: Option<&[i32]>,
     ) -> (
         Vec<(Vec<Vertex>, Vec<u32>)>,
         Vec<TerrainChunkInfo>,
@@ -706,8 +721,10 @@ impl TerrainGrid {
 
         for chunk_x in 0..CHUNKS_PER_SIDE {
             for chunk_z in 0..CHUNKS_PER_SIDE {
+                let chunk_idx = chunk_meshes.len();
+                let lod_step = lod_steps.map_or(1, |s| s[chunk_idx]);
                 let (vertices, indices, min_y, max_y) =
-                    self.build_chunk_mesh(chunk_x, chunk_z);
+                    self.build_chunk_mesh(chunk_x, chunk_z, lod_step);
 
                 // Append to full mesh (with offset indices).
                 let vert_offset = all_vertices.len() as u32;
@@ -748,11 +765,11 @@ impl TerrainGrid {
         (chunk_meshes, chunk_infos, (all_vertices, all_indices))
     }
 
-    /// Regenerate a single chunk by its linear index (chunk_x * CHUNKS_PER_SIDE + chunk_z).
-    pub fn regenerate_chunk(&self, chunk_idx: usize) -> (Vec<Vertex>, Vec<u32>) {
+    /// Regenerate a single chunk at the given LOD step (1=full, 2=half, 4=quarter, etc.).
+    pub fn regenerate_chunk_lod(&self, chunk_idx: usize, lod_step: i32) -> (Vec<Vertex>, Vec<u32>) {
         let chunk_x = chunk_idx as i32 / CHUNKS_PER_SIDE;
         let chunk_z = chunk_idx as i32 % CHUNKS_PER_SIDE;
-        let (verts, indices, _min_y, _max_y) = self.build_chunk_mesh(chunk_x, chunk_z);
+        let (verts, indices, _min_y, _max_y) = self.build_chunk_mesh(chunk_x, chunk_z, lod_step);
         (verts, indices)
     }
 
@@ -760,8 +777,9 @@ impl TerrainGrid {
         &self,
         chunk_x: i32,
         chunk_z: i32,
+        lod_step: i32,
     ) -> (Vec<Vertex>, Vec<u32>, f32, f32) {
-        let step = CELL_SIZE as f32;
+        let base_step = CELL_SIZE as f32;
         let cell_x_start = -GRID_HALF + chunk_x * CELLS_PER_CHUNK;
         let cell_z_start = -GRID_HALF + chunk_z * CELLS_PER_CHUNK;
         let cell_x_end = cell_x_start + CELLS_PER_CHUNK;
@@ -772,32 +790,36 @@ impl TerrainGrid {
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
 
-        for gx in cell_x_start..cell_x_end {
-            for gz in cell_z_start..cell_z_end {
-                let x = gx as f32 * step;
-                let z = gz as f32 * step;
+        let mut gx = cell_x_start;
+        while gx < cell_x_end {
+            let next_gx = (gx + lod_step).min(cell_x_end);
+            let mut gz = cell_z_start;
+            while gz < cell_z_end {
+                let next_gz = (gz + lod_step).min(cell_z_end);
+                let x = gx as f32 * base_step;
+                let z = gz as f32 * base_step;
 
                 let h00 = self.height_at_grid(gx, gz);
-                let h10 = self.height_at_grid(gx + 1, gz);
-                let h01 = self.height_at_grid(gx, gz + 1);
-                let h11 = self.height_at_grid(gx + 1, gz + 1);
+                let h10 = self.height_at_grid(next_gx, gz);
+                let h01 = self.height_at_grid(gx, next_gz);
+                let h11 = self.height_at_grid(next_gx, next_gz);
 
                 min_y = min_y.min(h00).min(h10).min(h01).min(h11);
                 max_y = max_y.max(h00).max(h10).max(h01).max(h11);
 
                 let v0 = Vec3::new(x, h00, z);
-                let v1 = Vec3::new(x + step, h10, z);
-                let v2 = Vec3::new(x + step, h11, z + step);
-                let v3 = Vec3::new(x, h01, z + step);
+                let v1 = Vec3::new(next_gx as f32 * base_step, h10, z);
+                let v2 = Vec3::new(next_gx as f32 * base_step, h11, next_gz as f32 * base_step);
+                let v3 = Vec3::new(x, h01, next_gz as f32 * base_step);
 
                 let normal = (v3 - v0).cross(v1 - v0).normalize();
                 let avg_h = (h00 + h10 + h01 + h11) * 0.25;
 
                 // Blend toward dirt if vertex has been dug from original height.
                 let orig_avg = (self.original_at_grid(gx, gz)
-                    + self.original_at_grid(gx + 1, gz)
-                    + self.original_at_grid(gx, gz + 1)
-                    + self.original_at_grid(gx + 1, gz + 1))
+                    + self.original_at_grid(next_gx, gz)
+                    + self.original_at_grid(gx, next_gz)
+                    + self.original_at_grid(next_gx, next_gz))
                     * 0.25;
                 let biome = self.biome_at_grid(gx, gz);
                 let color = terrain_color(avg_h, orig_avg, biome);
@@ -824,7 +846,10 @@ impl TerrainGrid {
                     color,
                 });
                 indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+                gz += lod_step;
             }
+            gx += lod_step;
         }
 
         (vertices, indices, min_y, max_y)

@@ -85,6 +85,17 @@ pub struct TorchInstance {
 
 /// Minimum interval between terrain GPU/physics rebuilds (seconds).
 pub(crate) const TERRAIN_REBUILD_INTERVAL: f32 = 0.1;
+
+/// LOD distance thresholds (squared) and corresponding mesh step sizes.
+/// Chunks closer than threshold[i] use lod_step[i].
+pub(crate) const LOD_THRESHOLDS: [(f32, i32); 4] = [
+    (400.0 * 400.0,  1),   // LOD 0: full res     — 150×150 = 45K tris
+    (800.0 * 800.0,  2),   // LOD 1: half res      — 75×75  = 11.25K tris
+    (1200.0 * 1200.0, 5),  // LOD 2: ~1/5 res      — 30×30  = 1.8K tris
+    (f32::MAX,        10),  // LOD 3: ~1/10 res     — 15×15  = 450 tris
+];
+/// How often (seconds) to re-evaluate chunk LOD levels.
+pub(crate) const LOD_UPDATE_INTERVAL: f32 = 0.25;
 /// Radius of terrain deformation per pickaxe hit (world units).
 pub(crate) const DEFORM_RADIUS: f32 = 3.0;
 /// Height lowered at the center of a pickaxe hit.
@@ -131,6 +142,10 @@ pub struct Engine {
     pub(crate) terrain_rbs: std::collections::HashSet<rapier3d::prelude::RigidBodyHandle>,
     pub(crate) terrain_chunk_cols: Vec<rapier3d::prelude::ColliderHandle>,
     pub(crate) terrain_rebuild_timer: f32,
+    /// Current LOD step per terrain chunk (1=full, 2=half, 4=quarter, 8=eighth).
+    pub(crate) chunk_lod_levels: Vec<i32>,
+    /// Timer to throttle LOD updates (avoid re-meshing every frame).
+    pub(crate) lod_update_timer: f32,
     pub(crate) panel_x: i32,
     pub(crate) panel_z: i32,
     pub(crate) mesh_building_id: u32,
@@ -423,6 +438,8 @@ impl Engine {
             terrain_rbs: data.terrain_rbs,
             terrain_chunk_cols: data.terrain_chunk_cols,
             terrain_rebuild_timer: 0.0,
+            chunk_lod_levels: vec![1; (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize],
+            lod_update_timer: 0.0,
             panel_x: 0,
             panel_z: 0,
             mesh_building_id,
@@ -1666,6 +1683,13 @@ impl Engine {
         {
             self.terrain_rebuild_timer = 0.0;
             self.rebuild_dirty_terrain();
+        }
+
+        // --- Terrain LOD update ---
+        self.lod_update_timer += dt;
+        if self.lod_update_timer >= LOD_UPDATE_INTERVAL {
+            self.lod_update_timer = 0.0;
+            self.update_terrain_lod();
         }
 
         // --- NPC interaction (E key) ---

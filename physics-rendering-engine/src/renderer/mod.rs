@@ -653,6 +653,13 @@ impl Renderer {
         // GPU-side pipeline barriers in the batched staging copy ensure safe
         // synchronization with any in-flight frames — no CPU stall needed.
 
+        // Update sub-mesh counts first so BLAS rebuilds use the actual LOD geometry size.
+        for (chunk_idx, verts, indices) in &updates {
+            let mesh_idx = SHAPE_MESH_COUNT + *chunk_idx;
+            self.sub_mesh_infos[mesh_idx].vertex_count = verts.len() as u32;
+            self.sub_mesh_infos[mesh_idx].index_count = indices.len() as u32;
+        }
+
         // Build batch references into the owned updates (pre-allocated, no resize).
         let mut batch: Vec<(&mesh::SubMeshInfo, &[mesh::Vertex], &[u32])> =
             Vec::with_capacity(updates.len());
