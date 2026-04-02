@@ -144,6 +144,7 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::F10) => self.input.editor_load = pressed,
                     PhysicalKey::Code(KeyCode::F11) => self.input.toggle_perf = pressed,
+                    PhysicalKey::Code(KeyCode::F12) => self.input.toggle_dev_menu = pressed,
                     PhysicalKey::Code(KeyCode::KeyB) => self.input.cycle_block_type = pressed,
                     PhysicalKey::Code(KeyCode::KeyV) => {
                         if pressed && self.input.ctrl_held {

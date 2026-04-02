@@ -52,6 +52,7 @@ pub struct InputState {
     pub place_torch: bool,              // T — place a torch
     pub toggle_perf: bool,              // F11 — toggle performance mode
     pub toggle_teleport: bool,           // P — toggle teleport menu
+    pub toggle_dev_menu: bool,            // F12 — toggle dev render menu
     pub scroll_delta: f32,           // Mouse wheel scroll
     pub mouse_dx: f32,
     pub mouse_dy: f32,
@@ -108,6 +109,7 @@ impl Default for InputState {
             place_torch: false,
             toggle_perf: false,
             toggle_teleport: false,
+            toggle_dev_menu: false,
             editor_color_slot: None,
             scroll_delta: 0.0,
             mouse_dx: 0.0,

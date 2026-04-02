@@ -447,6 +447,18 @@ impl Renderer {
         self.swapchain_dirty = true;
     }
 
+    pub fn set_vsync(&mut self, vsync: bool) -> Result<()> {
+        if self.swapchain.vsync == vsync { return Ok(()); }
+        // Just update the flag; the normal dirty path will recreate with the new mode.
+        self.swapchain.vsync = vsync;
+        self.swapchain_dirty = true;
+        Ok(())
+    }
+
+    pub fn vsync(&self) -> bool {
+        self.swapchain.vsync
+    }
+
     /// Wait for the GPU to finish the previous use of this frame's resources.
     /// Must be called before writing any per-frame mapped buffers (UI, point
     /// lights) that are uploaded outside of `draw_frame`.

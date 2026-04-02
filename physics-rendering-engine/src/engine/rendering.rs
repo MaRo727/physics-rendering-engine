@@ -123,6 +123,7 @@ impl Engine {
         };
 
         // World entities (skip the player entity -- we render the model instead).
+        if self.dev_toggles.entities {
         for entity in &self.world.entities {
             if entity.kind == EntityKind::Player { continue; }
 
@@ -136,10 +137,12 @@ impl Engine {
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(entity.mesh_type, entity.id));
         }
+        }
 
         let player_pos = self.physics.body_position(self.player_rb);
 
         // First-person fists (no body capsule).
+        if self.dev_toggles.player_model {
         let parts = self.player_model.compute_fp_transforms(
             self.camera.eye,
             self.camera.yaw,
@@ -164,8 +167,10 @@ impl Engine {
             pack_instance_id(body_mesh, PLAYER_MODEL_OBJECT_ID + FP_PART_COUNT as u32)
             | SHADOW_ONLY_BIT,
         );
+        }
 
         // Torches.
+        if self.dev_toggles.torches {
         for (i, torch) in self.torches.iter().enumerate() {
             if !is_sphere_in_frustum(&cull_planes, torch.position, 2.0) {
                 continue;
@@ -174,11 +179,15 @@ impl Engine {
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(MESH_TORCH, TORCH_OBJECT_BASE + (i as u32 & 0xFF)));
         }
+        }
 
         // Particles.
+        if self.dev_toggles.particles {
         self.particles.render(&mut self.frame_transforms, &mut self.frame_instance_ids);
+        }
 
         // Spell projectiles.
+        if self.dev_toggles.projectiles {
         let projectile_object_base: u32 = 0xFFA0;
         for (i, proj) in self.spells.projectiles.iter().enumerate() {
             if !is_sphere_in_frustum(&cull_planes, proj.position, proj.scale * 2.0) {
@@ -214,8 +223,10 @@ impl Engine {
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(proj.mesh, enemy_proj_object_base + i as u32));
         }
+        }
 
         // Terrain chunks -- distance cull + frustum cull.
+        if self.dev_toggles.terrain {
         let td = self.settings.terrain_draw_distance;
         let terrain_cull_dist_sq: f32 = td * td;
         for chunk in &self.terrain_chunks {
@@ -230,9 +241,11 @@ impl Engine {
             self.frame_transforms.push(Mat4::IDENTITY);
             self.frame_instance_ids.push(pack_instance_id(chunk.mesh_type, self.terrain_object_id));
         }
+        }
 
         // Trees near the player, frustum-culled to the player camera
         // (in ghost mode, use the frozen player frustum like terrain chunks).
+        if self.dev_toggles.trees {
         let tree_frustum = frustum_planes;
         let wind_dir = self.weather.wind_dir();
         let wind_strength = self.weather.wind_strength;
@@ -243,8 +256,10 @@ impl Engine {
             self.settings.tree_draw_distance,
             &mut self.frame_transforms, &mut self.frame_instance_ids,
         );
+        }
 
         // Leaf particles from tree punches.
+        if self.dev_toggles.leaves {
         let leaf_object_base: u32 = 0xFF80;
         for (i, leaf) in self.structures.leaf_particles.iter().enumerate() {
             // Fade out: shrink during last 0.5s of life.
@@ -256,17 +271,20 @@ impl Engine {
             self.frame_transforms.push(t);
             self.frame_instance_ids.push(pack_instance_id(leaf.mesh_type, leaf_object_base + (i as u32 & 0xFF)));
         }
+        }
 
         // Grass and flowers disabled for performance.
 
         // Water plane at WATER_LEVEL, drifting slowly for animation.
+        if self.dev_toggles.water {
         const WAVE_PERIOD: f32 = std::f32::consts::TAU / 0.12;
         let water_offset = (self.water_time * 2.0) % WAVE_PERIOD;
         self.frame_transforms.push(Mat4::from_translation(Vec3::new(water_offset, WATER_LEVEL, water_offset * 0.6)));
         self.frame_instance_ids.push(pack_instance_id(MESH_WATER, WATER_OBJECT_ID));
+        }
 
         // Building mesh.
-        if !self.building.is_empty() && self.renderer.has_building_blas() {
+        if self.dev_toggles.building && !self.building.is_empty() && self.renderer.has_building_blas() {
             self.frame_transforms.push(Mat4::IDENTITY);
             self.frame_instance_ids.push(pack_instance_id(self.mesh_building_id, BUILDING_OBJECT_ID));
         }
@@ -414,6 +432,7 @@ impl Engine {
 
         // Collect point lights from nearest torches (cap at 8 for performance).
         self.frame_point_lights.clear();
+        if self.dev_toggles.torches {
         let time = self.water_time;
         let cam_pos = if self.ghost.active { self.ghost.eye } else { self.camera.eye };
         // Collect distances for sorting (reuse buffer to avoid per-frame allocation).
@@ -433,6 +452,7 @@ impl Engine {
                 color: [1.0, 0.6, 0.2],
                 intensity: 2.5 * flicker,
             });
+        }
         }
         self.renderer.upload_point_lights(&self.frame_point_lights);
 

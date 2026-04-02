@@ -577,6 +577,11 @@ impl Engine {
         if self.show_inventory {
             self.build_inventory_ui(scale, cell);
         }
+
+        // -- Dev menu (F12) --
+        if self.show_dev_menu {
+            self.build_dev_menu_ui(scale, cell);
+        }
     }
 
     pub(crate) fn build_teleport_ui(&mut self, scale: f32, cell: f32) {
@@ -738,5 +743,76 @@ impl Engine {
             scale,
             gray,
         );
+    }
+
+    pub(crate) fn build_dev_menu_ui(&mut self, scale: f32, cell: f32) {
+        use super::DevMenuToggles;
+
+        let (sw, _sh) = self.ui.screen_size();
+        let line_h = cell + 4.0;
+        let labels = DevMenuToggles::LABELS;
+        let count = labels.len();
+
+        let panel_w = 24.0 * cell;
+        let panel_h = (count as f32 + 5.0) * line_h + 12.0;
+        let px = sw - panel_w - 12.0;
+        let py = 12.0;
+
+        // Panel background.
+        self.ui.panel(px - 6.0, py - 6.0, panel_w + 12.0, panel_h + 12.0);
+
+        let gold = [1.0, 0.85, 0.3, 1.0];
+        let white = [0.9, 0.9, 0.9, 1.0];
+        let green = [0.3, 1.0, 0.3, 1.0];
+        let red = [1.0, 0.3, 0.3, 1.0];
+        let gray = [0.5, 0.5, 0.5, 1.0];
+
+        // Title.
+        self.ui.text(px, py, "DEV RENDER MENU", scale, gold);
+
+        // FPS + frame time.
+        let avg_dt: f32 = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+        let avg_fps = if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 };
+        let avg_ms = avg_dt * 1000.0;
+        self.hud_buf.clear();
+        let _ = write!(self.hud_buf, "{:.0} FPS  {:.2}ms  Inst: {}", avg_fps, avg_ms, self.frame_transforms.len());
+        let fps_color = if avg_fps >= 55.0 { green }
+                        else if avg_fps >= 30.0 { [0.9, 0.8, 0.2, 1.0] }
+                        else { red };
+        self.ui.text(px, py + line_h, &self.hud_buf, scale, fps_color);
+
+        // Toggle entries.
+        for (i, label) in labels.iter().enumerate() {
+            let y = py + (i as f32 + 2.5) * line_h;
+            let on = self.dev_toggles.get(i);
+            let selected = i as u8 == self.dev_menu_selection;
+
+            // Key hint (1-9, 0).
+            let key = if i == 9 { '0' } else { (b'1' + i as u8) as char };
+            self.hud_buf.clear();
+            let _ = write!(self.hud_buf, "{}: {}", key, label);
+
+            let label_color = if selected { gold } else { white };
+            self.ui.text(px, y, &self.hud_buf, scale, label_color);
+
+            // ON/OFF indicator.
+            let status = if on { "ON" } else { "OFF" };
+            let status_color = if on { green } else { red };
+            let status_x = px + panel_w - 4.0 * cell;
+            self.ui.text(status_x, y, status, scale, status_color);
+        }
+
+        // VSync toggle (separate from render categories).
+        let vsync_y = py + (count as f32 + 2.5) * line_h;
+        let vsync_on = self.renderer.vsync();
+        self.ui.text(px, vsync_y, "V: VSync", scale, white);
+        let vsync_status = if vsync_on { "ON" } else { "OFF" };
+        let vsync_color = if vsync_on { green } else { red };
+        self.ui.text(px + panel_w - 4.0 * cell, vsync_y, vsync_status, scale, vsync_color);
+
+        // Hint.
+        let hint_y = py + (count as f32 + 3.5) * line_h;
+        self.ui.text(px, hint_y, "1-0: Toggle  V: VSync", scale, gray);
+        self.ui.text(px, hint_y + line_h, "F12: Close", scale, gray);
     }
 }

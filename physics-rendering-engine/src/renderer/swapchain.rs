@@ -12,11 +12,12 @@ pub struct Swapchain {
     pub render_finished: Vec<vk::Semaphore>,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
+    pub vsync: bool,
 }
 
 impl Swapchain {
     pub fn new(context: &VulkanContext, width: u32, height: u32) -> Result<Self> {
-        create_swapchain(context, vk::SwapchainKHR::null(), width, height)
+        create_swapchain(context, vk::SwapchainKHR::null(), width, height, true)
     }
 
     pub fn recreate(
@@ -24,6 +25,16 @@ impl Swapchain {
         context: &VulkanContext,
         width: u32,
         height: u32,
+    ) -> Result<()> {
+        self.recreate_with_vsync(context, width, height, self.vsync)
+    }
+
+    pub fn recreate_with_vsync(
+        &mut self,
+        context: &VulkanContext,
+        width: u32,
+        height: u32,
+        vsync: bool,
     ) -> Result<()> {
         let old_handle = self.handle;
         unsafe {
@@ -34,7 +45,7 @@ impl Swapchain {
                 context.device.destroy_image_view(iv, None);
             }
         }
-        let new = create_swapchain(context, old_handle, width, height)?;
+        let new = create_swapchain(context, old_handle, width, height, vsync)?;
         unsafe { self.loader.destroy_swapchain(old_handle, None) };
         *self = new;
         Ok(())
@@ -76,6 +87,7 @@ fn create_swapchain(
     old_swapchain: vk::SwapchainKHR,
     width: u32,
     height: u32,
+    vsync: bool,
 ) -> Result<Swapchain> {
     let capabilities = unsafe {
         context
@@ -99,7 +111,7 @@ fn create_swapchain(
     .context("Failed to get surface present modes")?;
 
     let format = choose_format(&formats);
-    let present_mode = choose_present_mode(&present_modes);
+    let present_mode = choose_present_mode(&present_modes, vsync);
     let extent = choose_extent(&capabilities, width, height);
 
     let image_count = {
@@ -160,6 +172,7 @@ fn create_swapchain(
         render_finished,
         format: format.format,
         extent,
+        vsync,
     })
 }
 
@@ -174,10 +187,19 @@ fn choose_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
         .unwrap_or(formats[0])
 }
 
-fn choose_present_mode(_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    // FIFO is the only mode guaranteed tear-free by the Vulkan spec.
-    // MAILBOX can tear on some drivers/compositors (especially Linux).
-    vk::PresentModeKHR::FIFO
+fn choose_present_mode(modes: &[vk::PresentModeKHR], vsync: bool) -> vk::PresentModeKHR {
+    if vsync {
+        vk::PresentModeKHR::FIFO
+    } else {
+        // Prefer MAILBOX (uncapped, no tearing) > IMMEDIATE (uncapped, may tear).
+        if modes.contains(&vk::PresentModeKHR::MAILBOX) {
+            vk::PresentModeKHR::MAILBOX
+        } else if modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+            vk::PresentModeKHR::IMMEDIATE
+        } else {
+            vk::PresentModeKHR::FIFO // fallback
+        }
+    }
 }
 
 fn choose_extent(capabilities: &vk::SurfaceCapabilitiesKHR, width: u32, height: u32) -> vk::Extent2D {

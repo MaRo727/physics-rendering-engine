@@ -78,6 +78,86 @@ pub(crate) const WATER_DRAG: f32 = 12.0;
 pub(crate) const TORCH_OBJECT_BASE: u32 = 0xFF70;
 pub(crate) const TORCH_FLAME_HEIGHT: f32 = 0.85;
 
+/// Toggles for the dev menu -- each controls whether a render category is drawn.
+/// All default to `true` (everything visible).
+#[derive(Debug, Clone)]
+pub struct DevMenuToggles {
+    pub terrain: bool,
+    pub trees: bool,
+    pub water: bool,
+    pub entities: bool,
+    pub player_model: bool,
+    pub torches: bool,
+    pub particles: bool,
+    pub projectiles: bool,
+    pub leaves: bool,
+    pub building: bool,
+}
+
+impl Default for DevMenuToggles {
+    fn default() -> Self {
+        Self {
+            terrain: true,
+            trees: true,
+            water: true,
+            entities: true,
+            player_model: true,
+            torches: true,
+            particles: true,
+            projectiles: true,
+            leaves: true,
+            building: true,
+        }
+    }
+}
+
+impl DevMenuToggles {
+    pub const LABELS: &[&str] = &[
+        "Terrain",
+        "Trees",
+        "Water",
+        "Entities",
+        "Player Model",
+        "Torches + Lights",
+        "Particles",
+        "Projectiles",
+        "Leaves",
+        "Building",
+    ];
+
+    pub fn get(&self, index: usize) -> bool {
+        match index {
+            0 => self.terrain,
+            1 => self.trees,
+            2 => self.water,
+            3 => self.entities,
+            4 => self.player_model,
+            5 => self.torches,
+            6 => self.particles,
+            7 => self.projectiles,
+            8 => self.leaves,
+            9 => self.building,
+            _ => true,
+        }
+    }
+
+    pub fn toggle(&mut self, index: usize) {
+        match index {
+            0 => self.terrain = !self.terrain,
+            1 => self.trees = !self.trees,
+            2 => self.water = !self.water,
+            3 => self.entities = !self.entities,
+            4 => self.player_model = !self.player_model,
+            5 => self.torches = !self.torches,
+            6 => self.particles = !self.particles,
+            7 => self.projectiles = !self.projectiles,
+            8 => self.leaves = !self.leaves,
+            9 => self.building = !self.building,
+            _ => {}
+        }
+    }
+}
+
 pub struct TorchInstance {
     pub position: Vec3,
     pub flame_pos: Vec3,
@@ -285,6 +365,11 @@ pub struct Engine {
     pub(crate) fire_particle_timer: f32,
     /// Cached player biome from update(), reused in render() to avoid redundant lookups.
     pub(crate) cached_player_biome: Biome,
+    // Dev menu (F12): toggle rendering of individual element categories.
+    pub(crate) show_dev_menu: bool,
+    pub(crate) dev_menu_prev: bool,
+    pub(crate) dev_toggles: DevMenuToggles,
+    pub(crate) dev_menu_selection: u8,
     // Panel preloading: background thread generates CPU data for adjacent panels.
     pub(crate) panel_preload: Option<PreloadedPanel>,
     pub(crate) panel_preload_rx: Option<mpsc::Receiver<PreloadedPanel>>,
@@ -559,6 +644,10 @@ impl Engine {
             frame_torch_dists: Vec::new(),
             fire_particle_timer: 0.0,
             cached_player_biome: Biome::Plains,
+            show_dev_menu: false,
+            dev_menu_prev: false,
+            dev_toggles: DevMenuToggles::default(),
+            dev_menu_selection: 0,
             panel_preload: None,
             panel_preload_rx: None,
             preloading_panel: None,
@@ -1033,6 +1122,31 @@ impl Engine {
             self.show_debug_ui = !self.show_debug_ui;
         }
         self.debug_ui_prev = input.toggle_debug_ui;
+
+        // --- Dev menu toggle (F12) ---
+        if input.toggle_dev_menu && !self.dev_menu_prev {
+            self.show_dev_menu = !self.show_dev_menu;
+        }
+        self.dev_menu_prev = input.toggle_dev_menu;
+
+        // Dev menu: digit keys toggle render categories (only when no other overlay uses digits).
+        if self.show_dev_menu && self.game_state == GameState::Playing && !self.show_teleport {
+            let count = DevMenuToggles::LABELS.len() as u8;
+            if let Some(slot) = input.editor_color_slot {
+                // slot 0 = Digit1 → index 0, ..., slot 8 = Digit9 → index 8, slot 9 = Digit0 → index 9
+                if slot < count {
+                    self.dev_toggles.toggle(slot as usize);
+                    self.dev_menu_selection = slot;
+                }
+            }
+            // V key toggles VSync.
+            if input.rotate_block && !self.rotate_prev {
+                let new_vsync = !self.renderer.vsync();
+                if let Err(e) = self.renderer.set_vsync(new_vsync) {
+                    log::warn!("Failed to toggle VSync: {e}");
+                }
+            }
+        }
 
         // --- Inventory toggle (I) ---
         if input.toggle_inventory && !self.inventory_prev {
