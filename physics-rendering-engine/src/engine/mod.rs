@@ -416,7 +416,7 @@ pub fn init_world(
     let terrain = TerrainGrid::generate_or_load(&starter_panel.island);
     progress.store(2, Ordering::Relaxed);
 
-    let (chunk_meshes, terrain_chunks, _full_mesh) =
+    let (mut chunk_meshes, terrain_chunks, _full_mesh) =
         terrain.generate_chunks(MESH_TERRAIN_BASE);
     let num_terrain_chunks = chunk_meshes.len();
     progress.store(3, Ordering::Relaxed);
@@ -449,8 +449,14 @@ pub fn init_world(
     progress.store(4, Ordering::Relaxed);
 
     // Generate structures (trees, ruins) and grass on terrain.
-    let structures = StructureGrid::generate(42, &terrain);
+    let mut structures = StructureGrid::generate(42, &terrain);
     let grass = GrassGrid::generate(42, &terrain);
+
+    // Build per-chunk merged LOD tree meshes to reduce TLAS instance count.
+    let (tree_chunk_meshes, tree_chunk_map) = structures.build_chunk_meshes();
+    let tree_chunk_base_id = MESH_TERRAIN_BASE + num_terrain_chunks as u32;
+    structures.set_chunk_mesh_ids(tree_chunk_map, tree_chunk_base_id);
+    chunk_meshes.extend(tree_chunk_meshes);
     progress.store(5, Ordering::Relaxed);
 
     // Add tree trunk colliders (compound collider per chunk).

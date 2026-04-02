@@ -5,6 +5,8 @@ use crate::renderer::{pack_instance_id, MESH_TREE_OAK, MESH_TREE_PINE, MESH_TREE
     MESH_CACTUS, MESH_CACTUS_SMALL, MESH_CACTUS_LOD, MESH_CACTUS_SMALL_LOD,
     MESH_LEAF_PARTICLE, MESH_BARK_CHIP,
 };
+use crate::renderer::mesh::Vertex;
+use crate::renderer::shapes;
 use crate::world::terrain::{Biome, TerrainGrid, TERRAIN_HALF, CHUNKS_PER_SIDE};
 
 const TREE_OBJECT_ID: u32 = 0xFFE0;
@@ -66,6 +68,8 @@ pub struct StructureGrid {
     trees: Vec<TreeInstance>,
     /// Trees bucketed by terrain chunk index (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE buckets).
     chunk_buckets: Vec<Vec<usize>>,
+    /// Maps chunk index → absolute mesh type ID for merged LOD trees. None = no trees in chunk.
+    chunk_mesh_ids: Vec<Option<u32>>,
     /// Currently shaking trees.
     shakes: Vec<TreeShake>,
     /// Active leaf particles from tree punches.
@@ -208,7 +212,78 @@ impl StructureGrid {
 
         log::info!("Placed {} trees across {} chunks", trees.len(), num_buckets);
 
-        Self { trees, chunk_buckets, shakes: Vec::new(), leaf_particles: Vec::new() }
+        Self {
+            trees,
+            chunk_buckets,
+            chunk_mesh_ids: vec![None; num_buckets],
+            shakes: Vec::new(),
+            leaf_particles: Vec::new(),
+        }
+    }
+
+    /// Build a single pre-merged LOD mesh per chunk (all tree LOD geometry baked with
+    /// world-space transforms). Returns mesh data and a chunk→local-index mapping.
+    pub fn build_chunk_meshes(&self) -> (Vec<(Vec<Vertex>, Vec<u32>)>, Vec<Option<usize>>) {
+        // Generate LOD mesh data once for each tree type.
+        let oak_lod = shapes::tree_oak_lod();
+        let pine_lod = shapes::tree_pine_lod();
+        let dead_lod = shapes::tree_dead_lod();
+        let cactus_lod = shapes::cactus_lod();
+        let cactus_small_lod = shapes::cactus_small_lod();
+
+        let mut meshes = Vec::new();
+        let mut chunk_map: Vec<Option<usize>> = vec![None; self.chunk_buckets.len()];
+
+        for (chunk_idx, bucket) in self.chunk_buckets.iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+
+            let mut merged_verts = Vec::new();
+            let mut merged_indices = Vec::new();
+
+            for &tree_idx in bucket {
+                let tree = &self.trees[tree_idx];
+
+                let (src_verts, src_indices) = match tree.mesh_type {
+                    MESH_TREE_OAK => &oak_lod,
+                    MESH_TREE_PINE => &pine_lod,
+                    MESH_TREE_DEAD => &dead_lod,
+                    MESH_CACTUS => &cactus_lod,
+                    MESH_CACTUS_SMALL => &cactus_small_lod,
+                    _ => continue,
+                };
+
+                // Bake the tree's static transform into the vertices.
+                let transform = tree.base_transform_no_scale * Mat4::from_scale(tree.scale);
+
+                let base_idx = merged_verts.len() as u32;
+                for v in src_verts {
+                    let pos = transform.transform_point3(v.position);
+                    // Uniform scale → transform_vector3 + normalize gives correct normals.
+                    let norm = transform.transform_vector3(v.normal).normalize();
+                    merged_verts.push(Vertex { position: pos, normal: norm, color: v.color });
+                }
+                for &idx in src_indices {
+                    merged_indices.push(base_idx + idx);
+                }
+            }
+
+            if !merged_verts.is_empty() {
+                chunk_map[chunk_idx] = Some(meshes.len());
+                meshes.push((merged_verts, merged_indices));
+            }
+        }
+
+        log::info!("Built {} merged tree-chunk meshes", meshes.len());
+        (meshes, chunk_map)
+    }
+
+    /// Assign absolute mesh type IDs for the merged chunk meshes.
+    pub fn set_chunk_mesh_ids(&mut self, chunk_map: Vec<Option<usize>>, first_mesh_id: u32) {
+        self.chunk_mesh_ids = chunk_map.iter().map(|opt| {
+            opt.map(|local_idx| first_mesh_id + local_idx as u32)
+        }).collect();
     }
 
     /// Collect transforms and instance IDs for trees near `player_pos` that pass frustum culling.
@@ -264,6 +339,28 @@ impl StructureGrid {
                     continue;
                 }
                 let bucket = cx * CHUNKS_PER_SIDE as usize + cz;
+
+                // Check if entire chunk is beyond LOD_DISTANCE — use merged mesh
+                // (single TLAS instance per chunk instead of one per tree).
+                let chunk_min_x = cx as f32 * CHUNK_WORLD_SIZE - half;
+                let chunk_max_x = (cx as f32 + 1.0) * CHUNK_WORLD_SIZE - half;
+                let chunk_min_z = cz as f32 * CHUNK_WORLD_SIZE - half;
+                let chunk_max_z = (cz as f32 + 1.0) * CHUNK_WORLD_SIZE - half;
+                let nearest_x = player_pos.x.clamp(chunk_min_x, chunk_max_x);
+                let nearest_z = player_pos.z.clamp(chunk_min_z, chunk_max_z);
+                let near_dx = player_pos.x - nearest_x;
+                let near_dz = player_pos.z - nearest_z;
+                let chunk_near_dist_sq = near_dx * near_dx + near_dz * near_dz;
+
+                if chunk_near_dist_sq > LOD_DISTANCE_SQ {
+                    if let Some(mesh_id) = self.chunk_mesh_ids[bucket] {
+                        transforms.push(Mat4::IDENTITY);
+                        instance_ids.push(pack_instance_id(mesh_id, TREE_OBJECT_ID));
+                    }
+                    continue;
+                }
+
+                // Near chunk — render individual trees with sway animation.
                 for &tree_idx in &self.chunk_buckets[bucket] {
                     let tree = &self.trees[tree_idx];
                     let dx = tree.position.x - player_pos.x;
